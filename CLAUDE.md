@@ -1,6 +1,6 @@
 # GC Wrapped
 
-Group chat analytics platform: chat exports → Postgres warehouse (dbt) → LLM enrichment → RAG Q&A with citations → "Wrapped" profile per member. Resume project for Ryan Phan (new-grad SWE / data eng). Planning happens in a separate claude.ai project; this file is what you need to work in the repo.
+Group chat analytics platform: chat exports → Postgres warehouse (dbt) → LLM enrichment → RAG Q&A with citations → "Wrapped" profile per member. Planning happens in a separate claude.ai project; this file is what you need to work in the repo.
 
 ## Every session
 Context is cleared after every session. Anything not written into the repo is lost, so write it down.
