@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: make lint
+      - run: make test
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: gcw
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: gcw_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gcw -d gcw_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_USER: gcw
+      POSTGRES_PASSWORD: ci-password
+      DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - name: Enable pgvector in gcw_dev
+        run: psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - run: make test-integration
