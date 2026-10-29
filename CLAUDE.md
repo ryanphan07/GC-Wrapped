@@ -1,6 +1,6 @@
 # GC Wrapped
 
-Group chat analytics platform: chat exports → Postgres warehouse (dbt) → LLM enrichment → RAG Q&A with citations → "Wrapped" profile per member. Planning happens in a separate claude.ai project; this file is what you need to work in the repo.
+Group chat analytics platform: chat exports → Postgres warehouse (dbt) → LLM enrichment → RAG Q&A with citations → "Wrapped" profile per member. Resume project for Ryan Phan (new-grad SWE / data eng). Planning happens in a separate claude.ai project; this file is what you need to work in the repo.
 
 ## Every session
 Context is cleared after every session. Anything not written into the repo is lost, so write it down.
@@ -8,10 +8,12 @@ Context is cleared after every session. Anything not written into the repo is lo
 2. Ryan pastes a session brief. Do that task only. If it conflicts with STATUS/decisions, or expands scope beyond the current phase, say so before writing code.
 3. When Ryan says "wrap up" or the task is done: run `make lint test`, update `docs/STATUS.md`, append any new decisions to `docs/decisions.md`, and propose a commit message.
 
+`docs/STATUS.md` is the handoff back to the planning chat: Ryan pastes it there to plan the next session. Write it for a reader who wasn't in this session. Be specific about what's broken, what you deviated from in the brief and why, and anything you need decided.
+
 ## Current phase
 Phase 1 — Pipeline: parse one platform's export → clean/dedupe → Postgres `raw` schema → dbt models (messages, member activity, reply times, threads, activity over time) with tests → Airflow landing-zone DAG → simple dashboard.
 Done when: a fresh export runs end to end with one command and all tests pass.
-Source platform: TBD (update when chosen)
+Source platform: Instagram DMs (Meta "Download your information" export, JSON format). Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
 NOT in Phase 1: LLM calls, embeddings, analysis of image/video content, React frontend, deploy, a second platform.
 
 ## Privacy rules (hard requirements)
@@ -51,11 +53,15 @@ cd dbt && dbt build       # against gcw_dev only
 ## docs/STATUS.md format (overwrite each session, under ~40 lines)
 ```
 Last session: <date> — <title>
+Brief completed: yes / partial (which acceptance criteria failed)
 Done:
+Deviations from the brief (what + why):
 In progress / broken:
 Next up:
 Open questions for planning:
 Measured this session (exact value + source):
+Commits: <short hash — message>
+Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
 ```
 
 ## docs/decisions.md format (append-only)

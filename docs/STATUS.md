@@ -22,5 +22,5 @@ Open questions for planning:
 Measured this session (exact value + source):
 - `pytest -m "not integration"`: 7 passed, 1 deselected, 2026-10-29
 - ruff check / ruff format --check / mypy --strict: no issues (10 source files)
-Commits: 9184ad3 — Add tooling and package skeleton; aba5426 — Add Docker Postgres, dbt project, Makefile and CI; d195fc9 — Add README, METRICS, STATUS and decisions docs
+Commits: 9184ad3 — Add tooling and package skeleton; aba5426 — Add Docker Postgres, dbt project, Makefile and CI; d195fc9 — Add README, METRICS, STATUS and decisions docs; 548d45c — Record Instagram as first platform; update STATUS
 Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
