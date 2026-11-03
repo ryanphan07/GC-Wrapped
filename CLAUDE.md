@@ -69,3 +69,9 @@ Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [
 ### YYYY-MM-DD — <decision>
 Chose X over Y because ... Tradeoff: ...
 ```
+
+## Privacy (hard rules)
+- Never read, list, or search anything outside this repo. Real chat exports live elsewhere; you must never access them.
+- Only connect to gcw_dev. Never connect to gcw_real or run any make target containing "real".
+- All test data is synthetic, produced by the generator in tests/. Never ask for or accept pasted real messages.
+- The Instagram format spec is docs/formats/instagram-schema.md. Build against it, not against assumptions.

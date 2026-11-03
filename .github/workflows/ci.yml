@@ -22,22 +22,24 @@ jobs:
         env:
           POSTGRES_USER: gcw
           POSTGRES_PASSWORD: ci-password
-          POSTGRES_DB: gcw_dev
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U gcw -d gcw_dev"
+          --health-cmd "pg_isready -U gcw -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       POSTGRES_USER: gcw
       POSTGRES_PASSWORD: ci-password
+      POSTGRES_PORT: 5432
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync
-      - name: Enable pgvector in gcw_dev
-        run: psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - run: uv sync --group dbt
+      - name: Run init SQL (creates gcw_dev, gcw_real, vector extension)
+        run: psql "postgresql://gcw:ci-password@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f docker/postgres/init/01-create-databases.sql
       - run: make test-integration
+      - run: make dbt-debug

@@ -2,19 +2,38 @@
 
 Every value must be an exact number with its source (`raw.ingestion_runs`, dbt output, or a command Ryan ran) and a date. Nothing is estimated or rounded.
 
-> The full metric list from the project brief was not available when this scaffold was created. The headings below are the ones implied by CLAUDE.md's Phase 1 definition of done. Add the rest from the brief.
+## Pipeline
 
-## Messages ingested
-not yet measured
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |
 
-## Duplicate messages removed
-not yet measured
+## dbt
 
-## Re-ingest idempotency (rows inserted when re-loading the same file; target 0)
-not yet measured
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |
 
-## dbt models and tests passing
-not yet measured
+## Tagging eval
 
-## End-to-end run time (fresh export, one command)
-not yet measured
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |
+
+## Retrieval eval
+
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |
+
+## Serving
+
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |
+
+## Usage
+
+| metric | value | date | how measured | commit |
+|---|---|---|---|---|
+|  |  |  |  |  |

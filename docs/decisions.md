@@ -23,3 +23,27 @@ Many consumer apps and OSS repos already generate Wrapped-style chat stats (What
 
 ### 2026-10-29 — Instagram DMs as the first platform
 Chose Instagram's JSON data export over iMessage (needs a Mac, which Ryan doesn't have), Messenger (end-to-end encrypted and older chats come in two separate export formats), and TikTok (text-only DMs, no media). Instagram includes all members' messages, reactions, shared links, and media, and any member can export it. Tradeoff: no per-message IDs, so the dedup key must be derived; Meta's JSON mis-encodes non-ASCII text, so the parser must repair it.
+
+### 2026-11-02 — Message dedup key
+Decision: message_key = sha256(platform | thread_id | timestamp_ms | sender_name | content | sorted attachment URIs | occurrence), where occurrence is the 0-based index among messages identical on all other fields. Text is mojibake-fixed before hashing. Loader enforces uniqueness on message_key (ON CONFLICT DO NOTHING).
+Alternative: hash without an occurrence index; or use file position as the ID.
+Why: Meta exports have no message IDs, and each new export re-includes full history, so the key must be stable across exports. File position changes when files are re-chunked. The occurrence index is stable because messages sharing every other field are interchangeable, so their order doesn't matter.
+Tradeoff: Instagram exports display names, not usernames. A renamed member produces new keys, so overlapping exports would duplicate. Accepted for Phase 1; fix later with a member alias mapping (dbt seed).
+
+### 2026-11-02 — Parser is faithful; cleaning lives in dbt (ELT)
+Decision: The parser fixes encoding and structure only. System-message detection, local-time conversion and member identity are handled in dbt staging models.
+Alternative: Clean and classify in Python at parse time.
+Why: Raw data stays reloadable when cleaning rules change; transformations are versioned, tested SQL; this matches how data teams use dbt.
+Tradeoff: Staging models carry more logic; raw tables contain noise.
+
+### 2026-11-02 — Real data isolated from Claude Code
+Decision: Real exports and gcw_real credentials live outside the repo (~/gcw-private/). Claude Code works only with synthetic data in gcw_dev. .claude/settings.json deny rules are a backstop.
+Alternative: Gitignored data/ folder inside the repo.
+Why: Gitignore stops commits, not reads. Claude Code is a third-party API, so it must not be able to reach real messages.
+Tradeoff: Real-data runs are manual and happen in Ryan's terminal; only aggregate counts are reported back.
+
+### 2026-11-02 — Format spec via a value-free schema inspector
+Decision: The Instagram format spec is produced by scripts/inspect_export.py, run locally by Ryan on the real export. It outputs structure only (key paths, types, presence, mojibake rate, array lengths), never values. A sentinel test enforces this.
+Alternative: Hand-written spec; or letting the coding agent read a sample export.
+Why: The coding agent must never see real messages, but the parser needs an accurate format spec.
+Tradeoff: Semantics that need content (e.g. system-message phrasings) aren't captured; those get handled later in dbt.
