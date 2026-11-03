@@ -22,5 +22,5 @@ Open questions for planning: none blocking.
 Measured this session (exact value + source):
 - CI run 41598617032 (branch dashboard): all 3 jobs success; integration `18 passed` then `13 passed` (warehouse); dbt PASS=125 WARN=0 ERROR=0 TOTAL=125; airflow DAG tests 4 passed.
 - Local: ruff, ruff format --check, mypy --strict clean; pytest unit 79 passed, 18 deselected.
-Commits: see git log below (branch commits and merge hash filled in after merge).
+Commits: 3c76828 — Streamlit dashboard on marts via read-only gcw_reader role; f7212e4 — Keep warehouse test module out of make test/test-integration; 7b3f61e — Update STATUS for dashboard session; 82bd3ed — Merge pull request #6 (merge commit on main).
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [ ]
