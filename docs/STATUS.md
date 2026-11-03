@@ -21,5 +21,5 @@ Open questions for planning: none blocking.
 Measured this session (exact value + source):
 - CI run 41600157782 (branch e2e): lint-test, integration, airflow, e2e all success. In the e2e job, run 1: dbt PASS=125 WARN=0 ERROR=0 TOTAL=125, load id 1 rows parsed 140 rows inserted 140; run 2: load id 2 rows parsed 140 rows inserted 0.
 - Local: ruff, ruff format --check, mypy --strict clean; pytest unit 87 passed, 18 deselected.
-Commits: 6a193e4 — One-command e2e (make e2e) verified in CI; single GCW_DB_NAME; replace lone surrogates; aca2edc — Fix e2e job: runner context is unavailable in job env; merge commit: see next line.
+Commits: 6a193e4 — One-command e2e (make e2e) verified in CI; single GCW_DB_NAME; replace lone surrogates; aca2edc — Fix e2e job: runner context is unavailable in job env; 8677e9b — Update STATUS for e2e session; 3a66488 — Merge pull request #7 (merge commit on main).
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x]
