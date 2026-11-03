@@ -18,9 +18,8 @@ def dagbag() -> DagBag:
 
 @pytest.fixture(scope="module")
 def dag(dagbag: DagBag) -> DAG:
-    found = dagbag.get_dag("gcw_pipeline")
-    assert found is not None
-    return found
+    # .dags is the in-memory parse result; get_dag() would query the (absent) metadata DB.
+    return dagbag.dags["gcw_pipeline"]
 
 
 def test_dags_import_without_errors(dagbag: DagBag) -> None:
