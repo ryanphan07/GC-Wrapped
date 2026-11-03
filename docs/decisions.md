@@ -188,3 +188,21 @@ Decision: The display name is "GC Wrapped" with no subtitle; the repo slug match
 Alternative: Rename the package and identifiers too; leave compose naming to the folder name.
 Why: Identifiers already match the name, and renaming them breaks imports and existing env files. Compose derives volume names from the folder by default, so renaming the folder would orphan the database volume.
 Tradeoff: The package name (gcwrapped) and display name differ slightly in form. Existing volumes created under the old folder-derived project name are not picked up by `gc-wrapped`; they must be migrated once (see STATUS).
+
+### 2026-11-03 — Separate schemas for staging and marts
+Decision: Staging and intermediate models build into `staging`; marts build into `analytics`. gcw_reader has USAGE on analytics only.
+Alternative: One schema, isolated by per-relation grants.
+Why: Message text exists only in raw and staging. Schema-level isolation means a future grant misconfiguration on a single model cannot expose text to the reader role.
+Tradeoff: A custom generate_schema_name macro to maintain.
+
+### 2026-11-03 — Dashboard never renders error details
+Decision: Streamlit runs with client.showErrorDetails = false; config and connection errors show a fixed message. An AppTest asserts a sentinel password never renders.
+Alternative: Default Streamlit error display.
+Why: Validation errors include input values (connection settings, passwords), and Streamlit shows tracebacks in the browser by default.
+Tradeoff: Debugging needs the server logs instead of the browser.
+
+### 2026-11-03 — Dead config removed; CHAT_TIMEZONE is read by dbt
+Decision: dbt's gcw_timezone var reads env_var('CHAT_TIMEZONE', 'America/Los_Angeles'), and compose passes it to the Airflow container. The unused LANDING_DIR and chat_timezone fields were removed from Settings (the DAG reads GCW_LANDING_DIR, set by compose).
+Alternative: Keep the reserved fields in Settings.
+Why: Nothing in Python read them, so changing them silently did nothing; the one consumer of the time zone is dbt.
+Tradeoff: Settings has no time zone field; if Python code needs it later, add it back with a reader.

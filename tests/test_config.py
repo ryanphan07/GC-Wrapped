@@ -24,18 +24,13 @@ def test_settings_need_no_database_env(monkeypatch: pytest.MonkeyPatch, tmp_path
     s = Settings(_env_file=None)
 
     assert s.log_level == "INFO"
-    assert s.landing_dir == Path("data/landing")
 
 
 def test_settings_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CHAT_TIMEZONE", "UTC")
-    monkeypatch.setenv("LANDING_DIR", "somewhere/landing")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
 
     s = Settings(_env_file=None)
 
-    assert s.chat_timezone == "UTC"
-    assert s.landing_dir == Path("somewhere/landing")
     assert s.log_level == "DEBUG"
 
 

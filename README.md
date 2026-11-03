@@ -68,7 +68,7 @@ make airflow-up                          # builds airflow/Dockerfile, starts db 
 
 ## Dashboard
 
-A Streamlit app shows activity from the `analytics` marts: KPIs, messages per day, a member leaderboard and an hour-of-day chart, per thread. It connects as `gcw_reader`, a read-only role that can read mart tables and nothing in `raw`, staging or intermediate, so message text cannot reach it.
+A Streamlit app shows activity from the `analytics` marts: KPIs, messages per day, a member leaderboard and an hour-of-day chart, per thread. It connects as `gcw_reader`, a read-only role that can read mart tables in `analytics` and has no access to the `raw` or `staging` schemas (staging and intermediate models), so message text cannot reach it.
 
 ```
 # .env needs GCW_READER_PASSWORD (the role is created on first `make up`, from docker/postgres/init/02-reader-role.sh)

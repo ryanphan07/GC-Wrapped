@@ -2,7 +2,7 @@
 # Creates the dashboard's read-only login role. Runs once on first start of an empty data volume
 # (docker-entrypoint-initdb.d), and CI runs it too with PGHOST/PGUSER/PGPASSWORD set.
 # The role gets no table privileges here: dbt grants SELECT on the mart tables and USAGE on the
-# analytics schema (see dbt_project.yml). raw and staging stay unreadable to it.
+# analytics schema (see dbt_project.yml). raw and staging (a separate schema it has no USAGE on) stay unreadable to it.
 set -euo pipefail
 
 : "${GCW_READER_PASSWORD:?GCW_READER_PASSWORD must be set}"

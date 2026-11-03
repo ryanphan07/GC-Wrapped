@@ -60,6 +60,7 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1
           -c "DROP SCHEMA IF EXISTS raw CASCADE"
           -c "DROP SCHEMA IF EXISTS analytics CASCADE"
+          -c "DROP SCHEMA IF EXISTS staging CASCADE"
           -c "DROP TABLE IF EXISTS schema_migrations"
       - run: uv run gcw migrate
       - run: make synth
@@ -118,6 +119,7 @@ jobs:
           grep -E "PASS=[0-9]+ WARN=[0-9]+ ERROR=0 " dags-test.log
           test "$(psql "$DATABASE_URL" -tA -c 'SELECT count(*) FROM raw.messages')" -gt 0
           test "$(psql "$DATABASE_URL" -tA -c 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
+          test "$(psql "$DATABASE_URL" -tA -c 'SELECT count(*) FROM staging.stg_instagram__messages')" -gt 0
           psql "$DATABASE_URL" -tA -c "SELECT status FROM raw.load_runs ORDER BY load_id DESC LIMIT 1" | grep -qx succeeded
 
   # The exact command used on real data, on synthetic data: compose builds and starts the db and
@@ -152,6 +154,14 @@ jobs:
           psql() { docker compose --env-file "$ENV_FILE" exec -T db psql -U gcw -d gcw_dev -tA -c "$1"; }
           test "$(psql 'SELECT count(*) FROM raw.messages')" -gt 0
           test "$(psql 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
+          test "$(psql 'SELECT count(*) FROM staging.stg_instagram__messages')" -gt 0
+          # No staging or intermediate relation may live in analytics.
+          test "$(psql "SELECT count(*) FROM pg_tables WHERE schemaname = 'analytics' AND tablename ~ '^(stg|int)_'")" -eq 0
+          test "$(psql "SELECT count(*) FROM pg_views WHERE schemaname = 'analytics'")" -eq 0
+          # The reader role: marts yes, the staging schema itself no.
+          reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
+          test "$(reader 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
+          reader 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
           test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -gt 0
           grep -qx "target database: gcw_dev" e2e-1.log
       - name: make e2e (second run inserts nothing)

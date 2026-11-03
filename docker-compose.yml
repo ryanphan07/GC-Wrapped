@@ -34,6 +34,8 @@ services:
         condition: service_healthy
     environment:
       GCW_LANDING_DIR: /opt/gcw-landing
+      # dbt's gcw_timezone var reads this; the default keeps an env file without it working.
+      CHAT_TIMEZONE: ${CHAT_TIMEZONE:-America/Los_Angeles}
       # GCW_DB_NAME is the one setting that picks the target database for gcw and dbt (no default:
       # it comes from the env file, so a real run is a deliberate choice).
       GCW_DB_NAME: ${GCW_DB_NAME:?set GCW_DB_NAME in the env file}
