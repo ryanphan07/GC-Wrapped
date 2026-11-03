@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline) scaffold. No pipeline logic yet. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 1 (pipeline). Parser and Postgres loader work; dbt models and Airflow are next. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
@@ -20,6 +20,19 @@ make lint test
 make test-integration       # needs the db container up
 make dbt-debug
 ```
+
+## Usage
+
+Both commands connect with `DATABASE_URL` (plus `POSTGRES_USER` / `POSTGRES_PASSWORD`) from the environment or `.env`, and print the target database name first so you can see where you are writing.
+
+```
+gcw migrate                 # create/upgrade the raw schema (idempotent)
+gcw ingest PATH [PATH ...]  # parse export root(s) and load them into raw.messages
+gcw parse PATH [PATH ...]   # parse only, print counts; no database needed
+```
+
+- **`gcw migrate`** applies the numbered files in `migrations/` that are not yet recorded in `schema_migrations`, in order, each in its own transaction. Running it again applies nothing. Run it once per database before the first `ingest`.
+- **`gcw ingest`** parses one or more export roots, then loads them in a single transaction. It prints counts only: rows parsed, rows inserted, duplicates skipped, elapsed seconds. Re-ingesting a file, or an export that overlaps an earlier one, inserts only the new messages (first write wins). Every run is recorded in `raw.load_runs` with its status and counts; a failed run leaves no partial messages.
 
 ## Privacy
 
