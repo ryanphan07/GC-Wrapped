@@ -1,5 +1,6 @@
 """DAG structure tests. Run inside the built image: `docker run --rm <image>:test`."""
 
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ ORDER = ["check_landing", "migrate", "ingest", "dbt_deps_and_build", "summarize"
 
 @pytest.fixture(scope="module")
 def dagbag() -> DagBag:
-    return DagBag(dag_folder=str(DAGS_DIR), include_examples=False)
+    return DagBag(dag_folder=str(DAGS_DIR))
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +29,7 @@ def test_dags_import_without_errors(dagbag: DagBag) -> None:
 
 def test_tasks_run_in_the_expected_order(dag: DAG) -> None:
     assert sorted(dag.task_ids) == sorted(ORDER)
-    for upstream, downstream in zip(ORDER, ORDER[1:], strict=False):
+    for upstream, downstream in pairwise(ORDER):
         assert dag.get_task(downstream).upstream_task_ids == {upstream}
     assert dag.get_task(ORDER[0]).upstream_task_ids == set()
 
