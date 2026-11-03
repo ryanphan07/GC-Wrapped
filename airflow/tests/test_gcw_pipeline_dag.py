@@ -34,7 +34,7 @@ def test_tasks_run_in_the_expected_order(dag: DAG) -> None:
 
 
 def test_schedule_and_run_settings(dag: DAG) -> None:
-    assert dag.timetable.summary == "@daily"
+    assert dag.schedule == "@daily"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
 
