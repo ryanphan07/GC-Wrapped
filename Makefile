@@ -1,6 +1,9 @@
 -include .env
 export
 
+# That module imports streamlit/pandas (dashboard group), which lint-test and dev installs lack.
+IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
+
 .PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up
 
 up:
@@ -22,10 +25,10 @@ psql-dev:
 	docker compose exec db psql -U $(POSTGRES_USER) -d gcw_dev
 
 test:
-	uv run pytest -m "not integration and not warehouse"
+	uv run pytest -m "not integration and not warehouse" $(IGNORE_WAREHOUSE)
 
 test-integration:
-	uv run pytest -m integration
+	uv run pytest -m integration $(IGNORE_WAREHOUSE)
 
 # Needs the pipeline to have run (gcw migrate, ingest, dbt build) so the marts exist.
 test-warehouse:
