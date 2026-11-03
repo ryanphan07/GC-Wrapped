@@ -1,36 +1,40 @@
-"""Canonical message types.
+"""Canonical message types produced by platform parsers."""
 
-PROVISIONAL: these fields are placeholders until the source platform is chosen
-(see CLAUDE.md). Expect `ParsedMessage` to change once the real export format is known.
-"""
-
-from dataclasses import dataclass
-from datetime import datetime
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 
-@dataclass(frozen=True, slots=True)
-class AttachmentMeta:
-    """Metadata about an attachment. Phase 1 never stores the media itself."""
+class Reaction(BaseModel):
+    """One member's emoji reaction to a message."""
 
-    kind: str
-    mime_type: str | None
-    size_bytes: int | None
-    sha256: str | None
+    model_config = ConfigDict(frozen=True)
+
+    actor: str
+    emoji: str
 
 
-@dataclass(frozen=True, slots=True)
-class ParsedMessage:
-    """One message as produced by a platform parser, before loading into `raw`."""
+class ParsedMessage(BaseModel):
+    """One message as produced by a platform parser, before loading into `raw`.
 
+    The parser is faithful (see decisions.md): it repairs encoding and structure only. System
+    messages, local time and member identity are handled later in dbt.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    message_key: str
     platform: str
-    chat_id: str
-    source_message_id: str | None
-    sent_at: datetime
-    sender_raw: str
-    body: str | None
-    is_system: bool
-    attachments: tuple[AttachmentMeta, ...]
+    thread_id: str
+    thread_title: str | None
+    sender_name: str
+    sent_at: AwareDatetime  # always UTC
+    content: str | None
+    media_count: int
+    share_url: str | None
+    reactions: list[Reaction]
+    source_file: str  # POSIX path relative to the export root
 
-    def __post_init__(self) -> None:
-        if self.sent_at.tzinfo is None or self.sent_at.utcoffset() is None:
-            raise ValueError("sent_at must be timezone-aware")
+    def __str__(self) -> str:
+        # Never let a stray print/log of a message leak its text.
+        return f"ParsedMessage(key={self.message_key[:12]})"
+
+    __repr__ = __str__

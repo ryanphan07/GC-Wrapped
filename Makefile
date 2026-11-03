@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: up down logs psql-dev test test-integration lint fmt dbt-debug ingest
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug ingest
 
 up:
 	mkdir -p data/landing data/archive
@@ -37,3 +37,6 @@ dbt-debug:
 ingest:
 	@echo "Real-data ingestion is run manually by Ryan in his own terminal. Not run by Claude Code."
 	@exit 1
+
+synth:
+	uv run python tests/synthetic/instagram.py

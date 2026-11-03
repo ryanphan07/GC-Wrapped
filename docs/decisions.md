@@ -47,3 +47,6 @@ Decision: The Instagram format spec is produced by scripts/inspect_export.py, ru
 Alternative: Hand-written spec; or letting the coding agent read a sample export.
 Why: The coding agent must never see real messages, but the parser needs an accurate format spec.
 Tradeoff: Semantics that need content (e.g. system-message phrasings) aren't captured; those get handled later in dbt.
+
+### 2026-11-02 — Build the parser against a provisional public-format spec
+Chose to build the parser and synthetic generator now from Instagram's publicly described JSON format (community parsers; Meta publishes no schema) over waiting for Ryan's inspector output on a real export. All format assumptions live in `src/gcwrapped/parsers/instagram_format.py`, shared by parser and generator, and `docs/formats/instagram-schema.md` is marked PROVISIONAL. Tradeoff: if the real export differs (root path, share/reaction shapes, uri stability), some rework is needed, but it should be confined to that module and the generator.

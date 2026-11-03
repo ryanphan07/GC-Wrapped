@@ -1,31 +1,29 @@
-Last session: 2026-11-02 — CI integration checks, privacy hardening, export schema inspector
-Brief completed: yes (all acceptance criteria met; CI verified on GitHub)
+Last session: 2026-11-02 — Instagram parser + synthetic generator (provisional format)
+Brief completed: yes (all acceptance criteria met locally; CI not run, branch not pushed)
 Done:
-- CI `integration` job: pgvector/pgvector:pg17 service, runs docker/postgres/init/01-create-databases.sql, `make test-integration`, `make dbt-debug` (dbt group synced). Service starts on db `postgres` so the init SQL runs unmodified (it does CREATE DATABASE gcw_dev).
-- .gitattributes `* text=auto eol=lf` + `git add --renormalize .`; `git ls-files --eol` shows no CRLF in the index.
-- METRICS.md: Pipeline, dbt, Tagging eval, Retrieval eval, Serving, Usage tables (value | date | how measured | commit; a "metric" column was added first for row labels).
-- CLAUDE.md Privacy section and 4 decisions.md entries added.
-- .claude/settings.json: kept the existing data/ deny rules; added Read/Edit/Write on ~/gcw-private/**, Bash(*gcw-private*), Bash(*gcw_real*).
-- scripts/inspect_export.py + tests/test_inspect_export.py (5 tests, sentinel leak test).
+- Settings split: `Settings` (no required fields) vs `DatabaseSettings` / `get_database_settings()` (required DB vars). `gcw parse` runs with no DB env.
+- `ParsedMessage` (pydantic, frozen) + `Reaction`; repr/str show only a key prefix so a stray log can't leak text. Old dataclass + `AttachmentMeta` removed.
+- `parsers/instagram_format.py` (all format assumptions), `parsers/instagram.py` (fix_mojibake, message_key, parse_message, parse_export, InstagramParser).
+- `tests/synthetic/instagram.py` + `make synth` (also `uv run python tests/synthetic/instagram.py`): 2 threads, multi-file, newest-first, mojibake, photos/shares/reactions, empty and absent content, identical pair per thread, second overlapping export chunked differently (30 vs 17).
+- `gcw parse PATH [PATH ...]` prints threads, messages, duplicates dropped, elapsed seconds.
+- docs/formats/instagram-schema.md (PROVISIONAL, with sources); decisions.md entry.
 Deviations from the brief (what + why):
-- METRICS tables have an extra leading "metric" column; the brief's four columns alone have no row label.
-- decisions.md entries use `###` headings (brief used `##`) to match the file's append-only format.
-- Inspector also treats a few extra things as safe-by-allowlist: non-thread folder names and file stems must match ^[a-z_]+$ (else `<dir>` / A_N shapes); thread folders are detected as dirs containing message_N.json. Mojibake signature also includes `â[\x80-\x9f]` (smart quotes/dashes).
-- Work is on branch `ci-privacy-inspector`, not main (pushed to trigger CI). Not merged.
+- `gcw parse` and `parse_export` take one or more roots. Within one export the occurrence index makes keys unique, so duplicates only arise across overlapping exports; multi-root is the only way "duplicates dropped" is meaningful.
+- Occurrence counters are per thread across all of its files (per-file would break when an identical pair straddles a chunk boundary).
+- `make synth` writes to tests/fixtures/synthetic/ (gitignored). No `make` on this machine, so the target was not executed; the uv command it wraps was.
 In progress / broken:
-- docs/formats/instagram-schema.md (referenced by new CLAUDE.md rule) does not exist yet; Ryan generates it by running the inspector on the real export.
-- scripts/ is not covered by `make lint` mypy (pyproject `files = src, tests`); I ran `mypy scripts/inspect_export.py` by hand (clean). Settings change was out of scope.
-- CLAUDE.md has one pre-existing Privacy rules section overlapping the new one; left both.
+- FORMAT IS PROVISIONAL pending a real-schema reconciliation: run scripts/inspect_export.py on the real export, diff against instagram-schema.md, adjust instagram_format.py and the generator.
+- Key edge: two messages differing only by share link (same ms, sender, no other difference) would share a base key; accepted per the dedup-key decision.
+- scripts/ still not covered by mypy (carried over).
 Next up:
-- Ryan: `uv run python scripts/inspect_export.py ~/gcw-private/<export>` in his own terminal; review the output for anything value-like before saving it to docs/formats/instagram-schema.md.
-- Merge the branch; then parser session (Ryan writes it) + synthetic generator.
+- Ryan: inspector on the real export; reconcile the format module.
+- Then loader + raw tables.
 Open questions for planning:
-- Add `scripts` to mypy `files` so lint covers it?
-- Dedupe the two Privacy sections in CLAUDE.md?
+- Add `scripts` to mypy `files`? Dedupe the two Privacy sections in CLAUDE.md? (carried over)
+- Branch ci-privacy-inspector still unmerged; this work sits on top of it.
 Measured this session (exact value + source):
-- `pytest -m "not integration"`: 12 passed, 1 deselected, 2026-11-02
-- ruff check / ruff format --check / mypy --strict: no issues
-- GitHub Actions run 41585188494 (commit 92d2f71): lint-test success, integration success (init SQL, pytest -m integration, dbt debug all passed)
-- Sentinel test verified to fail when a file's contents were deliberately printed; reverted.
-Commits: 92d2f71 — Add CI integration steps, privacy hardening and export schema inspector
-Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
+- `pytest -m "not integration"`: 51 passed, 1 deselected, 2026-11-02
+- ruff check, ruff format --check, mypy --strict: no issues
+- Synthetic seed 1234: export_a = 105 messages, 2 threads; export_a + export_b = 140 messages, 59 duplicates dropped (`gcw parse`)
+Commits: none yet (proposed below)
+Phase 1 checklist: parser [x] (provisional format) loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
