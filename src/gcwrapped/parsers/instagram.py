@@ -49,9 +49,12 @@ def message_key(
     sender_name: str,
     content: str | None,
     attachment_uris: Iterable[str],
+    share_url: str | None,
     occurrence: int,
 ) -> str:
-    """Stable id for a message: sha256 over the identifying fields plus an occurrence index.
+    """Stable id for a message: sha256 over every immutable field plus an occurrence index.
+
+    Reactions are excluded on purpose: they can change between exports.
 
     `sender_name` and `content` must already be mojibake-fixed. `occurrence` is the 0-based index
     among messages identical on every other field, which keeps two genuinely identical messages
@@ -65,6 +68,7 @@ def message_key(
             sender_name,
             content or "",
             sorted(attachment_uris),
+            share_url or "",
             occurrence,
         ],
         ensure_ascii=False,
@@ -80,6 +84,7 @@ class _Identity:
     sender_name: str
     content: str | None
     attachment_uris: tuple[str, ...]
+    share_url: str | None
 
 
 def _identity(raw: dict[str, Any]) -> _Identity:
@@ -95,6 +100,7 @@ def _identity(raw: dict[str, Any]) -> _Identity:
         sender_name=fix_mojibake(sender),
         content=fix_mojibake(content) if isinstance(content, str) else None,
         attachment_uris=tuple(sorted(fmt.attachment_uris(raw))),
+        share_url=fmt.share_link(raw),
     )
 
 
@@ -127,6 +133,7 @@ def parse_message(
             sender_name=ident.sender_name,
             content=ident.content,
             attachment_uris=ident.attachment_uris,
+            share_url=ident.share_url,
             occurrence=occurrence,
         ),
         platform=fmt.PLATFORM,
@@ -136,7 +143,7 @@ def parse_message(
         sent_at=_EPOCH + timedelta(milliseconds=ident.timestamp_ms),
         content=ident.content,
         media_count=len(ident.attachment_uris),
-        share_url=fmt.share_link(raw),
+        share_url=ident.share_url,
         reactions=_reactions(raw),
         source_file=source_file,
     )

@@ -50,3 +50,9 @@ Tradeoff: Semantics that need content (e.g. system-message phrasings) aren't cap
 
 ### 2026-11-02 — Build the parser against a provisional public-format spec
 Chose to build the parser and synthetic generator now from Instagram's publicly described JSON format (community parsers; Meta publishes no schema) over waiting for Ryan's inspector output on a real export. All format assumptions live in `src/gcwrapped/parsers/instagram_format.py`, shared by parser and generator, and `docs/formats/instagram-schema.md` is marked PROVISIONAL. Tradeoff: if the real export differs (root path, share/reaction shapes, uri stability), some rework is needed, but it should be confined to that module and the generator.
+
+### 2026-11-02 — message_key covers immutable fields only
+Decision: Add share_url to message_key. The key hashes every immutable field (thread, timestamp, sender, content, attachment URIs, share URL) and excludes mutable ones (reactions).
+Alternative: Keep share_url out and rely on the occurrence index to separate such messages.
+Why: The occurrence index is only order-independent when messages in a group are truly identical; including all immutable fields keeps that invariant true. Reactions change after export, so including them would change keys between exports.
+Tradeoff: A message edited after an earlier export gets a new key and duplicates; accepted as rare.

@@ -47,7 +47,7 @@ def test_already_clean_strings_pass_through(clean: str) -> None:
 
 
 def test_mojibake_is_fixed_before_hashing() -> None:
-    kwargs = dict(thread_id="t", timestamp_ms=1, attachment_uris=[], occurrence=0)
+    kwargs = dict(thread_id="t", timestamp_ms=1, attachment_uris=[], share_url=None, occurrence=0)
     raw = {fmt.KEY_SENDER: to_mojibake("José"), fmt.KEY_TIMESTAMP_MS: 1}
     msg = parse_message(raw, thread_id="t", thread_title=None, source_file="f")
     assert msg.sender_name == "José"
@@ -135,6 +135,17 @@ def test_occurrence_distinguishes_identical_messages() -> None:
     k0 = parse_message(raw, thread_id="t", thread_title=None, source_file="f", occurrence=0)
     k1 = parse_message(raw, thread_id="t", thread_title=None, source_file="f", occurrence=1)
     assert k0.message_key != k1.message_key
+
+
+def test_share_url_is_part_of_the_key() -> None:
+    base = {fmt.KEY_SENDER: "a", fmt.KEY_TIMESTAMP_MS: 1, fmt.KEY_CONTENT: "x"}
+    shared = {**base, fmt.KEY_SHARE: {fmt.KEY_SHARE_LINK: "https://example.com/x"}}
+    other = {**base, fmt.KEY_SHARE: {fmt.KEY_SHARE_LINK: "https://example.com/y"}}
+    keys_ = {
+        parse_message(r, thread_id="t", thread_title=None, source_file="f").message_key
+        for r in (base, shared, other)
+    }
+    assert len(keys_) == 3
 
 
 def test_key_ignores_reactions_and_source_file() -> None:
