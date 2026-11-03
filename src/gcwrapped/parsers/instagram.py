@@ -1,6 +1,7 @@
 """Instagram DM export parser.
 
-Faithful by design: repairs Meta's text encoding and maps fields, nothing else. Dedup is by
+Faithful by design: repairs Meta's text encoding (and drops NUL bytes, which Postgres text cannot
+store) and maps fields, nothing else. Dedup is by
 `message_key` (see decisions.md, "Message dedup key").
 
 Privacy: error messages name fields and counts only, never values.
@@ -42,6 +43,11 @@ def fix_mojibake(s: str) -> str:
         return s
 
 
+def clean_text(s: str) -> str:
+    """Fix mojibake, then drop NUL bytes. Applied to every text field before hashing and loading."""
+    return fix_mojibake(s).replace("\x00", "")
+
+
 def message_key(
     *,
     thread_id: str,
@@ -56,9 +62,9 @@ def message_key(
 
     Reactions are excluded on purpose: they can change between exports.
 
-    `sender_name` and `content` must already be mojibake-fixed. `occurrence` is the 0-based index
-    among messages identical on every other field, which keeps two genuinely identical messages
-    distinct while staying the same across re-exports.
+    `sender_name` and `content` must already be cleaned with `clean_text`. `occurrence` is the
+    0-based index among messages identical on every other field, which keeps two genuinely
+    identical messages distinct while staying the same across re-exports.
     """
     payload = json.dumps(
         [
@@ -87,6 +93,10 @@ class _Identity:
     share_url: str | None
 
 
+def _clean_optional(s: str | None) -> str | None:
+    return clean_text(s) if s is not None else None
+
+
 def _identity(raw: dict[str, Any]) -> _Identity:
     timestamp_ms = raw.get(fmt.KEY_TIMESTAMP_MS)
     sender = raw.get(fmt.KEY_SENDER)
@@ -97,10 +107,10 @@ def _identity(raw: dict[str, Any]) -> _Identity:
     content = raw.get(fmt.KEY_CONTENT)
     return _Identity(
         timestamp_ms=timestamp_ms,
-        sender_name=fix_mojibake(sender),
-        content=fix_mojibake(content) if isinstance(content, str) else None,
-        attachment_uris=tuple(sorted(fmt.attachment_uris(raw))),
-        share_url=fmt.share_link(raw),
+        sender_name=clean_text(sender),
+        content=clean_text(content) if isinstance(content, str) else None,
+        attachment_uris=tuple(sorted(clean_text(u) for u in fmt.attachment_uris(raw))),
+        share_url=_clean_optional(fmt.share_link(raw)),
     )
 
 
@@ -112,7 +122,7 @@ def _reactions(raw: dict[str, Any]) -> list[Reaction]:
         emoji = item.get(fmt.KEY_REACTION_EMOJI)
         actor = item.get(fmt.KEY_REACTION_ACTOR)
         if isinstance(emoji, str) and isinstance(actor, str):
-            out.append(Reaction(actor=fix_mojibake(actor), emoji=fix_mojibake(emoji)))
+            out.append(Reaction(actor=clean_text(actor), emoji=clean_text(emoji)))
     return out
 
 
@@ -167,7 +177,7 @@ def _parse_root(root: Path) -> Iterator[ParsedMessage]:
         for path in fmt.message_files(thread_dir):
             data = _read_json(path)
             title = data.get(fmt.KEY_THREAD_TITLE)
-            thread_title = fix_mojibake(title) if isinstance(title, str) else None
+            thread_title = clean_text(title) if isinstance(title, str) else None
             source_file = path.relative_to(root).as_posix()
             for raw in data[fmt.KEY_MESSAGES]:
                 if not isinstance(raw, dict):

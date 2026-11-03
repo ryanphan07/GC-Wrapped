@@ -1,0 +1,100 @@
+version: 2
+
+# Fixed inputs and expected outputs for the window-function logic. Gap threshold pinned to 60 min.
+unit_tests:
+  - name: sessionization_gap_boundaries
+    description: >
+      Gap just under the threshold stays in the session, exactly the threshold stays (the rule is
+      "greater than"), just over starts a new one; a lone message is its own session; threads are
+      sessionized independently.
+    model: int_messages_sessionized
+    overrides:
+      vars:
+        session_gap_minutes: 60
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:00:00+00"}
+          - {message_key: m2, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:59:59+00"} # 59m59s after m1
+          - {message_key: m3, thread_id: t1, sender_name: A, sent_at: "2024-01-01 12:00:00+00"} # 1h00m01s after m2
+          - {message_key: m4, thread_id: t1, sender_name: A, sent_at: "2024-01-01 13:00:00+00"} # exactly 60m after m3
+          - {message_key: m5, thread_id: t1, sender_name: A, sent_at: "2024-01-01 14:00:01+00"} # 60m01s after m4, single-message session
+          - {message_key: m6, thread_id: t2, sender_name: A, sent_at: "2024-01-01 10:30:00+00"} # other thread
+    expect:
+      rows:
+        - {message_key: m1, session_id: "t1:s1", session_index: 1, is_session_start: true}
+        - {message_key: m2, session_id: "t1:s1", session_index: 1, is_session_start: false}
+        - {message_key: m3, session_id: "t1:s2", session_index: 2, is_session_start: true}
+        - {message_key: m4, session_id: "t1:s2", session_index: 2, is_session_start: false}
+        - {message_key: m5, session_id: "t1:s3", session_index: 3, is_session_start: true}
+        - {message_key: m6, session_id: "t2:s1", session_index: 1, is_session_start: true}
+
+  - name: turns_break_at_sender_change_and_session_boundary
+    description: >
+      Consecutive messages by one sender are one turn; a sender change starts a turn; the same
+      sender on either side of a session boundary is two turns.
+    model: int_messages_sessionized
+    overrides:
+      vars:
+        session_gap_minutes: 60
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:00:00+00"}
+          - {message_key: m2, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:05:00+00"}
+          - {message_key: m3, thread_id: t1, sender_name: A, sent_at: "2024-01-01 13:00:00+00"} # same sender, new session
+          - {message_key: m4, thread_id: t1, sender_name: B, sent_at: "2024-01-01 13:02:00+00"}
+          - {message_key: m5, thread_id: t1, sender_name: B, sent_at: "2024-01-01 13:03:00+00"}
+          - {message_key: m6, thread_id: t1, sender_name: A, sent_at: "2024-01-01 13:10:00+00"}
+    expect:
+      rows:
+        - {message_key: m1, session_id: "t1:s1", turn_id: "t1:t1", is_turn_start: true}
+        - {message_key: m2, session_id: "t1:s1", turn_id: "t1:t1", is_turn_start: false}
+        - {message_key: m3, session_id: "t1:s2", turn_id: "t1:t2", is_turn_start: true}
+        - {message_key: m4, session_id: "t1:s2", turn_id: "t1:t3", is_turn_start: true}
+        - {message_key: m5, session_id: "t1:s2", turn_id: "t1:t3", is_turn_start: false}
+        - {message_key: m6, session_id: "t1:s2", turn_id: "t1:t4", is_turn_start: true}
+
+  - name: reply_seconds_rules
+    description: >
+      Same-sender messages are not replies; the first message of a session is not a reply even if
+      the sender changed; a reply is measured from the last message of the previous turn.
+    model: int_messages_sessionized
+    overrides:
+      vars:
+        session_gap_minutes: 60
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:00:00+00"} # session start
+          - {message_key: m2, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:01:00+00"} # same sender
+          - {message_key: m3, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:02:00+00"} # last of A's turn
+          - {message_key: m4, thread_id: t1, sender_name: B, sent_at: "2024-01-01 10:05:00+00"} # reply: 180s after m3, not m1/m2
+          - {message_key: m5, thread_id: t1, sender_name: B, sent_at: "2024-01-01 10:06:00+00"} # same turn as m4
+          - {message_key: m6, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:06:30+00"} # reply: 30s after m5
+          - {message_key: m7, thread_id: t1, sender_name: B, sent_at: "2024-01-01 12:00:00+00"} # new session, other sender
+    expect:
+      rows:
+        - {message_key: m1, reply_seconds: null}
+        - {message_key: m2, reply_seconds: null}
+        - {message_key: m3, reply_seconds: null}
+        - {message_key: m4, reply_seconds: 180}
+        - {message_key: m5, reply_seconds: null}
+        - {message_key: m6, reply_seconds: 30}
+        - {message_key: m7, reply_seconds: null}
+
+  - name: session_gap_var_changes_boundaries
+    description: With session_gap_minutes set to 5, a 10-minute gap starts a new session and the second message is not a reply.
+    model: int_messages_sessionized
+    overrides:
+      vars:
+        session_gap_minutes: 5
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A, sent_at: "2024-01-01 10:00:00+00"}
+          - {message_key: m2, thread_id: t1, sender_name: B, sent_at: "2024-01-01 10:10:00+00"}
+    expect:
+      rows:
+        - {message_key: m1, session_index: 1, reply_seconds: null}
+        - {message_key: m2, session_index: 2, reply_seconds: null}

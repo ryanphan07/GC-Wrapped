@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -231,3 +232,51 @@ def test_parser_protocol_adapter(exports: tuple[Path, Path]) -> None:
 
 def test_empty_root_yields_nothing(tmp_path: Path) -> None:
     assert list(parse_export([tmp_path])) == []
+
+
+# --- NUL bytes ------------------------------------------------------------------------------
+
+NUL = chr(0)  # Postgres text cannot store it; built with chr() so no source tool mangles it
+
+
+def test_nul_bytes_are_stripped_from_every_text_field_and_not_hashed() -> None:
+    def raw(nul: str) -> dict[str, object]:
+        return {
+            fmt.KEY_SENDER: to_mojibake(f"Jo{nul}sé"),
+            fmt.KEY_TIMESTAMP_MS: 1_700_000_000_000,
+            fmt.KEY_CONTENT: to_mojibake(f"ca{nul}fé ☕{nul}"),
+            fmt.KEY_PHOTOS: [{fmt.KEY_URI: f"photos/a{nul}.jpg"}],
+            fmt.KEY_SHARE: {fmt.KEY_SHARE_LINK: f"https://x.example/p{nul}/"},
+            fmt.KEY_REACTIONS: [
+                {
+                    fmt.KEY_REACTION_EMOJI: to_mojibake(f"😂{nul}"),
+                    fmt.KEY_REACTION_ACTOR: to_mojibake(f"Zo{nul}ë"),
+                }
+            ],
+        }
+
+    dirty = parse_message(raw(NUL), thread_id="t", thread_title=None, source_file="f")
+    clean = parse_message(raw(""), thread_id="t", thread_title=None, source_file="f")
+
+    assert dirty.sender_name == "José"
+    assert dirty.content == "café ☕"
+    assert dirty.share_url == "https://x.example/p/"
+    assert [(r.actor, r.emoji) for r in dirty.reactions] == [("Zoë", "😂")]
+    assert dirty.message_key == clean.message_key
+    assert NUL not in dirty.model_dump_json()
+    assert NUL not in str(dirty.model_dump())
+
+
+def test_nul_bytes_are_stripped_from_the_thread_title(tmp_path: Path) -> None:
+    thread = tmp_path / fmt.MESSAGES_DIR / "t_1"
+    thread.mkdir(parents=True)
+    doc = {
+        fmt.KEY_PARTICIPANTS: [],
+        fmt.KEY_THREAD_TITLE: f"Cr{NUL}ew",
+        fmt.KEY_MESSAGES: [{fmt.KEY_SENDER: "a", fmt.KEY_TIMESTAMP_MS: 1}],
+    }
+    (thread / "message_1.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    [msg] = parse_export([tmp_path])
+
+    assert msg.thread_title == "Crew"

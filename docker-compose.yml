@@ -1,6 +1,8 @@
 services:
   db:
     image: pgvector/pgvector:pg17
+    # terse: server log errors omit DETAIL/STATEMENT-style context that can quote row values.
+    command: ["postgres", "-c", "log_error_verbosity=terse"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
