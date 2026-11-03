@@ -124,15 +124,17 @@ jobs:
   # dashboard, the Airflow DAG runs once, and a second run must insert nothing.
   e2e:
     runs-on: ubuntu-latest
-    env:
-      ENV_FILE: ${{ runner.temp }}/ci.env
-      LANDING: ${{ runner.temp }}/ci-landing
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
       - name: Write the CI env file and a synthetic landing dir
         run: |
+          # The runner context is not available in job-level env, so export the paths from here.
+          echo "ENV_FILE=$RUNNER_TEMP/ci.env" >> "$GITHUB_ENV"
+          echo "LANDING=$RUNNER_TEMP/ci-landing" >> "$GITHUB_ENV"
+          ENV_FILE="$RUNNER_TEMP/ci.env"
+          LANDING="$RUNNER_TEMP/ci-landing"
           cat > "$ENV_FILE" <<EOF
           GCW_DB_NAME=gcw_dev
           POSTGRES_USER=gcw
