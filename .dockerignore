@@ -1,0 +1,18 @@
+# Keep real data, secrets and local state out of every build context (see CLAUDE.md privacy rules).
+.git
+.env
+.env.*
+!.env.example
+data/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/fixtures/
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+members.yaml
+*.zip

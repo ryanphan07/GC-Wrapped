@@ -252,3 +252,24 @@ def test_cli_ingest_with_no_threads_creates_no_run_row(
 
     assert "no message threads" in capsys.readouterr().out
     assert _runs(migrated_db) == []
+
+
+def test_ingest_landing_dir_is_idempotent_and_last_run_reports_counts(
+    migrated_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    generate_pair(tmp_path)
+    expected = len(
+        {m.message_key for m in parse_export([tmp_path / "export_a", tmp_path / "export_b"])}
+    )
+
+    assert main(["ingest", "--landing", str(tmp_path)]) == 0
+    assert main(["ingest", "--landing", str(tmp_path)]) == 0
+    capsys.readouterr()
+
+    assert len(_keys(migrated_db)) == expected
+    assert main(["last-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"rows parsed: {expected}" in out
+    assert "rows inserted: 0" in out
+    assert "status: succeeded" in out
+    assert "elapsed seconds: " in out
