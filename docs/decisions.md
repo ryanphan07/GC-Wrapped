@@ -182,3 +182,9 @@ Decision: clean_text replaces lone UTF-16 surrogates with U+FFFD before hashing.
 Alternative: Let the load fail.
 Why: Postgres rejects them, and one bad row rolls back the entire load.
 Tradeoff: The original code unit is lost; it was not displayable text anyway.
+
+### 2026-11-03 — Project display name "GC Wrapped"; compose name pinned
+Decision: The display name is "GC Wrapped" with no subtitle; the repo slug matches the renamed GitHub repo (GC-Wrapped); code identifiers (gcwrapped, gcw, gcw_* DBs, GCW_* vars) are unchanged; docker-compose sets an explicit project name (`name: gc-wrapped`).
+Alternative: Rename the package and identifiers too; leave compose naming to the folder name.
+Why: Identifiers already match the name, and renaming them breaks imports and existing env files. Compose derives volume names from the folder by default, so renaming the folder would orphan the database volume.
+Tradeoff: The package name (gcwrapped) and display name differ slightly in form. Existing volumes created under the old folder-derived project name are not picked up by `gc-wrapped`; they must be migrated once (see STATUS).

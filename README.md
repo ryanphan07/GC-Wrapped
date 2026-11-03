@@ -13,7 +13,7 @@ TBD. Planned flow: export file → parser → Postgres `raw` schema → dbt mode
 Requires Docker with compose, make, and (for the synthetic data generator and tests) [uv](https://docs.astral.sh/uv/). Everything below uses synthetic data in the `gcw_dev` database.
 
 ```
-git clone <this repo> && cd GC-Wrapped-Group-Chat-AI-Platform
+git clone https://github.com/ryanphan07/GC-Wrapped.git && cd GC-Wrapped
 cp .env.example .env                  # then change POSTGRES_PASSWORD and GCW_READER_PASSWORD
 uv sync
 uv run python tests/synthetic/instagram.py --out data/landing   # synthetic exports, one subfolder each
