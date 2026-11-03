@@ -1,3 +1,4 @@
+import traceback
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import psycopg
 import pytest
 
 from gcwrapped.cli import main
-from gcwrapped.load import load_messages
+from gcwrapped.load import LoadError, load_messages
 from gcwrapped.models import ParsedMessage
 from gcwrapped.parsers.instagram import parse_export
 from synthetic.instagram import generate_pair
@@ -98,13 +99,13 @@ def test_failed_load_leaves_no_partial_messages_and_a_failed_run(
         yield from good[:5]
         raise RuntimeError("SENTINEL_FAILURE_TEXT")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LoadError):
         load_messages(migrated_db, explode_midway(), roots_count=1)
 
     assert _keys(migrated_db) == set()
     [(status, roots, parsed, inserted, error, finished_at)] = _runs(migrated_db)
     assert (status, roots, parsed, inserted) == ("failed", 1, None, None)
-    assert error == "RuntimeError"  # type name only, never the exception text
+    assert error == "RuntimeError at row 5"  # class and row index only, never the exception text
     assert finished_at is not None
 
 
@@ -117,7 +118,7 @@ def test_failed_load_does_not_disturb_earlier_data(migrated_db: str, tmp_path: P
         yield from parse_export([b])
         raise RuntimeError
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LoadError):
         load_messages(migrated_db, explode(), roots_count=1)
 
     assert _keys(migrated_db) == before
@@ -156,3 +157,75 @@ def test_cli_ingest_without_migration_says_so(
     assert main(["ingest", str(a)]) == 1
 
     assert "gcw migrate" in capsys.readouterr().out
+
+
+SENTINEL = "SENTINEL_SECRET"
+
+
+def _everything_raised(exc: BaseException) -> str:
+    return "\n".join([str(exc), repr(exc), *traceback.format_exception(exc)])
+
+
+def test_iterator_failure_is_value_free_everywhere(migrated_db: str, tmp_path: Path) -> None:
+    a, _ = generate_pair(tmp_path)
+    good = list(parse_export([a]))
+
+    def explode() -> Iterator[ParsedMessage]:
+        yield from good[:3]
+        raise RuntimeError(f"boom {SENTINEL}")
+
+    with pytest.raises(LoadError) as info:
+        load_messages(migrated_db, explode(), roots_count=1)
+
+    assert SENTINEL not in _everything_raised(info.value)
+    assert (info.value.cause, info.value.row_index) == ("RuntimeError", 3)
+    [(*_, error, _finished)] = _runs(migrated_db)
+    assert error == "RuntimeError at row 3"
+
+
+def test_bad_row_value_never_reaches_the_error(migrated_db: str, tmp_path: Path) -> None:
+    a, _ = generate_pair(tmp_path)
+    good = list(parse_export([a]))
+    # A NUL byte makes Postgres reject the text; the error text would quote the value.
+    bad = good[1].model_copy(update={"content": f"{SENTINEL}\x00 trailing"})
+
+    with pytest.raises(LoadError) as info:
+        load_messages(migrated_db, iter([good[0], bad, good[2]]), roots_count=1)
+
+    assert SENTINEL not in _everything_raised(info.value)
+    assert _keys(migrated_db) == set()
+    [(status, *_, error, _finished)] = _runs(migrated_db)
+    assert status == "failed"
+    assert isinstance(error, str)
+    assert SENTINEL not in error
+
+
+def test_cli_ingest_failure_output_is_value_free(
+    migrated_db: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a, _ = generate_pair(tmp_path)
+    good = list(parse_export([a]))
+
+    def explode(*_args: object, **_kwargs: object) -> Iterator[ParsedMessage]:
+        yield from good[:2]
+        raise RuntimeError(f"boom {SENTINEL}")
+
+    monkeypatch.setattr("gcwrapped.cli.parse_export", explode)
+
+    assert main(["ingest", str(a)]) == 1
+
+    captured = capsys.readouterr()
+    assert SENTINEL not in captured.out + captured.err
+    assert "RuntimeError at row 2" in captured.out
+
+
+def test_cli_ingest_with_no_threads_creates_no_run_row(
+    migrated_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["ingest", str(tmp_path)]) == 1
+
+    assert "no message threads" in capsys.readouterr().out
+    assert _runs(migrated_db) == []

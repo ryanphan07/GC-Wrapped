@@ -1,0 +1,78 @@
+version: 2
+
+models:
+  - name: stg_instagram__messages
+    description: >
+      Instagram messages with typed columns and light derivations. Includes system-style and
+      empty messages; classifying them is a later step.
+    columns:
+      - name: message_key
+        description: Primary key, from the parser's dedup key.
+        data_tests: [unique, not_null]
+      - name: platform
+        description: Source platform; always `instagram` in this model.
+        data_tests: [not_null]
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: thread_title
+        description: Conversation title as exported; null if absent.
+      - name: sender_name
+        description: Display name of the sender (not a stable identity).
+        data_tests: [not_null]
+      - name: sent_at
+        description: Send time, UTC.
+        data_tests: [not_null]
+      - name: sent_at_local
+        description: Send time as local wall-clock time in the `gcw_timezone` var (timestamp without time zone).
+        data_tests: [not_null]
+      - name: content
+        description: Message text; null when the message had none.
+      - name: has_content
+        description: True when content contains at least one non-whitespace character.
+        data_tests: [not_null]
+      - name: word_count
+        description: Whitespace-separated words in content; 0 when has_content is false.
+        data_tests: [not_null]
+      - name: message_type
+        description: >
+          Derived in priority order: `media` (media_count > 0), `share` (has a share URL),
+          `text` (has_content), else `empty`.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [text, media, share, empty]
+      - name: media_count
+        description: Number of attachments (photos, videos, audio, sticker).
+        data_tests: [not_null]
+      - name: share_url
+        description: Link of a shared post; null otherwise.
+      - name: source_file
+        description: Message file the row came from, relative to the export root.
+      - name: load_id
+        description: The `raw.load_runs` run that inserted the row.
+      - name: loaded_at
+        description: When the row was inserted (UTC).
+
+  - name: stg_instagram__reactions
+    description: One row per emoji reaction on a message.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [message_key, actor, emoji]
+    columns:
+      - name: message_key
+        description: The reacted-to message.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_instagram__messages')
+                field: message_key
+      - name: actor
+        description: Display name of the member who reacted.
+        data_tests: [not_null]
+      - name: emoji
+        description: The reaction emoji.
+        data_tests: [not_null]

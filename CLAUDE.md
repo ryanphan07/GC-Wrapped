@@ -64,6 +64,7 @@ Open questions for planning:
 Measured this session (exact value + source):
 Commits: <short hash — message>
 Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
+- In docs/STATUS.md, record actual commit and merge hashes (git log --oneline), never "see PR".
 ```
 
 ## docs/decisions.md format (append-only)

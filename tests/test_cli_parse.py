@@ -105,3 +105,16 @@ def test_parse_error_message_has_no_values(
 def test_parse_empty_path_reports_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["parse", str(tmp_path)]) == 1
     assert "no message threads" in capsys.readouterr().out
+
+
+def test_ingest_with_no_threads_fails_before_touching_the_database(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for var in ("DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+
+    assert main(["ingest", str(tmp_path)]) == 1
+
+    out = capsys.readouterr().out
+    assert "no message threads" in out
+    assert "database not configured" not in out  # failed on the path, before any DB config

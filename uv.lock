@@ -568,7 +568,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dbt = [{ name = "dbt-postgres" }]
+dbt = [{ name = "dbt-postgres", specifier = ">=1.10" }]
 dev = [
     { name = "mypy" },
     { name = "pytest" },
