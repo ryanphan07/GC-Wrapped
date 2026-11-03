@@ -122,3 +122,27 @@ Decision: Daily aggregates count a session once, on the local date of its first 
 Alternative: Count a session on every day it has messages.
 Why: Summing daily sessions should equal total sessions; counting per day double-counts sessions that cross midnight.
 Tradeoff: Late-night sessions appear entirely on the day they started.
+
+### 2026-11-03 — Airflow in its own image, dbt in an isolated venv
+Decision: Airflow runs from the official image; gcwrapped and dbt are installed in a separate virtualenv inside it, and tasks shell out to that venv.
+Alternative: Install dbt into Airflow's environment; or use astronomer-cosmos to render dbt models as tasks.
+Why: Airflow pins many dependencies via constraints files and dbt often conflicts with them; isolation is the common production pattern. One dbt build task is simpler to explain and debug than a task per model at this size.
+Tradeoff: Per-model retries and lineage in the Airflow UI are lost; dbt's own logs and docs cover that.
+
+### 2026-11-03 — Daily schedule with full idempotent re-ingest
+Decision: The DAG runs daily, catchup off, one active run, re-ingesting every export in the landing dir.
+Alternative: A file sensor plus a manifest of already-loaded exports.
+Why: ON CONFLICT on a stable message_key makes re-ingest a no-op for known messages, so the simplest schedule is also correct; retries are safe for the same reason.
+Tradeoff: Each run re-parses all exports; fine at group-chat scale, revisit if parse time grows.
+
+### 2026-11-03 — Landing dir logic lives in the gcw CLI, installed editable in the image
+Decision: Finding export roots (gcw check-landing, gcw ingest --landing DIR) and the run summary (gcw last-run) are Python in src/gcwrapped; DAG tasks are one-line shell commands. The image installs gcwrapped editable from /opt/gcw so migrations/ is found next to src/.
+Alternative: Compute roots and query load_runs in the DAG file (Airflow imports project code); or install a wheel and add a MIGRATIONS_DIR env override.
+Why: Keeps the DAG free of business logic and of project imports (the point of the isolated venv), and makes the logic unit-testable without Airflow. Editable install avoids a config knob and a code change to migrate.py.
+Tradeoff: The runtime image is not a pure installed package; source at /opt/gcw is part of it.
+
+### 2026-11-03 — DAG tests run in a test image stage
+Decision: airflow/Dockerfile has a runtime stage and a test stage (runtime + pytest + airflow/tests). CI runs the tests with docker run, then airflow dags test on the runtime image.
+Alternative: pip-install pytest in the container at CI time, or ship pytest in the runtime image.
+Why: The tests need Airflow's exact environment, and the runtime image should not carry test tooling.
+Tradeoff: Two image targets to keep in sync; layers are shared so the extra build is seconds.
