@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up
 
 up:
 	mkdir -p data/landing data/archive
@@ -9,6 +9,11 @@ up:
 
 down:
 	docker compose down
+
+# Airflow UI on http://localhost:8080. Mounts GCW_LANDING_HOST_DIR (default data/landing) read-only.
+airflow-up:
+	mkdir -p data/landing
+	docker compose up -d --build airflow
 
 logs:
 	docker compose logs -f db

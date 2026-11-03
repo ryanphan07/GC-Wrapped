@@ -17,5 +17,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local dev only: `airflow standalone` runs the API server, scheduler and DAG processor in one
+  # container with a SQLite metadata DB. Open http://localhost:8080 (all users are admin).
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+      target: runtime
+    image: gcw-airflow:runtime
+    command: ["standalone"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GCW_LANDING_DIR: /opt/gcw-landing
+      # Defaults to the synthetic database. Pointing a run at another database is a deliberate,
+      # manual act: export GCW_DBNAME yourself before `make airflow-up`.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${GCW_DBNAME:-gcw_dev}
+      DBT_DEV_DBNAME: ${GCW_DBNAME:-gcw_dev}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ${GCW_LANDING_HOST_DIR:-./data/landing}:/opt/gcw-landing:ro
+
 volumes:
   pgdata:

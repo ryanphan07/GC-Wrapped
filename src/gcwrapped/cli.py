@@ -10,15 +10,18 @@ import psycopg
 from pydantic import ValidationError
 
 from gcwrapped.db import database_name, database_url
+from gcwrapped.landing import find_export_roots
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.log import setup_logging
 from gcwrapped.migrate import MigrationError, migrate
 from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import ParseError, ParseStats, parse_export
+from gcwrapped.runs import latest_run
 
 logger = logging.getLogger(__name__)
 
 _NO_THREADS = "error: no message threads found under the given path(s)"
+_NO_ROOTS = "error: no export roots found in the landing directory (one subfolder per export)"
 _NO_DB_CONFIG = (
     "error: database not configured (set DATABASE_URL, POSTGRES_USER, POSTGRES_PASSWORD)"
 )
@@ -32,9 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "paths",
         type=Path,
-        nargs="+",
+        nargs="*",
         help="export root(s); several roots are unioned and deduplicated",
     )
+    ingest.add_argument(
+        "--landing",
+        type=Path,
+        metavar="DIR",
+        help="ingest every export root (subfolder) under DIR instead of listing paths",
+    )
+    check = sub.add_parser("check-landing", help="count export roots in a landing directory")
+    check.add_argument("landing", type=Path, metavar="DIR")
+    sub.add_parser("last-run", help="print counts from the latest raw.load_runs row")
     parse = sub.add_parser("parse", help="parse export(s) and print counts (no DB needed)")
     parse.add_argument(
         "paths",
@@ -87,6 +99,40 @@ def _migrate() -> int:
     return 0
 
 
+def _check_landing(landing: Path) -> int:
+    """Print the export root count; fail if there are none. Never prints folder names."""
+    roots = find_export_roots(landing)
+    if not roots:
+        print(_NO_ROOTS)
+        return 1
+    print(f"export roots: {len(roots)}")
+    return 0
+
+
+def _last_run() -> int:
+    """Print counts from the latest load run. Never prints anything but numbers and status."""
+    try:
+        url = database_url()
+    except ValidationError:
+        print(_NO_DB_CONFIG)
+        return 1
+    try:
+        run = latest_run(url)
+    except psycopg.Error as exc:
+        print(f"error: could not read load runs ({type(exc).__name__})")
+        return 1
+    if run is None:
+        print("error: no load runs recorded")
+        return 1
+    print(f"load id: {run.load_id}")
+    print(f"status: {run.status}")
+    print(f"rows parsed: {run.rows_parsed}")
+    print(f"rows inserted: {run.rows_inserted}")
+    elapsed = "n/a" if run.elapsed_seconds is None else f"{run.elapsed_seconds:.2f}"
+    print(f"elapsed seconds: {elapsed}")
+    return 0
+
+
 def _ingest(paths: Sequence[Path]) -> int:
     """Parse and load. Prints counts only. Errors name the exception type, never its text."""
     if not any(fmt.find_thread_dirs(path) for path in paths):
@@ -125,7 +171,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "parse":
         return _parse(args.paths)
     if args.command == "ingest":
+        if bool(args.paths) == (args.landing is not None):
+            build_parser().error("give export path(s) or --landing DIR, not both or neither")
+        if args.landing is not None:
+            roots = find_export_roots(args.landing)
+            if not roots:
+                print(_NO_ROOTS)
+                return 1
+            return _ingest(roots)
         return _ingest(args.paths)
+    if args.command == "check-landing":
+        return _check_landing(args.landing)
+    if args.command == "last-run":
+        return _last_run()
     if args.command == "migrate":
         return _migrate()
     return 2  # unreachable while subcommands are required

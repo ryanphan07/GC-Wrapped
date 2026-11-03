@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline). Parser, Postgres loader and dbt staging models work; marts and Airflow are next. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models and the Airflow DAG work; dashboard and one-command e2e are next. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
@@ -33,6 +33,25 @@ gcw parse PATH [PATH ...]   # parse only, print counts; no database needed
 
 - **`gcw migrate`** applies the numbered files in `migrations/` that are not yet recorded in `schema_migrations`, in order, each in its own transaction. Running it again applies nothing. Run it once per database before the first `ingest`.
 - **`gcw ingest`** parses one or more export roots, then loads them in a single transaction. It prints counts only: rows parsed, rows inserted, duplicates skipped, elapsed seconds. Re-ingesting a file, or an export that overlaps an earlier one, inserts only the new messages (first write wins). Every run is recorded in `raw.load_runs` with its status and counts; a failed run leaves no partial messages.
+
+## Airflow
+
+A daily DAG, `gcw_pipeline`, runs `check_landing → migrate → ingest → dbt_deps_and_build → summarize` over a landing directory. Each export is one subfolder of that directory. Tasks only call the `gcw` CLI and dbt, and both log counts, never message content.
+
+Run it locally (Docker needed; the DAG itself is verified in CI):
+
+```
+mkdir -p data/landing                    # drop export folders in here, one subfolder per export
+make airflow-up                          # builds airflow/Dockerfile, starts db + Airflow
+# open http://localhost:8080, unpause gcw_pipeline, trigger it
+```
+
+- `GCW_LANDING_HOST_DIR` chooses which host folder is mounted (read-only) at `GCW_LANDING_DIR` in the container; it defaults to `data/landing`.
+- The database comes from `DATABASE_URL` in the container's environment, not from Airflow connections. It defaults to `gcw_dev`; pointing it elsewhere (`GCW_DBNAME`) is a deliberate manual step.
+- To run it once without the UI: `docker compose exec airflow airflow dags test gcw_pipeline`.
+- CI runs the same thing: it builds the image, runs the DAG tests inside it, then `airflow dags test gcw_pipeline` against a Postgres service and synthetic exports.
+
+**Why Airflow and dbt use separate environments.** Airflow pins a large set of dependencies with a constraints file, and dbt's own dependencies often conflict with those pins. The image therefore keeps Airflow in its own Python environment and installs `gcwrapped` and dbt into a second virtualenv, `/opt/gcw-venv`, built from `uv.lock`. Tasks run that venv's `gcw` and `dbt` binaries as subprocesses, so neither side can break the other when it upgrades.
 
 ## Privacy
 

@@ -1,30 +1,29 @@
-Last session: 2026-11-03 — Sessionization, reply times, marts
-Brief completed: yes (CI green on the PR branch and on main; PR #4 merged with a merge commit)
+Last session: 2026-11-03 — Airflow DAG orchestrating ingest and dbt build
+Brief completed: yes once merged (CI green on branch airflow-dag, run 41595574540; merge hashes below)
 Done:
-- Generator: bursts (3-12 msgs) of rapid back-and-forth (5s-3min, 10% lulls of 10-45min) separated by 3-20h gaps; sticky senders (40% repeat) give multi-message turns. Deterministic per seed. Message counts unchanged (105 rows from export_a), so no count assertions needed edits. New tests/test_synthetic_timing.py (4 tests).
-- Var session_gap_minutes: 60. Intermediate = views, marts = tables. Macro member_key(thread, name).
-- int_messages_sessionized: LAG for previous time/sender, boundary flags, running SUM for session/turn index.
-- Marts: fct_messages, fct_reactions, dim_members, fct_sessions, agg_member_activity (top_reaction_given/received, self-reactions excluded), agg_activity_daily (sessions_started by local start date). All documented; unique/not_null keys, relationships to dim_members/fct_sessions/fct_messages.
-- dbt unit tests (4): gap boundaries, turns across a session boundary, reply rules, gap var override. Singular tests: reply_seconds within [0, gap]; sum(daily sessions_started) = count(fct_sessions).
-- stg_instagram__reactions: select distinct; error-level unique (message_key, actor, emoji) kept; warn-level unique (message_key, actor) added.
-- Parser: clean_text() = mojibake fix then strip NUL, applied to sender, content, title, reactions, share URL and attachment URIs before hashing. Parser unit tests (2) added.
-- docker-compose Postgres runs with log_error_verbosity=terse (CI's service container does not use it).
+- airflow/Dockerfile (apache/airflow:3.3.2-python3.12): gcwrapped + dbt in /opt/gcw-venv from uv.lock (uv export; editable install at /opt/gcw so migrations/ resolves); dbt project and migrations copied in; `runtime` and `test` stages. .dockerignore keeps data/, .env and fixtures out of build contexts.
+- airflow/dags/gcw_pipeline.py: @daily, catchup=False, max_active_runs=1, retries=1; check_landing >> migrate >> ingest >> dbt_deps_and_build >> summarize, all @task.bash calling the venv's gcw/dbt. DB from env, no Airflow connections.
+- New CLI: `gcw check-landing DIR`, `gcw ingest --landing DIR`, `gcw last-run` (src/gcwrapped/landing.py, runs.py); 6 unit tests + 1 integration test (idempotent landing ingest, last-run counts).
+- docker-compose `airflow` service (standalone, landing mount read-only, DATABASE_URL/POSTGRES_* env, depends on db healthy); `make airflow-up`.
+- DAG tests (4) inside the test image: imports clean, task order, schedule/catchup/max_active_runs, retries.
+- CI job `airflow`: build both targets, DAG tests, synthetic landing dir, `airflow db migrate && airflow dags test gcw_pipeline` against the CI Postgres, then asserts dbt PASS line with ERROR=0, raw.messages and analytics.fct_messages non-empty, latest load run succeeded.
+- README: running the DAG, why separate environments. decisions.md: 2 entries from the brief + 2 more.
 Deviations from the brief (what + why):
-- dim_members also contains reactors who never sent a message (message_count 0), so relationships tests hold with lurkers. Decision logged.
-- fct_messages omits message text; facts carry member_key for single-column relationship tests.
-- Fourth unit test (var override) beyond the three requested groups.
-- NUL integration test: the old test passed a hand-built ParsedMessage, which bypasses the parser, so it was replaced by one that loads an export file containing NUL and checks the stored text. To keep coverage of the value-free error path for a row Postgres/psycopg rejects, test_bad_row_value_never_reaches_the_error now uses a lone surrogate (chr(0xD800)) instead of NUL.
-- STATUS.md/METRICS.md were committed to main directly after the merge (hashes needed the merge).
+- Added `gcw check-landing`, `ingest --landing`, `last-run` rather than logic in the DAG: keeps the DAG free of project imports, testable without Airflow.
+- `airflow db migrate` and `dags test` run in one container invocation (the SQLite file lives in the container).
+- DAG tests use dagbag.dags and dag.schedule: DagBag.get_dag queries the metadata DB, and CronTriggerTimetable has no .summary.
+- Not run locally: the image, compose service and `make airflow-up` (no Docker/make here). The image and DAG are verified by CI only.
 In progress / broken:
-- Server-side error scrubbing against a real server log still unverified; the CI service container logs the Python-originated COPY error text ("LoadError - RuntimeError at row N"), which is value-free.
+- compose service and `make airflow-up` are unexercised anywhere (CI does not use compose).
+- airflow/ is outside mypy's files; the DAG file is linted by ruff only.
+- Server-side error scrubbing against a real server log still unverified (unchanged).
 Next up:
-- Airflow landing-zone DAG, dashboard, one-command e2e (remaining Phase 1 items).
-- Ryan: inspector on real export, reconcile format module; check whether the warn test (message_key, actor) fires on real data.
+- Dashboard, one-command e2e (remaining Phase 1 items).
+- Ryan: try `make airflow-up` with his landing dir; inspector on real export, reconcile format module.
 Open questions for planning:
 - None blocking.
 Measured this session (exact value + source):
-- CI run 41593608062 on main at dab91cb (2026-11-03 UTC): dbt build PASS=124 WARN=0 ERROR=0 TOTAL=124; integration 17 passed, 73 deselected; synthetic export_a rows parsed 105, inserted 105.
-- `dbt ls --resource-type model|test|unit_test --quiet | wc -l` at dab91cb = 9 | 111 | 4 (recorded in METRICS.md).
-- Local: ruff, ruff format --check, mypy --strict clean; pytest -m "not integration" 73 passed, 17 deselected.
-Commits: b938968 — Add sessionization, reply-time and mart models; strip NULs; dedupe reactions; dab91cb — Merge pull request #4 (merge commit on main).
-Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
+- CI run 41595574540, branch airflow-dag (2026-11-03 UTC): all 5 DAG tasks succeeded; export roots 2; ingest rows parsed 140, inserted 140; dbt Done. PASS=124 WARN=0 ERROR=0 TOTAL=124; DAG tests 4 passed.
+- Local: ruff, ruff format --check, mypy --strict clean; pytest -m "not integration" 79 passed, 18 deselected.
+Commits: (branch commits and merge hash filled in after merge)
+Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [ ] one-command e2e [ ]
