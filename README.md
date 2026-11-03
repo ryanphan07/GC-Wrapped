@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline). Parser and Postgres loader work; dbt models and Airflow are next. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 1 (pipeline). Parser, Postgres loader and dbt staging models work; marts and Airflow are next. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
