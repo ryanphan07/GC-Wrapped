@@ -1,26 +1,31 @@
-Last session: 2026-10-29 — Repo scaffold
-Brief completed: partial. Not verifiable on this machine (no Docker, no make): `make up` healthy, `make psql-dev` listing gcw_dev/gcw_real, `make test-integration`, `make dbt-debug` connection check, CI run.
+Last session: 2026-11-02 — CI integration checks, privacy hardening, export schema inspector
+Brief completed: yes (all acceptance criteria met; CI verified on GitHub)
 Done:
-- uv project (dev + dbt groups, `gcw` script), ruff + mypy strict + pytest `integration` marker
-- docker-compose (pgvector/pgvector:pg17) + init SQL for gcw_dev / gcw_real with vector extension
-- src/gcwrapped: config, log (key=value), provisional models, Parser protocol, CLI `ingest` stub (exit 1)
-- Tests: config, models, DB integration; dbt project + env_var-only profiles; Makefile; CI; README; METRICS.md; decisions.md
-- Source platform recorded as Instagram DMs (JSON); code kept platform-agnostic (no parser, generator, raw SQL, loader)
+- CI `integration` job: pgvector/pgvector:pg17 service, runs docker/postgres/init/01-create-databases.sql, `make test-integration`, `make dbt-debug` (dbt group synced). Service starts on db `postgres` so the init SQL runs unmodified (it does CREATE DATABASE gcw_dev).
+- .gitattributes `* text=auto eol=lf` + `git add --renormalize .`; `git ls-files --eol` shows no CRLF in the index.
+- METRICS.md: Pipeline, dbt, Tagging eval, Retrieval eval, Serving, Usage tables (value | date | how measured | commit; a "metric" column was added first for row labels).
+- CLAUDE.md Privacy section and 4 decisions.md entries added.
+- .claude/settings.json: kept the existing data/ deny rules; added Read/Edit/Write on ~/gcw-private/**, Bash(*gcw-private*), Bash(*gcw_real*).
+- scripts/inspect_export.py + tests/test_inspect_export.py (5 tests, sentinel leak test).
 Deviations from the brief (what + why):
-- profiles.yml dbname uses env_var('DBT_DEV_DBNAME', 'gcw_dev') rather than hardcoded; default is gcw_dev.
-- METRICS.md has only headings implied by CLAUDE.md; the brief's metric list was not available.
-- Settings requires POSTGRES_USER/PASSWORD/DATABASE_URL, so even `gcw ingest` fails without env.
+- METRICS tables have an extra leading "metric" column; the brief's four columns alone have no row label.
+- decisions.md entries use `###` headings (brief used `##`) to match the file's append-only format.
+- Inspector also treats a few extra things as safe-by-allowlist: non-thread folder names and file stems must match ^[a-z_]+$ (else `<dir>` / A_N shapes); thread folders are detected as dirs containing message_N.json. Mojibake signature also includes `â[\x80-\x9f]` (smart quotes/dashes).
+- Work is on branch `ci-privacy-inspector`, not main (pushed to trigger CI). Not merged.
 In progress / broken:
-- Docker-dependent checks above are unrun. dbt parses profile/project fine; connection fails only because no Postgres is running.
-- Git warns LF->CRLF (autocrlf); consider .gitattributes `* text=auto eol=lf`.
+- docs/formats/instagram-schema.md (referenced by new CLAUDE.md rule) does not exist yet; Ryan generates it by running the inspector on the real export.
+- scripts/ is not covered by `make lint` mypy (pyproject `files = src, tests`); I ran `mypy scripts/inspect_export.py` by hand (clean). Settings change was out of scope.
+- CLAUDE.md has one pre-existing Privacy rules section overlapping the new one; left both.
 Next up:
-- Ryan: start Docker, run the unverified acceptance checks.
-- Parser session (Ryan writes it): fix mojibake in Meta JSON, derive dedup key (no per-message IDs). Finalize ParsedMessage fields; build synthetic export generator.
+- Ryan: `uv run python scripts/inspect_export.py ~/gcw-private/<export>` in his own terminal; review the output for anything value-like before saving it to docs/formats/instagram-schema.md.
+- Merge the branch; then parser session (Ryan writes it) + synthetic generator.
 Open questions for planning:
-- Send the project brief's metric list for METRICS.md.
-- Add .gitattributes?
+- Add `scripts` to mypy `files` so lint covers it?
+- Dedupe the two Privacy sections in CLAUDE.md?
 Measured this session (exact value + source):
-- `pytest -m "not integration"`: 7 passed, 1 deselected, 2026-10-29
-- ruff check / ruff format --check / mypy --strict: no issues (10 source files)
-Commits: 9184ad3 — Add tooling and package skeleton; aba5426 — Add Docker Postgres, dbt project, Makefile and CI; d195fc9 — Add README, METRICS, STATUS and decisions docs; 548d45c — Record Instagram as first platform; update STATUS
+- `pytest -m "not integration"`: 12 passed, 1 deselected, 2026-11-02
+- ruff check / ruff format --check / mypy --strict: no issues
+- GitHub Actions run 41585188494 (commit 92d2f71): lint-test success, integration success (init SQL, pytest -m integration, dbt debug all passed)
+- Sentinel test verified to fail when a file's contents were deliberately printed; reverted.
+Commits: 92d2f71 — Add CI integration steps, privacy hardening and export schema inspector
 Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
