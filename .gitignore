@@ -1,0 +1,27 @@
+# Real data and secrets (privacy rules: see CLAUDE.md)
+data/
+.env
+.env.*
+!.env.example
+*.zip
+chat.db*
+members.yaml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+
+# Generated synthetic exports (make synth)
+tests/fixtures/synthetic/

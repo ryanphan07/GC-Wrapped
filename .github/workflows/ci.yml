@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: make lint
+      - run: make test
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: gcw
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gcw -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_USER: gcw
+      POSTGRES_PASSWORD: ci-password
+      POSTGRES_PORT: 5432
+      DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dbt
+      - name: Run init SQL (creates gcw_dev, gcw_real, vector extension)
+        run: psql "postgresql://gcw:ci-password@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f docker/postgres/init/01-create-databases.sql
+      - run: make test-integration
+      - run: make dbt-debug

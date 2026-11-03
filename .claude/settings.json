@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./data/**)",
+      "Edit(./data/**)",
+      "Read(~/gcw-private/**)",
+      "Edit(~/gcw-private/**)",
+      "Write(~/gcw-private/**)",
+      "Bash(*gcw-private*)",
+      "Bash(*gcw_real*)"
+    ]
+  }
+}
