@@ -1,0 +1,4 @@
+# Read from the working directory (/app in the dashboard image). Never show tracebacks or exception
+# text in the browser: validation errors can include input values such as connection passwords.
+[client]
+showErrorDetails = false

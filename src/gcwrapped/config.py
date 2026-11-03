@@ -5,7 +5,6 @@ DB credentials: `Settings` has defaults only, `DatabaseSettings` has required fi
 """
 
 from functools import lru_cache
-from pathlib import Path
 
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from pydantic import SecretStr, model_validator
@@ -46,8 +45,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    chat_timezone: str = "America/Los_Angeles"
-    landing_dir: Path = Path("data/landing")
     log_level: str = "INFO"
 
 

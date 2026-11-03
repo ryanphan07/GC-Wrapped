@@ -12,25 +12,30 @@ clean-targets: ["target", "dbt_packages"]
 
 vars:
   # Raw timestamps stay UTC; staging derives local time in this zone.
-  gcw_timezone: America/Los_Angeles
+  gcw_timezone: "{{ env_var('CHAT_TIMEZONE', 'America/Los_Angeles') }}"
   # A gap longer than this between consecutive messages in a thread starts a new session.
   session_gap_minutes: 60
 
 # staging and intermediate = views; marts = tables. No incremental models.
 models:
   gcwrapped:
+    # Staging and intermediate carry message text, so they live in their own schema that the
+    # reader role gets no USAGE on. Schema names are exact (see macros/generate_schema_name.sql).
     staging:
       +materialized: view
+      +schema: staging
     intermediate:
       +materialized: view
+      +schema: staging
     marts:
       +materialized: table
+      +schema: analytics
       # The dashboard's read-only role sees marts only (no message text). Staging and
       # intermediate get no grants. The role is created outside dbt (docker init / CI setup).
       +grants:
         select: ['gcw_reader']
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
-# Idempotent, so it is safe to run on every build.
+# analytics only; the reader is never granted anything on staging. Idempotent, safe every build.
 on-run-end:
-  - "grant usage on schema {{ target.schema }} to gcw_reader"
+  - "grant usage on schema analytics to gcw_reader"
