@@ -1,5 +1,5 @@
 Last session: 2026-11-03 — Airflow DAG orchestrating ingest and dbt build
-Brief completed: yes once merged (CI green on branch airflow-dag, run 41595574540; merge hashes below)
+Brief completed: yes (CI green on branch and PR #5 merged with a merge commit)
 Done:
 - airflow/Dockerfile (apache/airflow:3.3.2-python3.12): gcwrapped + dbt in /opt/gcw-venv from uv.lock (uv export; editable install at /opt/gcw so migrations/ resolves); dbt project and migrations copied in; `runtime` and `test` stages. .dockerignore keeps data/, .env and fixtures out of build contexts.
 - airflow/dags/gcw_pipeline.py: @daily, catchup=False, max_active_runs=1, retries=1; check_landing >> migrate >> ingest >> dbt_deps_and_build >> summarize, all @task.bash calling the venv's gcw/dbt. DB from env, no Airflow connections.
@@ -25,5 +25,5 @@ Open questions for planning:
 Measured this session (exact value + source):
 - CI run 41595574540, branch airflow-dag (2026-11-03 UTC): all 5 DAG tasks succeeded; export roots 2; ingest rows parsed 140, inserted 140; dbt Done. PASS=124 WARN=0 ERROR=0 TOTAL=124; DAG tests 4 passed.
 - Local: ruff, ruff format --check, mypy --strict clean; pytest -m "not integration" 79 passed, 18 deselected.
-Commits: (branch commits and merge hash filled in after merge)
+Commits: 9f1da4d — WIP: Airflow DAG, image, CI job; a33454d — Fix DAG test lint and DagBag signature; d9f101c — DAG tests: read parsed dags from memory; 4541bdc — DAG test: assert schedule argument; 9c1b138 — Document Airflow DAG; update STATUS and decisions; 0ea595b — Merge pull request #5 (merge commit on main).
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [ ] one-command e2e [ ]
