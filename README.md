@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models and the Airflow DAG work; dashboard and one-command e2e are next. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models and the Airflow DAG work; the dashboard is in; one-command e2e is next. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
@@ -52,6 +52,19 @@ make airflow-up                          # builds airflow/Dockerfile, starts db 
 - CI runs the same thing: it builds the image, runs the DAG tests inside it, then `airflow dags test gcw_pipeline` against a Postgres service and synthetic exports.
 
 **Why Airflow and dbt use separate environments.** Airflow pins a large set of dependencies with a constraints file, and dbt's own dependencies often conflict with those pins. The image therefore keeps Airflow in its own Python environment and installs `gcwrapped` and dbt into a second virtualenv, `/opt/gcw-venv`, built from `uv.lock`. Tasks run that venv's `gcw` and `dbt` binaries as subprocesses, so neither side can break the other when it upgrades.
+
+## Dashboard
+
+A Streamlit app shows activity from the `analytics` marts: KPIs, messages per day, a member leaderboard and an hour-of-day chart, per thread. It connects as `gcw_reader`, a read-only role that can read mart tables and nothing in `raw`, staging or intermediate, so message text cannot reach it.
+
+```
+# .env needs GCW_READER_PASSWORD (the role is created on first `make up`, from docker/postgres/init/02-reader-role.sh)
+# Run the pipeline first so the marts exist (ingest + dbt build); dbt grants the role its access.
+make dashboard-up           # http://localhost:8501
+make test-warehouse         # query tests, permission-denied checks, Streamlit AppTest (after dbt build)
+```
+
+If your Postgres volume already existed before this change, the init script will not rerun: run `bash docker/postgres/init/02-reader-role.sh` inside the db container once.
 
 ## Privacy
 

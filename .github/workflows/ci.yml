@@ -35,12 +35,21 @@ jobs:
       POSTGRES_PASSWORD: ci-password
       POSTGRES_PORT: 5432
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
+      GCW_READER_PASSWORD: ci-reader-password
+      DASHBOARD_DATABASE_URL: postgresql://gcw_reader:ci-reader-password@localhost:5432/gcw_dev
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --group dbt
+      - run: uv sync --group dbt --group dashboard
       - name: Run init SQL (creates gcw_dev, gcw_real, vector extension)
         run: psql "postgresql://gcw:ci-password@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f docker/postgres/init/01-create-databases.sql
+      # Same script docker-compose runs on first start. dbt grants rely on the role existing.
+      - name: Create the read-only dashboard role
+        run: bash docker/postgres/init/02-reader-role.sh
+        env:
+          PGHOST: localhost
+          PGUSER: gcw
+          PGPASSWORD: ci-password
       - run: make test-integration
       - run: make dbt-debug
       # End to end on synthetic data: the integration tests leave gcw_dev in an arbitrary state,
@@ -56,6 +65,8 @@ jobs:
       - run: uv run gcw ingest tests/fixtures/synthetic/export_a
       - run: make dbt-deps
       - run: make dbt-build
+      # Dashboard queries, permission-denied checks for gcw_reader, and the Streamlit AppTest.
+      - run: make test-warehouse
 
   airflow:
     runs-on: ubuntu-latest
@@ -76,6 +87,10 @@ jobs:
     env:
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
       LANDING: ${{ github.workspace }}/ci-landing
+      GCW_READER_PASSWORD: ci-reader-password
+      PGHOST: localhost
+      PGUSER: gcw
+      PGPASSWORD: ci-password
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -90,6 +105,8 @@ jobs:
         run: |
           psql "postgresql://gcw:ci-password@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f docker/postgres/init/01-create-databases.sql
           uv run python tests/synthetic/instagram.py --out "$LANDING"
+          # dbt's grants and on-run-end hook name gcw_reader, so the role must exist.
+          bash docker/postgres/init/02-reader-role.sh
       - name: Run the DAG end to end (airflow dags test)
         run: |
           docker run --rm --network host             -e DATABASE_URL -e GCW_LANDING_DIR=/landing             -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432             -e POSTGRES_USER=gcw -e POSTGRES_PASSWORD=ci-password             -v "$LANDING:/landing:ro"             gcw-airflow:runtime             bash -c "airflow db migrate && airflow dags test gcw_pipeline" 2>&1 | tee dags-test.log

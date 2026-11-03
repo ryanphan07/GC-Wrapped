@@ -146,3 +146,21 @@ Decision: airflow/Dockerfile has a runtime stage and a test stage (runtime + pyt
 Alternative: pip-install pytest in the container at CI time, or ship pytest in the runtime image.
 Why: The tests need Airflow's exact environment, and the runtime image should not carry test tooling.
 Tradeoff: Two image targets to keep in sync; layers are shared so the extra build is seconds.
+
+### 2026-11-03 — Streamlit for the Phase 1 dashboard
+Decision: The Phase 1 dashboard is a Streamlit app reading the analytics marts.
+Alternative: Metabase or Superset; or the Phase 3 React frontend now.
+Why: Dashboard code is versioned and testable in CI (AppTest); Metabase stores dashboards in its own app DB, configured by clicking. React belongs to Phase 3 with the API.
+Tradeoff: Less polished than a BI tool; replaced or complemented by the React app later.
+
+### 2026-11-03 — Read-only reader role scoped to marts
+Decision: The dashboard connects as gcw_reader, which has USAGE on analytics and SELECT on mart tables only, granted via dbt grants config. CI asserts permission denied on raw and staging.
+Alternative: Reuse the pipeline's read-write user.
+Why: Message text exists only in raw and staging; scoping the role makes "text never leaves staging" a database guarantee, not a convention.
+Tradeoff: Every new mart needs grants (handled by dbt config); one more credential to manage.
+
+### 2026-11-03 — Warehouse tests get their own pytest marker
+Decision: Tests that need a built warehouse (dbt marts plus the reader role) use the `warehouse` marker and `make test-warehouse`; `make test` excludes both `integration` and `warehouse`. Streamlit and pandas live in the `dashboard` uv group, and mypy ignores missing imports for them so lint does not need that group.
+Alternative: Mark them `integration`; or put the dashboard group in the default sync.
+Why: `integration` tests run before dbt build in CI and reset schemas, so tests that read marts would fail there. A separate marker keeps the order explicit and keeps the lint job's install small.
+Tradeoff: Another marker to remember; DataFrames are untyped (Any) under mypy.

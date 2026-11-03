@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up
 
 up:
 	mkdir -p data/landing data/archive
@@ -22,10 +22,18 @@ psql-dev:
 	docker compose exec db psql -U $(POSTGRES_USER) -d gcw_dev
 
 test:
-	uv run pytest -m "not integration"
+	uv run pytest -m "not integration and not warehouse"
 
 test-integration:
 	uv run pytest -m integration
+
+# Needs the pipeline to have run (gcw migrate, ingest, dbt build) so the marts exist.
+test-warehouse:
+	uv run --group dashboard pytest -m warehouse
+
+# Streamlit on http://localhost:8501, connecting as gcw_reader.
+dashboard-up:
+	docker compose up -d --build dashboard
 
 lint:
 	uv run ruff check

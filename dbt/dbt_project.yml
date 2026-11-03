@@ -25,3 +25,12 @@ models:
       +materialized: view
     marts:
       +materialized: table
+      # The dashboard's read-only role sees marts only (no message text). Staging and
+      # intermediate get no grants. The role is created outside dbt (docker init / CI setup).
+      +grants:
+        select: ['gcw_reader']
+
+# Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
+# Idempotent, so it is safe to run on every build.
+on-run-end:
+  - "grant usage on schema {{ target.schema }} to gcw_reader"
