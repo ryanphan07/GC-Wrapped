@@ -25,3 +25,5 @@ dbt/dbt_packages/
 
 # Generated synthetic exports (make synth)
 tests/fixtures/synthetic/
+
+dbt/.user.yml

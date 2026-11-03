@@ -1,0 +1,64 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Landing tables written by `gcw ingest`. Faithful to the export; no cleaning.
+    schema: raw
+    tables:
+      - name: load_runs
+        description: One row per `gcw ingest` run, including failed ones.
+        columns:
+          - name: load_id
+            description: Surrogate id of the run.
+            data_tests:
+              - unique
+              - not_null
+          - name: status
+            description: Run state; `failed` runs left no messages behind.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [running, succeeded, failed]
+          - name: started_at
+            description: When the run began (UTC).
+            data_tests:
+              - not_null
+          - name: roots_count
+            description: Number of export roots passed to the run.
+            data_tests:
+              - not_null
+          - name: error
+            description: Failure summary (exception class, row index, field name); never message text.
+
+      - name: messages
+        description: One row per deduplicated message. First write wins on `message_key`.
+        columns:
+          - name: message_key
+            description: Hash of the message's immutable fields plus an occurrence index.
+            data_tests:
+              - unique
+              - not_null
+          - name: platform
+            data_tests:
+              - not_null
+          - name: thread_id
+            data_tests:
+              - not_null
+          - name: sender_name
+            data_tests:
+              - not_null
+          - name: sent_at
+            data_tests:
+              - not_null
+          - name: media_count
+            data_tests:
+              - not_null
+          - name: load_id
+            description: The run that inserted this row.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('raw', 'load_runs')
+                    field: load_id

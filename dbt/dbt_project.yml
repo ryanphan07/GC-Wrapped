@@ -9,3 +9,13 @@ test-paths: ["tests"]
 macro-paths: ["macros"]
 
 clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Raw timestamps stay UTC; staging derives local time in this zone.
+  gcw_timezone: America/Los_Angeles
+
+# staging = views (cast, rename, light derivations). Marts will be tables; no incremental models.
+models:
+  gcwrapped:
+    staging:
+      +materialized: view

@@ -68,3 +68,21 @@ Decision: Each load COPYs parsed rows into a temp table, then inserts into raw.m
 Alternative: Row-by-row INSERTs; or truncate-and-reload.
 Why: COPY is Postgres's fastest bulk path; ON CONFLICT on a stable key makes re-runs and overlapping exports safe, which Airflow retries will need. load_runs gives runtime and row counts for METRICS.md.
 Tradeoff: First-write-wins: a later export never updates an existing row (e.g. new reactions). Acceptable for Phase 1; revisit if reactions matter for Wrapped.
+
+### 2026-11-03 — Content-free error paths in the loader
+Decision: Exceptions raised during a load are wrapped in a LoadError carrying only exception class, row index and field name; only that summary is stored in raw.load_runs.error. Sentinel tests enforce it.
+Alternative: Store and raise the original exception text.
+Why: Exception text can echo message content into the Postgres server log, the load_runs table, and anything that gets pasted while debugging.
+Tradeoff: Less detail when debugging a real-data failure; reproduce it locally with the same row index instead.
+
+### 2026-11-03 — dbt layering and materializations
+Decision: staging (views) → intermediate → marts (tables), with fct_/dim_/agg_ naming. Full rebuilds; no incremental models.
+Alternative: Incremental fact models; or a single layer of models.
+Why: Standard dbt structure keeps cleaning, logic and presentation separate and testable. At group-chat volume a full rebuild takes seconds, so incremental logic would add complexity for no benefit.
+Tradeoff: Rebuild time grows linearly with data; revisit incremental only if a build exceeds about a minute.
+
+### 2026-11-03 — message_type priority and dbt version floor
+Decision: stg_instagram__messages.message_type is media (media_count > 0), else share (share_url set), else text (non-whitespace content), else empty. dbt-postgres is pinned >=1.10 so generic tests can use the `arguments:` property.
+Alternative: Classify by content alone; or keep >=1.8 and the older top-level test args.
+Why: Photos and shares often carry a caption, and the attachment is what makes them that kind of message. The older test syntax is deprecated and warns on every parse.
+Tradeoff: A captioned photo counts as media, not text; word_count still counts its caption. Floor of 1.10 is above the brief's 1.8 minimum.

@@ -10,13 +10,15 @@ import psycopg
 from pydantic import ValidationError
 
 from gcwrapped.db import database_name, database_url
-from gcwrapped.load import load_messages
+from gcwrapped.load import LoadError, load_messages
 from gcwrapped.log import setup_logging
 from gcwrapped.migrate import MigrationError, migrate
+from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import ParseError, ParseStats, parse_export
 
 logger = logging.getLogger(__name__)
 
+_NO_THREADS = "error: no message threads found under the given path(s)"
 _NO_DB_CONFIG = (
     "error: database not configured (set DATABASE_URL, POSTGRES_USER, POSTGRES_PASSWORD)"
 )
@@ -55,7 +57,7 @@ def _parse(paths: Sequence[Path]) -> int:
         return 1
     elapsed = time.perf_counter() - start
     if not stats.thread_ids:
-        print("error: no message threads found under the given path(s)")
+        print(_NO_THREADS)
         return 1
     print(f"threads: {len(stats.thread_ids)}")
     print(f"messages: {stats.messages}")
@@ -87,6 +89,9 @@ def _migrate() -> int:
 
 def _ingest(paths: Sequence[Path]) -> int:
     """Parse and load. Prints counts only. Errors name the exception type, never its text."""
+    if not any(fmt.find_thread_dirs(path) for path in paths):
+        print(_NO_THREADS)  # checked first so a wrong path leaves no run row behind
+        return 1
     try:
         url = database_url()
     except ValidationError:
@@ -97,8 +102,8 @@ def _ingest(paths: Sequence[Path]) -> int:
     start = time.perf_counter()
     try:
         result = load_messages(url, parse_export(paths, stats), roots_count=len(paths))
-    except ParseError as exc:  # messages are value-free by design
-        print(f"error: {exc}")
+    except LoadError as exc:  # class name, row index, field name only
+        print(f"error: ingest failed ({exc.summary})")
         return 1
     except psycopg.errors.UndefinedTable:
         print("error: raw tables missing; run `gcw migrate` first")
@@ -107,9 +112,6 @@ def _ingest(paths: Sequence[Path]) -> int:
         print(f"error: ingest failed ({type(exc).__name__})")
         return 1
     elapsed = time.perf_counter() - start
-    if not stats.thread_ids:
-        print("error: no message threads found under the given path(s)")
-        return 1
     print(f"rows parsed: {result.rows_parsed}")
     print(f"rows inserted: {result.rows_inserted}")
     print(f"duplicates skipped: {result.duplicates_skipped}")

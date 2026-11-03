@@ -20,7 +20,7 @@ dev = [
     "mypy",
 ]
 dbt = [
-    "dbt-postgres",
+    "dbt-postgres>=1.10",
 ]
 
 [build-system]

@@ -1,27 +1,29 @@
-Last session: 2026-11-02 — Postgres loader with idempotent raw tables
-Brief completed: yes (CI green on branch loader-raw-tables; PR/merge hash under Commits)
+Last session: 2026-11-03 — Scrub loader errors, dbt sources + staging, dbt build in CI
+Brief completed: yes (CI green on branch; merged to main, see Commits)
 Done:
-- migrations/001_raw_schema.sql: schema raw, raw.messages (message_key PK, load_id FK), raw.load_runs.
-- src/gcwrapped/migrate.py + `gcw migrate`: ordered files, one transaction per file, schema_migrations tracking, advisory lock, idempotent.
-- src/gcwrapped/load.py + `gcw ingest PATH [PATH ...]`: COPY to temp table, INSERT ... ON CONFLICT DO NOTHING, one transaction; run row written first (autocommit), marked succeeded in the load transaction, marked failed from a fresh connection on any error, then re-raised.
-- src/gcwrapped/db.py: database_url() and database_name() (name only is printed, never credentials).
-- Tests: 12 integration (all six brief scenarios plus CLI output, missing-migration hint, failed-migration rollback, failed load leaves earlier data intact), unit tests for row conversion, reactions JSON, migration discovery, db name.
-- README documents migrate and ingest; decisions.md has the two entries from the brief.
+- Loader: any exception during COPY or merge becomes LoadError(class, row index, field name). The per-row try sits inside the COPY block so psycopg's cancel message to the server is value-free. raw.load_runs.error stores only that summary (e.g. "RuntimeError at row 3").
+- `gcw ingest` on paths with no threads now fails before database access and before any run row; message and exit code 1 unchanged.
+- dbt: dbt-postgres >=1.10 (resolved 1.11.0 locally), dbt_utils 1.4.1 via packages.yml (package-lock.yml committed).
+- Sources raw.messages and raw.load_runs with tests; stg_instagram__messages and stg_instagram__reactions (views) fully documented and tested. Var gcw_timezone (default America/Los_Angeles) drives sent_at_local.
+- CI integration job: reset gcw_dev, gcw migrate, make synth, gcw ingest export_a, make dbt-deps, make dbt-build. Added Makefile targets dbt-deps, dbt-build.
+- Tests: 4 new integration (iterator failure, NUL-byte bad row, CLI failure output, no-threads leaves no run row), 1 new CLI unit (no-threads before DB), 1 LoadError unit. Sentinel is SENTINEL_SECRET.
 Deviations from the brief (what + why):
-- `gcw ingest` previously took one `file`; now takes `paths` (nargs +), as the brief says.
-- Added tiny extras: advisory lock in migrate, idempotent-failure tests, `clean_db` fixture refuses to reset any DB other than gcw_dev.
+- dbt floor is >=1.10, not >=1.8: needed for the `arguments:` test syntax (older syntax is deprecated). Satisfies "≥ 1.8".
+- message_type priority is media > share > text > empty (see decisions.md); the brief said "derived from content" only.
+- CI resets gcw_dev before the e2e steps, because the integration tests leave it in an arbitrary state.
+- LoadError wraps ParseError too, so `gcw ingest` prints "ParseError at row N" instead of the parser's field message. Run `gcw parse` for the detailed message.
+- Added dbt/.user.yml to .gitignore.
 In progress / broken:
-- Privacy gap: when a load fails mid-COPY, psycopg sends the exception text to Postgres, which writes it to the server log (seen in CI with a synthetic sentinel). ParseError text is value-free by design, but other exceptions could echo data. Not fixed (scope); fix would wrap iterator errors in a text-free exception inside the COPY block.
-- `gcw ingest` on a path with no threads records a succeeded run with 0 rows, then exits 1.
-- Migrations dir is resolved from the source tree (repo root); fine for editable installs, would need packaging for a wheel.
-- Format still PROVISIONAL (see previous session): real-schema reconciliation not done yet.
+- Field name is only filled when a server error's context names a known column; client-side failures report row only (field unknown). Not exercised in CI.
+- Server-side errors that Postgres logs itself (e.g. a NUL byte in text) can still appear in the server log; only client-originated exceptions are scrubbed there. Not verified against a server log.
+- Format still PROVISIONAL; real-schema reconciliation not done.
 Next up:
-- Ryan: inspector on real export, reconcile format module; run `gcw migrate` + `gcw ingest` against his own DB.
-- dbt sources + staging models.
+- Intermediate and marts (threads, reply times, member activity, activity over time) -- includes write-it-yourself SQL for threads/reply times.
+- Ryan: inspector on real export, reconcile format module.
 Open questions for planning:
-- Should failed-load exception text be scrubbed before it reaches the server log (see above)?
+- Is the reactions uniqueness test (message_key, actor, emoji) too strict for real data? It will fail if an export lists the same reaction twice.
 Measured this session (exact value + source):
-- CI run 41588321575 (2026-11-03 UTC): unit 65 passed, 12 deselected; integration 12 passed, 65 deselected.
-- Local: ruff check, ruff format --check, mypy --strict clean; pytest -m "not integration" 65 passed (2026-11-02).
-Commits: loader-raw-tables branch — Add SQL migrations and idempotent Postgres loader (gcw migrate, gcw ingest); merge commit: see PR
-Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
+- CI run 41589427550 (2026-11-03 UTC): unit 67 passed, 16 deselected; integration 16 passed, 67 deselected; dbt build PASS=34 WARN=0 ERROR=0 TOTAL=34; synthetic export_a ingest rows parsed 105, inserted 105.
+- Local: ruff check, ruff format --check, mypy --strict clean; pytest -m "not integration" 67 passed; dbt parse clean (2026-11-03).
+Commits: filled in below after merge
+Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]

@@ -43,3 +43,16 @@ jobs:
         run: psql "postgresql://gcw:ci-password@localhost:5432/postgres" -v ON_ERROR_STOP=1 -f docker/postgres/init/01-create-databases.sql
       - run: make test-integration
       - run: make dbt-debug
+      # End to end on synthetic data: the integration tests leave gcw_dev in an arbitrary state,
+      # so reset it, then migrate -> ingest -> dbt build (models + tests).
+      - name: Reset gcw_dev
+        run: >
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+          -c "DROP SCHEMA IF EXISTS raw CASCADE"
+          -c "DROP SCHEMA IF EXISTS analytics CASCADE"
+          -c "DROP TABLE IF EXISTS schema_migrations"
+      - run: uv run gcw migrate
+      - run: make synth
+      - run: uv run gcw ingest tests/fixtures/synthetic/export_a
+      - run: make dbt-deps
+      - run: make dbt-build

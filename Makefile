@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug ingest
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest
 
 up:
 	mkdir -p data/landing data/archive
@@ -33,6 +33,12 @@ fmt:
 
 dbt-debug:
 	uv run --group dbt dbt debug --project-dir dbt --profiles-dir dbt
+
+dbt-deps:
+	uv run --group dbt dbt deps --project-dir dbt --profiles-dir dbt
+
+dbt-build:
+	uv run --group dbt dbt build --project-dir dbt --profiles-dir dbt
 
 ingest:
 	@echo "Real-data ingestion is run manually by Ryan in his own terminal. Not run by Claude Code."

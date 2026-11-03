@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from gcwrapped.db import database_name
-from gcwrapped.load import COLUMNS, LoadResult, message_to_row, reactions_json
+from gcwrapped.load import COLUMNS, LoadError, LoadResult, message_to_row, reactions_json
 from gcwrapped.models import ParsedMessage, Reaction
 from gcwrapped.parsers.instagram import parse_export
 from synthetic.instagram import generate_pair
@@ -86,3 +86,10 @@ def test_duplicates_skipped_is_parsed_minus_inserted() -> None:
 def test_database_name_from_url_hides_credentials() -> None:
     assert database_name("postgresql://user:secret@host:5432/gcw_dev") == "gcw_dev"
     assert database_name("postgresql://user:secret@host/other") == "other"
+
+
+def test_load_error_summary_has_class_row_and_field_only() -> None:
+    assert LoadError("DataError", 7, "content").summary == "DataError at row 7 in field content"
+    assert LoadError("DataError", 7, None).summary == "DataError at row 7"
+    assert LoadError("DataError", None, None).summary == "DataError"
+    assert str(LoadError("DataError", 7, "content")) == "DataError at row 7 in field content"
