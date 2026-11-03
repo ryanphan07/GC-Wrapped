@@ -1,3 +1,4 @@
+import json
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from gcwrapped.cli import main
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.models import ParsedMessage
+from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import parse_export
 from synthetic.instagram import generate_pair
 
@@ -183,11 +185,32 @@ def test_iterator_failure_is_value_free_everywhere(migrated_db: str, tmp_path: P
     assert error == "RuntimeError at row 3"
 
 
+def test_message_with_nul_loads_with_the_nul_removed(migrated_db: str, tmp_path: Path) -> None:
+    nul = chr(0)  # Postgres text cannot store it, so the parser must have stripped it
+    thread = tmp_path / fmt.MESSAGES_DIR / "nul_1"
+    thread.mkdir(parents=True)
+    doc = {
+        fmt.KEY_PARTICIPANTS: [],
+        fmt.KEY_THREAD_TITLE: "t",
+        fmt.KEY_MESSAGES: [
+            {fmt.KEY_SENDER: "a", fmt.KEY_TIMESTAMP_MS: 1, fmt.KEY_CONTENT: f"hi{nul} there"}
+        ],
+    }
+    (thread / "message_1.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    result = load_messages(migrated_db, parse_export([tmp_path]), roots_count=1)
+
+    assert result.rows_inserted == 1
+    with psycopg.connect(migrated_db) as conn:
+        [(content,)] = conn.execute("SELECT content FROM raw.messages").fetchall()
+    assert content == "hi there"
+
+
 def test_bad_row_value_never_reaches_the_error(migrated_db: str, tmp_path: Path) -> None:
     a, _ = generate_pair(tmp_path)
     good = list(parse_export([a]))
-    # A NUL byte makes Postgres reject the text; the error text would quote the value.
-    bad = good[1].model_copy(update={"content": f"{SENTINEL}\x00 trailing"})
+    # A lone surrogate cannot be encoded for COPY; the error path must still not carry the value.
+    bad = good[1].model_copy(update={"content": f"{SENTINEL}{chr(0xD800)} trailing"})
 
     with pytest.raises(LoadError) as info:
         load_messages(migrated_db, iter([good[0], bad, good[2]]), roots_count=1)

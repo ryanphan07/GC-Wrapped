@@ -1,0 +1,257 @@
+version: 2
+
+models:
+  - name: dim_members
+    description: >
+      One row per member per thread. Member identity is the sender display name within a thread
+      until alias mapping exists. Includes reactors who never sent a message (message_count 0).
+    columns:
+      - name: member_key
+        description: Surrogate key of (thread_id, member_name).
+        data_tests: [unique, not_null]
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: member_name
+        description: Display name as exported.
+        data_tests: [not_null]
+      - name: first_message_at
+        description: Time of the member's first message (UTC); null if they never sent one.
+      - name: last_message_at
+        description: Time of the member's last message (UTC); null if they never sent one.
+      - name: message_count
+        description: Messages sent in the thread, of every type.
+        data_tests: [not_null]
+
+  - name: fct_messages
+    description: >
+      One row per message with member, session and turn fields. Message text is not carried here;
+      join to stg_instagram__messages on message_key when needed.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (is_session_start and reply_seconds is not null)"
+    columns:
+      - name: message_key
+        description: Primary key, from the parser's dedup key.
+        data_tests:
+          - unique
+          - not_null
+      - name: member_key
+        description: The sender, as a key into dim_members.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: sender_name
+        description: Display name of the sender.
+        data_tests: [not_null]
+      - name: sent_at
+        description: Send time, UTC.
+        data_tests: [not_null]
+      - name: sent_at_local
+        description: Send time as local wall-clock time in the `gcw_timezone` var.
+        data_tests: [not_null]
+      - name: message_type
+        description: One of text, media, share, empty (see stg_instagram__messages).
+        data_tests: [not_null]
+      - name: word_count
+        description: Whitespace-separated words in the message text; 0 when there is none.
+        data_tests: [not_null]
+      - name: media_count
+        description: Number of attachments.
+        data_tests: [not_null]
+      - name: session_id
+        description: The session the message belongs to.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_sessions')
+                field: session_id
+      - name: session_index
+        description: 1-based position of the session within the thread.
+        data_tests: [not_null]
+      - name: turn_id
+        description: The turn the message belongs to.
+        data_tests: [not_null]
+      - name: is_session_start
+        description: True for the first message of a session.
+        data_tests: [not_null]
+      - name: is_turn_start
+        description: True for the first message of a turn.
+        data_tests: [not_null]
+      - name: reply_seconds
+        description: >
+          On a turn start that is not a session start, seconds since the last message of the
+          previous turn; null otherwise.
+
+  - name: fct_reactions
+    description: One row per emoji reaction, with the reactor and the author of the reacted-to message.
+    columns:
+      - name: reaction_key
+        description: Surrogate key of (message_key, reactor_name, emoji).
+        data_tests: [unique, not_null]
+      - name: message_key
+        description: The reacted-to message.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_messages')
+                field: message_key
+      - name: thread_id
+        description: Thread of the reacted-to message.
+        data_tests: [not_null]
+      - name: reactor_member_key
+        description: The member who reacted.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: reactor_name
+        description: Display name of the reactor.
+        data_tests: [not_null]
+      - name: emoji
+        description: The reaction emoji.
+        data_tests: [not_null]
+      - name: author_member_key
+        description: The author of the reacted-to message.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: author_name
+        description: Display name of the author of the reacted-to message.
+        data_tests: [not_null]
+      - name: is_self_reaction
+        description: True when the reactor is the author of the message.
+        data_tests: [not_null]
+
+  - name: fct_sessions
+    description: One row per session (messages in a thread with no gap above `session_gap_minutes`).
+    columns:
+      - name: session_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: session_index
+        description: 1-based position of the session within the thread.
+        data_tests: [not_null]
+      - name: started_at
+        description: Time of the first message (UTC).
+        data_tests: [not_null]
+      - name: ended_at
+        description: Time of the last message (UTC).
+        data_tests: [not_null]
+      - name: duration_seconds
+        description: Seconds from first to last message; 0 for a single-message session.
+        data_tests: [not_null]
+      - name: message_count
+        description: Messages in the session.
+        data_tests: [not_null]
+      - name: turn_count
+        description: Turns in the session.
+        data_tests: [not_null]
+      - name: participant_count
+        description: Distinct senders in the session.
+        data_tests: [not_null]
+      - name: started_by_member_key
+        description: Sender of the session's first message.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+
+  - name: agg_member_activity
+    description: >
+      One row per member with activity totals. Reaction counts exclude self-reactions. Reply
+      statistics are attributed to the member who replied.
+    columns:
+      - name: member_key
+        description: Primary key; one row per dim_members row.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: member_name
+        description: Display name as exported.
+        data_tests: [not_null]
+      - name: messages
+        description: Messages sent.
+        data_tests: [not_null]
+      - name: words
+        description: Total words across all messages sent.
+        data_tests: [not_null]
+      - name: media_messages
+        description: Messages with at least one attachment (message_type media).
+        data_tests: [not_null]
+      - name: share_messages
+        description: Messages sharing a post, without attachments (message_type share).
+        data_tests: [not_null]
+      - name: sessions_started
+        description: Sessions whose first message the member sent.
+        data_tests: [not_null]
+      - name: median_reply_seconds
+        description: Median reply time in seconds; null when the member has no replies.
+      - name: p90_reply_seconds
+        description: 90th-percentile reply time in seconds; null when the member has no replies.
+      - name: reactions_given
+        description: Reactions the member gave to other members' messages.
+        data_tests: [not_null]
+      - name: reactions_received
+        description: Reactions other members gave to the member's messages.
+        data_tests: [not_null]
+      - name: top_reaction_given
+        description: "Emoji the member used most when reacting to others' messages (ties go to the alphabetically first); null if they gave none."
+      - name: top_reaction_received
+        description: "Emoji other members used most when reacting to the member's messages (ties go to the alphabetically first); null if they received none."
+      - name: most_active_hour
+        description: "Local hour of day (0-23) with the most messages sent (ties go to the earliest hour); null if they sent none."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+
+  - name: agg_activity_daily
+    description: One row per thread and local calendar day that has at least one message.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [thread_id, activity_date]
+    columns:
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: activity_date
+        description: Local calendar date in the `gcw_timezone` var.
+        data_tests: [not_null]
+      - name: messages
+        description: Messages sent that day.
+        data_tests: [not_null]
+      - name: active_members
+        description: Distinct members who sent a message that day.
+        data_tests: [not_null]
+      - name: sessions_started
+        description: Sessions whose first message was sent that local day; each session is counted once, on its start date.
+        data_tests: [not_null]

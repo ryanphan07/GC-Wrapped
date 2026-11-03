@@ -86,3 +86,39 @@ Decision: stg_instagram__messages.message_type is media (media_count > 0), else 
 Alternative: Classify by content alone; or keep >=1.8 and the older top-level test args.
 Why: Photos and shares often carry a caption, and the attachment is what makes them that kind of message. The older test syntax is deprecated and warns on every parse.
 Tradeoff: A captioned photo counts as media, not text; word_count still counts its caption. Floor of 1.10 is above the brief's 1.8 minimum.
+
+### 2026-11-03 — Sessions, turns and reply time definitions
+Decision: Session = messages with no gap > session_gap_minutes (default 60). Turn = consecutive same-sender messages within a session. Reply time = gap from the end of one turn to the start of the next turn by a different sender, within a session only. Thresholds are dbt vars.
+Alternative: Use platform reply-to metadata; or measure every sender change regardless of gap.
+Why: Instagram exports have no reply-to IDs. Without a session bound, "replying" the next morning would dominate the averages. Turns stop rapid multi-message bursts from counting as many replies.
+Tradeoff: Results depend on the threshold; replies to older messages within a busy session are attributed to the most recent turn.
+
+### 2026-11-03 — dbt unit tests for transformation logic
+Decision: Window-function logic (sessions, turns, reply time) is covered by dbt unit tests with fixed inputs and expected outputs; generic and singular tests cover data shape.
+Alternative: Rely only on generic tests against synthetic data.
+Why: Generic tests catch nulls and duplicates, not wrong logic. Unit tests pin down edge cases at the threshold boundaries.
+Tradeoff: More YAML to maintain when the models change.
+
+### 2026-11-03 — dim_members includes reactors who never sent a message
+Decision: dim_members is the union of (thread, name) pairs seen as senders and as reactors; non-senders have message_count 0 and null first/last message times. Reaction counts in agg_member_activity exclude self-reactions.
+Alternative: Senders only, with fct_reactions allowed to fail its relationships test; or count self-reactions.
+Why: Lurkers who only react are common in real group chats, and a senders-only dimension would break the fact-to-dim relationship test on real data. Self-reactions say nothing about how others engage with a member.
+Tradeoff: The dimension is slightly broader than "senders"; consumers must treat first/last_message_at as nullable.
+
+### 2026-11-03 — Dedupe reactions in staging
+Decision: stg_instagram__reactions drops exact duplicate (message_key, actor, emoji) rows; the unique test stays at error severity, and a warn-level test checks (message_key, actor).
+Alternative: Relax the unique test, or fail the build on export artifacts.
+Why: Instagram allows one reaction per person per message, so exact repeats are export artifacts. The strict test then guards the dedup; the warn test reveals whether real exports ever contain multiple reactions per person.
+Tradeoff: If real exports do carry legitimate multiple reactions per person, the warn test will flag it and the model needs revisiting.
+
+### 2026-11-03 — Strip NUL bytes in the parser
+Decision: The parser removes \x00 from text fields before hashing.
+Alternative: Let the load fail on NUL bytes.
+Why: Postgres text cannot store NUL, and server-side errors echo the offending value into the server log. Since ParsedMessage already guarantees types, this closes the last realistic path for content to reach the log. log_error_verbosity=terse is a backstop.
+Tradeoff: A small deviation from the faithful-parser rule, limited to a byte that no chat client displays.
+
+### 2026-11-03 — Sessions attributed to their start date
+Decision: Daily aggregates count a session once, on the local date of its first message (sessions_started).
+Alternative: Count a session on every day it has messages.
+Why: Summing daily sessions should equal total sessions; counting per day double-counts sessions that cross midnight.
+Tradeoff: Late-night sessions appear entirely on the day they started.

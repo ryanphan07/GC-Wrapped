@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: int_messages_sessionized
+    description: >
+      One row per message with session, turn and reply-time fields, computed with window functions
+      per thread ordered by (sent_at, message_key). Session gap is the `session_gap_minutes` var.
+      Unit-tested in `_int_messages_sessionized__unit_tests.yml`.
+    columns:
+      - name: message_key
+        description: Primary key; one row per staging message.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_instagram__messages')
+                field: message_key
+      - name: thread_id
+        description: Export folder name of the conversation.
+        data_tests: [not_null]
+      - name: session_id
+        description: "`<thread_id>:s<session_index>`."
+        data_tests: [not_null]
+      - name: session_index
+        description: 1-based running count of sessions within the thread.
+        data_tests: [not_null]
+      - name: turn_id
+        description: "`<thread_id>:t<turn_index>`, where turn_index is a 1-based running count of turns within the thread."
+        data_tests: [not_null]
+      - name: is_session_start
+        description: True for the first message of a thread and for any message whose gap from the previous one exceeds the session gap.
+        data_tests: [not_null]
+      - name: is_turn_start
+        description: True when the message starts a session or its sender differs from the previous message's sender.
+        data_tests: [not_null]
+      - name: reply_seconds
+        description: >
+          Seconds from the previous message (the last message of the previous turn) to this one.
+          Set only on a turn start that is not a session start; null otherwise.

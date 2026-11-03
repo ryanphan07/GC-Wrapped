@@ -20,6 +20,18 @@ Message = dict[str, Any]
 
 _BASE_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 
+# Timing model: bursts of rapid back-and-forth separated by multi-hour gaps. Lulls inside a burst
+# stay under 60 minutes (the default session gap), so burst boundaries are the session boundaries.
+_MINUTE_MS = 60_000
+_HOUR_MS = 60 * _MINUTE_MS
+_BURST_GAP_MIN_MS = 3 * _HOUR_MS
+_BURST_GAP_MAX_MS = 20 * _HOUR_MS
+_BURST_LEN_MIN, _BURST_LEN_MAX = 3, 12
+_RAPID_MIN_MS, _RAPID_MAX_MS = 5_000, 3 * _MINUTE_MS
+_LULL_CHANCE = 0.1
+_LULL_MIN_MS, _LULL_MAX_MS = 10 * _MINUTE_MS, 45 * _MINUTE_MS
+_SAME_SENDER_CHANCE = 0.4
+
 # (folder name, title, participants, message count)
 THREADS: list[tuple[str, str, list[str], int]] = [
     (
@@ -66,9 +78,23 @@ def build_conversation(
     """
     messages: list[Message] = []
     ts = _BASE_MS
+    burst_left = 0
+    prev_sender: str | None = None
     for i in range(count):
-        ts += rng.randint(1_000, 3_600_000)
-        sender = rng.choice(participants)
+        if burst_left == 0:
+            ts += rng.randint(_BURST_GAP_MIN_MS, _BURST_GAP_MAX_MS)
+            burst_left = rng.randint(_BURST_LEN_MIN, _BURST_LEN_MAX)
+        elif rng.random() < _LULL_CHANCE:
+            ts += rng.randint(_LULL_MIN_MS, _LULL_MAX_MS)
+        else:
+            ts += rng.randint(_RAPID_MIN_MS, _RAPID_MAX_MS)
+        burst_left -= 1
+        # Sticky senders give multi-message turns, not strict alternation.
+        if prev_sender is not None and rng.random() < _SAME_SENDER_CHANCE:
+            sender = prev_sender
+        else:
+            sender = rng.choice(participants)
+        prev_sender = sender
         msg: Message = {fmt.KEY_SENDER: sender, fmt.KEY_TIMESTAMP_MS: ts}
         kind = rng.choices(["text", "photo", "share", "empty", "nocontent"], [10, 2, 2, 1, 1])[0]
         if i == 3:

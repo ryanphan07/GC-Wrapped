@@ -13,9 +13,15 @@ clean-targets: ["target", "dbt_packages"]
 vars:
   # Raw timestamps stay UTC; staging derives local time in this zone.
   gcw_timezone: America/Los_Angeles
+  # A gap longer than this between consecutive messages in a thread starts a new session.
+  session_gap_minutes: 60
 
-# staging = views (cast, rename, light derivations). Marts will be tables; no incremental models.
+# staging and intermediate = views; marts = tables. No incremental models.
 models:
   gcwrapped:
     staging:
       +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,29 +1,28 @@
-Last session: 2026-11-03 — Scrub loader errors, dbt sources + staging, dbt build in CI
-Brief completed: yes (CI green on branch; merged to main, see Commits)
+Last session: 2026-11-03 — Sessionization, reply times, marts
+Brief completed: partial. All code, docs and tests written; local `dbt parse`, ruff, mypy and pytest pass. NOT yet run: `dbt build` (incl. the 4 unit tests and singular test) and CI, because this machine has no Docker/Postgres. Not committed, pushed or merged yet.
 Done:
-- Loader: any exception during COPY or merge becomes LoadError(class, row index, field name). The per-row try sits inside the COPY block so psycopg's cancel message to the server is value-free. raw.load_runs.error stores only that summary (e.g. "RuntimeError at row 3").
-- `gcw ingest` on paths with no threads now fails before database access and before any run row; message and exit code 1 unchanged.
-- dbt: dbt-postgres >=1.10 (resolved 1.11.0 locally), dbt_utils 1.4.1 via packages.yml (package-lock.yml committed).
-- Sources raw.messages and raw.load_runs with tests; stg_instagram__messages and stg_instagram__reactions (views) fully documented and tested. Var gcw_timezone (default America/Los_Angeles) drives sent_at_local.
-- CI integration job: reset gcw_dev, gcw migrate, make synth, gcw ingest export_a, make dbt-deps, make dbt-build. Added Makefile targets dbt-deps, dbt-build.
-- Tests: 4 new integration (iterator failure, NUL-byte bad row, CLI failure output, no-threads leaves no run row), 1 new CLI unit (no-threads before DB), 1 LoadError unit. Sentinel is SENTINEL_SECRET.
+- Generator: bursts (3-12 msgs) of rapid back-and-forth (5s-3min, 10% lulls of 10-45min) separated by 3-20h gaps; sticky senders (40% repeat) give multi-message turns. Same seed stays deterministic. Message counts unchanged (counts are structural), so no count assertions needed edits. New tests/test_synthetic_timing.py (4 tests).
+- Var session_gap_minutes: 60 in dbt_project.yml. Intermediate = views, marts = tables. Macro member_key(thread, name) = surrogate key of (thread_id, name).
+- int_messages_sessionized: LAG for previous time/sender, boolean boundary flags, running SUM for session_index/turn_index. Unit-tested.
+- Marts: fct_messages, fct_reactions, dim_members, fct_sessions, agg_member_activity, agg_activity_daily. All columns documented; unique/not_null keys, relationships (fct_messages, fct_reactions, fct_sessions, agg_member_activity to dim_members; fct_messages to fct_sessions; fct_reactions to fct_messages), accepted_range on most_active_hour, expression_is_true on fct_messages.
+- Unit tests (4): gap boundaries (59m59s, exactly 60m, 60m01s, single-message session, second thread); turns across a session boundary; reply rules (same sender, session start, multi-message turn uses its last message); var override to 5 min. Singular test dbt/tests/reply_seconds_within_session_gap.sql.
 Deviations from the brief (what + why):
-- dbt floor is >=1.10, not >=1.8: needed for the `arguments:` test syntax (older syntax is deprecated). Satisfies "≥ 1.8".
-- message_type priority is media > share > text > empty (see decisions.md); the brief said "derived from content" only.
-- CI resets gcw_dev before the e2e steps, because the integration tests leave it in an arbitrary state.
-- LoadError wraps ParseError too, so `gcw ingest` prints "ParseError at row N" instead of the parser's field message. Run `gcw parse` for the detailed message.
-- Added dbt/.user.yml to .gitignore.
+- dim_members also contains reactors who never sent a message (message_count 0), so relationships tests do not break on lurkers in real data. Decision logged.
+- Reaction counts and top_emoji exclude self-reactions; top_emoji = emoji the member used when reacting. Brief did not specify.
+- fct_messages omits message text (stays in staging). Added member_key to facts for single-column relationships.
+- Added a 4th unit test (var override) beyond the three requested groups.
+- Reply time uses LAG only; LEAD was not needed (the previous message of a turn start is the previous turn's last message).
 In progress / broken:
-- Field name is only filled when a server error's context names a known column; client-side failures report row only (field unknown). Not exercised in CI.
-- Server-side errors that Postgres logs itself (e.g. a NUL byte in text) can still appear in the server log; only client-originated exceptions are scrubbed there. Not verified against a server log.
-- Format still PROVISIONAL; real-schema reconciliation not done.
+- dbt build/unit tests unverified against Postgres (see above). First CI run may expose SQL or unit-test fixture issues.
+- agg_activity_daily.sessions counts a session on every local day it has a message.
 Next up:
-- Intermediate and marts (threads, reply times, member activity, activity over time) -- includes write-it-yourself SQL for threads/reply times.
+- Commit, push, open PR, get CI green, merge (merge commit), then record real hashes and counts here.
 - Ryan: inspector on real export, reconcile format module.
 Open questions for planning:
-- Is the reactions uniqueness test (message_key, actor, emoji) too strict for real data? It will fail if an export lists the same reaction twice.
+- Is "top emoji" meant as emoji given or emoji received? Implemented as given.
+- Reactions uniqueness test (message_key, actor, emoji) still possibly too strict for real data.
 Measured this session (exact value + source):
-- CI run 41589427550 (2026-11-03 UTC): unit 67 passed, 16 deselected; integration 16 passed, 67 deselected; dbt build PASS=34 WARN=0 ERROR=0 TOTAL=34; synthetic export_a ingest rows parsed 105, inserted 105.
-- Local: ruff check, ruff format --check, mypy --strict clean; pytest -m "not integration" 67 passed; dbt parse clean (2026-11-03).
-Commits: filled in below after merge
-Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
+- Local `dbt ls --resource-type model --quiet | wc -l` = 9; `dbt ls --resource-type test --quiet | wc -l` = 109; `--resource-type unit_test` = 4 (2026-11-03). Without --quiet the commands print 12 and 112 because dbt adds 3 log lines.
+- Local: ruff check, ruff format --check, mypy --strict clean; pytest -m "not integration" 71 passed, 16 deselected; dbt parse clean.
+Commits: none yet (branch sessionization-marts, uncommitted)
+Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [~] built, unverified in CI Airflow DAG [ ] dashboard [ ] one-command e2e [ ]

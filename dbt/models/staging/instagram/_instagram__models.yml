@@ -56,11 +56,20 @@ models:
         description: When the row was inserted (UTC).
 
   - name: stg_instagram__reactions
-    description: One row per emoji reaction on a message.
+    description: >
+      One row per distinct emoji reaction on a message; exact duplicate (message_key, actor, emoji)
+      rows from the export are dropped.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns: [message_key, actor, emoji]
+      # Instagram allows one reaction per person per message; a warning means a real export has more.
+      - dbt_utils.unique_combination_of_columns:
+          name: stg_instagram__reactions_one_per_actor
+          arguments:
+            combination_of_columns: [message_key, actor]
+          config:
+            severity: warn
     columns:
       - name: message_key
         description: The reacted-to message.
