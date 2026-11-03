@@ -1,29 +1,26 @@
-Last session: 2026-11-03 — Airflow DAG orchestrating ingest and dbt build
-Brief completed: yes (CI green on branch and PR #5 merged with a merge commit)
+Last session: 2026-11-03 — Streamlit dashboard on marts via read-only role
+Brief completed: yes (CI green on branch; PR merged with a merge commit, hashes below)
 Done:
-- airflow/Dockerfile (apache/airflow:3.3.2-python3.12): gcwrapped + dbt in /opt/gcw-venv from uv.lock (uv export; editable install at /opt/gcw so migrations/ resolves); dbt project and migrations copied in; `runtime` and `test` stages. .dockerignore keeps data/, .env and fixtures out of build contexts.
-- airflow/dags/gcw_pipeline.py: @daily, catchup=False, max_active_runs=1, retries=1; check_landing >> migrate >> ingest >> dbt_deps_and_build >> summarize, all @task.bash calling the venv's gcw/dbt. DB from env, no Airflow connections.
-- New CLI: `gcw check-landing DIR`, `gcw ingest --landing DIR`, `gcw last-run` (src/gcwrapped/landing.py, runs.py); 6 unit tests + 1 integration test (idempotent landing ingest, last-run counts).
-- docker-compose `airflow` service (standalone, landing mount read-only, DATABASE_URL/POSTGRES_* env, depends on db healthy); `make airflow-up`.
-- DAG tests (4) inside the test image: imports clean, task order, schedule/catchup/max_active_runs, retries.
-- CI job `airflow`: build both targets, DAG tests, synthetic landing dir, `airflow db migrate && airflow dags test gcw_pipeline` against the CI Postgres, then asserts dbt PASS line with ERROR=0, raw.messages and analytics.fct_messages non-empty, latest load run succeeded.
-- README: running the DAG, why separate environments. decisions.md: 2 entries from the brief + 2 more.
+- docker/postgres/init/02-reader-role.sh: idempotent gcw_reader LOGIN role from GCW_READER_PASSWORD (password passed as a psql variable). CI runs the same script in the integration and airflow jobs.
+- dbt: marts get `+grants: select: [gcw_reader]`; on-run-end hook grants USAGE on the target schema. Staging and intermediate get nothing.
+- src/gcwrapped/dashboard/queries.py: typed, parameterized queries (threads, daily activity, member leaderboard, sessions, hour of day, median reply); connects with DASHBOARD_DATABASE_URL (config.py DashboardSettings).
+- dashboard/app.py: thread selector, 4 KPIs, messages-per-day line, leaderboard, hour-of-day bar, privacy note. dashboard/Dockerfile + compose `dashboard` service (8501); `make dashboard-up`.
+- tests/test_dashboard_warehouse.py (13 tests, marker `warehouse`): column/non-empty checks per query, permission denied on raw.messages, stg_instagram__messages and int_messages_sessionized, SELECT on fct_messages ok, no `content` column visible, Streamlit AppTest smoke.
+- CI integration job: `uv sync --group dbt --group dashboard`, role setup before dbt, `make test-warehouse` after dbt build.
+- README dashboard section; decisions.md: 2 entries from the brief + 1 (warehouse marker).
 Deviations from the brief (what + why):
-- Added `gcw check-landing`, `ingest --landing`, `last-run` rather than logic in the DAG: keeps the DAG free of project imports, testable without Airflow.
-- `airflow db migrate` and `dags test` run in one container invocation (the SQLite file lives in the container).
-- DAG tests use dagbag.dags and dag.schedule: DagBag.get_dag queries the metadata DB, and CronTriggerTimetable has no .summary.
-- Not run locally: the image, compose service and `make airflow-up` (no Docker/make here). The image and DAG are verified by CI only.
+- New pytest marker `warehouse` and `make test-warehouse`: integration tests run before dbt build and reset schemas, so mart-reading tests cannot share that marker.
+- Makefile ignores tests/test_dashboard_warehouse.py in `test` and `test-integration` (it imports streamlit/pandas, absent from the lint-test install). mypy ignores missing imports for pandas/streamlit.
+- The airflow CI job also creates the role: dbt's grants fail if gcw_reader does not exist.
+- Staging and intermediate views share the `analytics` schema with marts (no custom schemas), so isolation is per-relation grants, not per-schema.
 In progress / broken:
-- compose service and `make airflow-up` are unexercised anywhere (CI does not use compose).
-- airflow/ is outside mypy's files; the DAG file is linted by ruff only.
-- Server-side error scrubbing against a real server log still unverified (unchanged).
-Next up:
-- Dashboard, one-command e2e (remaining Phase 1 items).
-- Ryan: try `make airflow-up` with his landing dir; inspector on real export, reconcile format module.
-Open questions for planning:
-- None blocking.
+- Compose `dashboard` service and the Dockerfile are unexercised (no Docker here, CI does not build them).
+- Existing Postgres volumes will not rerun init scripts; README gives the one-off command.
+- dbt now fails if gcw_reader is missing (e.g. on a real DB that was never given the role).
+Next up: one-command e2e (last Phase 1 item). Ryan: create the role on gcw_real if the dashboard should read it.
+Open questions for planning: none blocking.
 Measured this session (exact value + source):
-- CI run 41595574540, branch airflow-dag (2026-11-03 UTC): all 5 DAG tasks succeeded; export roots 2; ingest rows parsed 140, inserted 140; dbt Done. PASS=124 WARN=0 ERROR=0 TOTAL=124; DAG tests 4 passed.
-- Local: ruff, ruff format --check, mypy --strict clean; pytest -m "not integration" 79 passed, 18 deselected.
-Commits: 9f1da4d — WIP: Airflow DAG, image, CI job; a33454d — Fix DAG test lint and DagBag signature; d9f101c — DAG tests: read parsed dags from memory; 4541bdc — DAG test: assert schedule argument; 9c1b138 — Document Airflow DAG; update STATUS and decisions; 0ea595b — Merge pull request #5 (merge commit on main).
-Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [ ] one-command e2e [ ]
+- CI run 41598617032 (branch dashboard): all 3 jobs success; integration `18 passed` then `13 passed` (warehouse); dbt PASS=125 WARN=0 ERROR=0 TOTAL=125; airflow DAG tests 4 passed.
+- Local: ruff, ruff format --check, mypy --strict clean; pytest unit 79 passed, 18 deselected.
+Commits: see git log below (branch commits and merge hash filled in after merge).
+Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [ ]

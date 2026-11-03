@@ -32,6 +32,14 @@ class DatabaseSettings(BaseSettings):
     database_url: SecretStr
 
 
+class DashboardSettings(BaseSettings):
+    """Dashboard connection. Must be the read-only gcw_reader role, never the pipeline user."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    dashboard_database_url: SecretStr
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Load settings once per process."""
@@ -42,3 +50,9 @@ def get_settings() -> Settings:
 def get_database_settings() -> DatabaseSettings:
     """Load DB settings once per process. Raises if the DB env vars are missing."""
     return DatabaseSettings()
+
+
+@lru_cache
+def get_dashboard_settings() -> DashboardSettings:
+    """Load dashboard DB settings once per process. Raises if DASHBOARD_DATABASE_URL is unset."""
+    return DashboardSettings()

@@ -6,6 +6,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      GCW_READER_PASSWORD: ${GCW_READER_PASSWORD}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -44,6 +45,20 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ${GCW_LANDING_HOST_DIR:-./data/landing}:/opt/gcw-landing:ro
+
+  # Streamlit dashboard on http://localhost:8501. Connects as gcw_reader: marts only, no message text.
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: gcw-dashboard
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DASHBOARD_DATABASE_URL: postgresql://gcw_reader:${GCW_READER_PASSWORD}@db:5432/${GCW_DBNAME:-gcw_dev}
+    ports:
+      - "127.0.0.1:8501:8501"
 
 volumes:
   pgdata:
