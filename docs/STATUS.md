@@ -1,26 +1,25 @@
-Last session: 2026-11-03 — Streamlit dashboard on marts via read-only role
-Brief completed: yes (CI green on branch; PR merged with a merge commit, hashes below)
+Last session: 2026-11-03 — One-command e2e, verified in CI
+Brief completed: yes (CI green on branch incl. e2e job with idempotent second run; merge hashes below)
 Done:
-- docker/postgres/init/02-reader-role.sh: idempotent gcw_reader LOGIN role from GCW_READER_PASSWORD (password passed as a psql variable). CI runs the same script in the integration and airflow jobs.
-- dbt: marts get `+grants: select: [gcw_reader]`; on-run-end hook grants USAGE on the target schema. Staging and intermediate get nothing.
-- src/gcwrapped/dashboard/queries.py: typed, parameterized queries (threads, daily activity, member leaderboard, sessions, hour of day, median reply); connects with DASHBOARD_DATABASE_URL (config.py DashboardSettings).
-- dashboard/app.py: thread selector, 4 KPIs, messages-per-day line, leaderboard, hour-of-day bar, privacy note. dashboard/Dockerfile + compose `dashboard` service (8501); `make dashboard-up`.
-- tests/test_dashboard_warehouse.py (13 tests, marker `warehouse`): column/non-empty checks per query, permission denied on raw.messages, stg_instagram__messages and int_messages_sessionized, SELECT on fct_messages ok, no `content` column visible, Streamlit AppTest smoke.
-- CI integration job: `uv sync --group dbt --group dashboard`, role setup before dbt, `make test-warehouse` after dbt build.
-- README dashboard section; decisions.md: 2 entries from the brief + 1 (warehouse marker).
+- Single target DB: GCW_DB_NAME is required by DatabaseSettings and DashboardSettings (config.py). URLs are built from POSTGRES_* / GCW_READER_PASSWORD; an explicit DATABASE_URL / DASHBOARD_DATABASE_URL is accepted only if its dbname equals GCW_DB_NAME, else ValidationError (CLI prints a fixed "database not configured" message). dbt profile reads env_var('GCW_DB_NAME') with no default. DBT_DEV_DBNAME and GCW_DBNAME are gone.
+- Tests: 6 new in tests/test_config.py (built URL, matching URL ok, mismatch fails for gcw and dashboard, dashboard and gcw resolve the same name, dbt profile reads GCW_DB_NAME with no default).
+- `make e2e ENV_FILE=…` (default .env): compose up --build --wait db dashboard (dashboard got a healthcheck), build airflow, `compose run -T --no-deps airflow` runs `airflow db migrate`, `airflow dags test gcw_pipeline`, `gcw last-run`; prints dashboard URL. `gcw last-run` now prints the target database first.
+- CI job `e2e`: writes an env file and synthetic landing dir under RUNNER_TEMP, runs `make e2e` twice; asserts /_stcore/health = 200, raw.messages and analytics.fct_messages non-empty, first run inserted > 0, second run's latest load_runs.rows_inserted = 0.
+- clean_text replaces lone surrogates with U+FFFD (after mojibake fix and NUL strip, before hashing); 2 parser tests. The loader's error-path test still uses its hand-built row.
+- .env.example lists every variable with comments; README: Quickstart, Running on real data, Privacy (consent, redaction plan, text never leaves staging, reader role, content-free logs, agent isolation).
+- decisions.md: the 3 entries from the brief.
 Deviations from the brief (what + why):
-- New pytest marker `warehouse` and `make test-warehouse`: integration tests run before dbt build and reset schemas, so mart-reading tests cannot share that marker.
-- Makefile ignores tests/test_dashboard_warehouse.py in `test` and `test-integration` (it imports streamlit/pandas, absent from the lint-test install). mypy ignores missing imports for pandas/streamlit.
-- The airflow CI job also creates the role: dbt's grants fail if gcw_reader does not exist.
-- Staging and intermediate views share the `analytics` schema with marts (no custom schemas), so isolation is per-relation grants, not per-schema.
+- GCW_DB_NAME has no default (compose uses ${GCW_DB_NAME:?}), so every compose command, including `make down`, needs it in .env or the env file. Chosen so a real run is always an explicit choice.
+- Airflow runs via `compose run`, not `exec` into the long-running `standalone` service: no wait for that service to boot, and no service left running.
+- Privacy "redaction plan" says redaction is planned, not built (Phase 1 has no LLM calls). "Consent" wording is mine; edit if it should say more.
 In progress / broken:
-- Compose `dashboard` service and the Dockerfile are unexercised (no Docker here, CI does not build them).
-- Existing Postgres volumes will not rerun init scripts; README gives the one-off command.
-- dbt now fails if gcw_reader is missing (e.g. on a real DB that was never given the role).
-Next up: one-command e2e (last Phase 1 item). Ryan: create the role on gcw_real if the dashboard should read it.
+- Existing Postgres volumes do not rerun init scripts: gcw_reader must be created once (command in README) before dbt grants work on an old volume.
+- LANDING_DIR and CHAT_TIMEZONE (config.Settings) are read by nothing yet; noted in .env.example.
+- Pydantic ValidationError text includes the input values if it ever reaches a traceback; the CLI catches it and prints a fixed message, but the dashboard does not.
+Next up: Phase 1 is complete. Ryan: run the real sequence below in his own terminal and report counts. Then format reconciliation against the real export (spec is still PROVISIONAL).
 Open questions for planning: none blocking.
 Measured this session (exact value + source):
-- CI run 41598617032 (branch dashboard): all 3 jobs success; integration `18 passed` then `13 passed` (warehouse); dbt PASS=125 WARN=0 ERROR=0 TOTAL=125; airflow DAG tests 4 passed.
-- Local: ruff, ruff format --check, mypy --strict clean; pytest unit 79 passed, 18 deselected.
-Commits: 3c76828 — Streamlit dashboard on marts via read-only gcw_reader role; f7212e4 — Keep warehouse test module out of make test/test-integration; 7b3f61e — Update STATUS for dashboard session; 82bd3ed — Merge pull request #6 (merge commit on main).
-Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [ ]
+- CI run 41600157782 (branch e2e): lint-test, integration, airflow, e2e all success. In the e2e job, run 1: dbt PASS=125 WARN=0 ERROR=0 TOTAL=125, load id 1 rows parsed 140 rows inserted 140; run 2: load id 2 rows parsed 140 rows inserted 0.
+- Local: ruff, ruff format --check, mypy --strict clean; pytest unit 87 passed, 18 deselected.
+Commits: 6a193e4 — One-command e2e (make e2e) verified in CI; single GCW_DB_NAME; replace lone surrogates; aca2edc — Fix e2e job: runner context is unavailable in job env; merge commit: see next line.
+Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x]

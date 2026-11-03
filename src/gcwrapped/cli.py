@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 _NO_THREADS = "error: no message threads found under the given path(s)"
 _NO_ROOTS = "error: no export roots found in the landing directory (one subfolder per export)"
 _NO_DB_CONFIG = (
-    "error: database not configured (set DATABASE_URL, POSTGRES_USER, POSTGRES_PASSWORD)"
+    "error: database not configured (set GCW_DB_NAME, POSTGRES_USER, POSTGRES_PASSWORD; "
+    "DATABASE_URL, if set, must name the same database)"
 )
 
 
@@ -116,6 +117,7 @@ def _last_run() -> int:
     except ValidationError:
         print(_NO_DB_CONFIG)
         return 1
+    print(f"target database: {database_name(url)}")
     try:
         run = latest_run(url)
     except psycopg.Error as exc:

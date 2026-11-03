@@ -267,6 +267,40 @@ def test_nul_bytes_are_stripped_from_every_text_field_and_not_hashed() -> None:
     assert NUL not in str(dirty.model_dump())
 
 
+# --- lone surrogates ------------------------------------------------------------------------
+
+LONE = chr(0xD83D)  # half of a UTF-16 pair; json.loads yields it for a bare "\ud83d" escape
+
+
+def test_lone_surrogates_become_replacement_chars_in_every_text_field() -> None:
+    raw = {
+        fmt.KEY_SENDER: f"Jo{LONE}",
+        fmt.KEY_TIMESTAMP_MS: 1_700_000_000_000,
+        fmt.KEY_CONTENT: f"hi {LONE} there {chr(0xDE00)}",
+        fmt.KEY_SHARE: {fmt.KEY_SHARE_LINK: f"https://x.example/{LONE}"},
+        fmt.KEY_REACTIONS: [
+            {fmt.KEY_REACTION_EMOJI: LONE, fmt.KEY_REACTION_ACTOR: f"Zo{LONE}"},
+        ],
+    }
+
+    msg = parse_message(raw, thread_id="t", thread_title=None, source_file="f")
+
+    assert msg.sender_name == "Jo�"
+    assert msg.content == "hi � there �"
+    assert msg.share_url == "https://x.example/�"
+    assert [(r.actor, r.emoji) for r in msg.reactions] == [("Zo�", "�")]
+    for text in (msg.sender_name, msg.content or ""):
+        text.encode("utf-8")  # raises UnicodeEncodeError if any surrogate survived
+
+
+def test_message_key_is_computed_from_the_replaced_text() -> None:
+    def key(content: str) -> str:
+        raw = {fmt.KEY_SENDER: "a", fmt.KEY_TIMESTAMP_MS: 1, fmt.KEY_CONTENT: content}
+        return parse_message(raw, thread_id="t", thread_title=None, source_file="f").message_key
+
+    assert key(f"x{LONE}y") == key("x�y")
+
+
 def test_nul_bytes_are_stripped_from_the_thread_title(tmp_path: Path) -> None:
     thread = tmp_path / fmt.MESSAGES_DIR / "t_1"
     thread.mkdir(parents=True)

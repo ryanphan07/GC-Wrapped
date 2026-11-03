@@ -1,14 +1,15 @@
 """Instagram DM export parser.
 
-Faithful by design: repairs Meta's text encoding (and drops NUL bytes, which Postgres text cannot
-store) and maps fields, nothing else. Dedup is by
-`message_key` (see decisions.md, "Message dedup key").
+Faithful by design: repairs Meta's text encoding (drops NUL bytes and replaces lone surrogates,
+which Postgres text cannot store) and maps fields, nothing else. Dedup is by `message_key`
+(see decisions.md, "Message dedup key").
 
 Privacy: error messages name fields and counts only, never values.
 """
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -43,9 +44,16 @@ def fix_mojibake(s: str) -> str:
         return s
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def clean_text(s: str) -> str:
-    """Fix mojibake, then drop NUL bytes. Applied to every text field before hashing and loading."""
-    return fix_mojibake(s).replace("\x00", "")
+    """Fix mojibake, drop NUL bytes, replace lone surrogates with U+FFFD.
+
+    Applied to every text field before hashing and loading. Postgres rejects both NUL and
+    surrogates, and one bad row would roll back the whole load.
+    """
+    return _LONE_SURROGATE.sub("�", fix_mojibake(s).replace("\x00", ""))
 
 
 def message_key(

@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models and the Airflow DAG work; the dashboard is in; one-command e2e is next. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e` are in. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
@@ -10,12 +10,25 @@ TBD. Planned flow: export file → parser → Postgres `raw` schema → dbt mode
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/), Docker, and make.
+Requires Docker with compose, make, and (for the synthetic data generator and tests) [uv](https://docs.astral.sh/uv/). Everything below uses synthetic data in the `gcw_dev` database.
 
 ```
-cp .env.example .env        # then set POSTGRES_PASSWORD (and the same password in DATABASE_URL)
+git clone <this repo> && cd GC-Wrapped-Group-Chat-AI-Platform
+cp .env.example .env                  # then change POSTGRES_PASSWORD and GCW_READER_PASSWORD
+uv sync
+uv run python tests/synthetic/instagram.py --out data/landing   # synthetic exports, one subfolder each
+make e2e                              # db + dashboard up, Airflow DAG once, counts printed
+# open http://localhost:8501
+```
+
+`make e2e` starts Postgres and the dashboard with compose and waits until both are healthy, then runs the Airflow DAG once inside the Airflow container (`check_landing → migrate → ingest → dbt build → summarize`). It prints the target database name, the counts from `gcw last-run` and the dashboard URL, and exits non-zero on any failure. Running it again is safe: ingest is idempotent, so a second run inserts 0 rows. CI runs this exact command twice on synthetic data and asserts the second run inserted nothing.
+
+`make e2e` reads the env file named by `ENV_FILE` (default `.env`). **`GCW_DB_NAME` is the single variable that decides the target database** for gcw, dbt and the dashboard. `DATABASE_URL` is optional; if set, it must name the same database or gcw refuses to start. See `.env.example` for every variable.
+
+Development:
+
+```
 uv sync --all-groups
-make up                     # Postgres 17 + pgvector, databases gcw_dev and gcw_real
 make lint test
 make test-integration       # needs the db container up
 make dbt-debug
@@ -23,7 +36,7 @@ make dbt-debug
 
 ## Usage
 
-Both commands connect with `DATABASE_URL` (plus `POSTGRES_USER` / `POSTGRES_PASSWORD`) from the environment or `.env`, and print the target database name first so you can see where you are writing.
+These commands connect to the database named by `GCW_DB_NAME` (with `POSTGRES_USER` / `POSTGRES_PASSWORD`, from the environment or `.env`), and print the target database name first so you can see where you are writing.
 
 ```
 gcw migrate                 # create/upgrade the raw schema (idempotent)
@@ -47,9 +60,9 @@ make airflow-up                          # builds airflow/Dockerfile, starts db 
 ```
 
 - `GCW_LANDING_HOST_DIR` chooses which host folder is mounted (read-only) at `GCW_LANDING_DIR` in the container; it defaults to `data/landing`.
-- The database comes from `DATABASE_URL` in the container's environment, not from Airflow connections. It defaults to `gcw_dev`; pointing it elsewhere (`GCW_DBNAME`) is a deliberate manual step.
-- To run it once without the UI: `docker compose exec airflow airflow dags test gcw_pipeline`.
-- CI runs the same thing: it builds the image, runs the DAG tests inside it, then `airflow dags test gcw_pipeline` against a Postgres service and synthetic exports.
+- The database comes from `GCW_DB_NAME` in the container's environment (set from the env file), not from Airflow connections; dbt reads the same variable.
+- To run it once without the UI, use `make e2e`.
+- CI builds the image, runs the DAG tests inside it, runs `airflow dags test gcw_pipeline` against a Postgres service, and runs `make e2e` twice in a separate `e2e` job.
 
 **Why Airflow and dbt use separate environments.** Airflow pins a large set of dependencies with a constraints file, and dbt's own dependencies often conflict with those pins. The image therefore keeps Airflow in its own Python environment and installs `gcwrapped` and dbt into a second virtualenv, `/opt/gcw-venv`, built from `uv.lock`. Tasks run that venv's `gcw` and `dbt` binaries as subprocesses, so neither side can break the other when it upgrades.
 
@@ -60,22 +73,35 @@ A Streamlit app shows activity from the `analytics` marts: KPIs, messages per da
 ```
 # .env needs GCW_READER_PASSWORD (the role is created on first `make up`, from docker/postgres/init/02-reader-role.sh)
 # Run the pipeline first so the marts exist (ingest + dbt build); dbt grants the role its access.
-make dashboard-up           # http://localhost:8501
+make dashboard-up           # http://localhost:8501 (`make e2e` also starts it)
 make test-warehouse         # query tests, permission-denied checks, Streamlit AppTest (after dbt build)
 ```
 
 If your Postgres volume already existed before this change, the init script will not rerun: run `bash docker/postgres/init/02-reader-role.sh` inside the db container once.
 
+## Running on real data
+
+Real exports and the real-data env file live outside the repo, in a file outside the repo that you pass as `ENV_FILE`. The env file sets `GCW_DB_NAME=gcw_real`, the passwords, and `GCW_LANDING_HOST_DIR` (an absolute path to a folder with one subfolder per export). Run these in your own terminal, never through a coding assistant:
+
+```
+# once, if the Postgres volume predates the reader role:
+docker compose --env-file <ENV_FILE> exec db bash /docker-entrypoint-initdb.d/02-reader-role.sh
+make e2e ENV_FILE=<ENV_FILE>
+```
+
+Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
+
 ## Privacy
 
 Real chat data is sensitive, and the AI coding assistant used on this repo is a third-party API. The rules:
 
-- The assistant never reads, prints, searches, or lists anything under `data/`. It works only with synthetic fixtures in `tests/fixtures/`.
-- The assistant only connects to the `gcw_dev` database (synthetic data). The `gcw_real` database is for the repo owner alone.
-- Real-data commands are run by the repo owner in their own terminal, and only aggregate numbers are shared back.
-- Logs and error messages never include message text, sender names, phone numbers, or emails. They carry counts, IDs, durations, and file hashes.
+- **Consent.** Only chats whose members have agreed to be analysed go through the pipeline. Anything shown to someone other than the repo owner needs the same agreement.
+- **Redaction plan.** Phase 1 makes no LLM or other external calls. Before any later phase sends text to a model, names, phone numbers and emails get redacted first; that step is planned, not built.
+- **Text never leaves staging.** Message text exists only in `raw` and the staging models. The marts the dashboard reads carry counts and timestamps, no content.
+- **Reader role.** The dashboard connects as `gcw_reader`, a read-only Postgres role with `SELECT` on mart tables only. CI asserts permission-denied on `raw` and staging.
+- **Content-free logs and errors.** Logs, CLI output and stored error summaries carry counts, IDs, durations, file hashes and exception class names, never message text, sender names, phone numbers or emails. Sentinel tests enforce this.
+- **Coding-agent isolation.** The assistant never reads, prints, searches, or lists anything under `data/` or the real env file, and only connects to `gcw_dev` (synthetic data). `gcw_real` is for the repo owner alone; real-data commands are run in the owner's terminal and only aggregate numbers are shared back.
 - Chat data, media, `.env` files, and `members.yaml` are never committed. `data/` is git-ignored.
-- Phase 1 pipeline code makes no external API calls.
 
 ## Metrics
 

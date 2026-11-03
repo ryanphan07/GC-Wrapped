@@ -34,6 +34,7 @@ jobs:
       POSTGRES_USER: gcw
       POSTGRES_PASSWORD: ci-password
       POSTGRES_PORT: 5432
+      GCW_DB_NAME: gcw_dev
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
       GCW_READER_PASSWORD: ci-reader-password
       DASHBOARD_DATABASE_URL: postgresql://gcw_reader:ci-reader-password@localhost:5432/gcw_dev
@@ -85,6 +86,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      GCW_DB_NAME: gcw_dev
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
       LANDING: ${{ github.workspace }}/ci-landing
       GCW_READER_PASSWORD: ci-reader-password
@@ -109,7 +111,7 @@ jobs:
           bash docker/postgres/init/02-reader-role.sh
       - name: Run the DAG end to end (airflow dags test)
         run: |
-          docker run --rm --network host             -e DATABASE_URL -e GCW_LANDING_DIR=/landing             -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432             -e POSTGRES_USER=gcw -e POSTGRES_PASSWORD=ci-password             -v "$LANDING:/landing:ro"             gcw-airflow:runtime             bash -c "airflow db migrate && airflow dags test gcw_pipeline" 2>&1 | tee dags-test.log
+          docker run --rm --network host             -e GCW_DB_NAME -e GCW_LANDING_DIR=/landing             -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432             -e POSTGRES_USER=gcw -e POSTGRES_PASSWORD=ci-password             -v "$LANDING:/landing:ro"             gcw-airflow:runtime             bash -c "airflow db migrate && airflow dags test gcw_pipeline" 2>&1 | tee dags-test.log
           test "${PIPESTATUS[0]}" -eq 0
       - name: Assert the pipeline produced data and dbt passed
         run: |
@@ -117,3 +119,51 @@ jobs:
           test "$(psql "$DATABASE_URL" -tA -c 'SELECT count(*) FROM raw.messages')" -gt 0
           test "$(psql "$DATABASE_URL" -tA -c 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
           psql "$DATABASE_URL" -tA -c "SELECT status FROM raw.load_runs ORDER BY load_id DESC LIMIT 1" | grep -qx succeeded
+
+  # The exact command used on real data, on synthetic data: compose builds and starts the db and
+  # dashboard, the Airflow DAG runs once, and a second run must insert nothing.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - name: Write the CI env file and a synthetic landing dir
+        run: |
+          # The runner context is not available in job-level env, so export the paths from here.
+          echo "ENV_FILE=$RUNNER_TEMP/ci.env" >> "$GITHUB_ENV"
+          echo "LANDING=$RUNNER_TEMP/ci-landing" >> "$GITHUB_ENV"
+          ENV_FILE="$RUNNER_TEMP/ci.env"
+          LANDING="$RUNNER_TEMP/ci-landing"
+          cat > "$ENV_FILE" <<EOF
+          GCW_DB_NAME=gcw_dev
+          POSTGRES_USER=gcw
+          POSTGRES_PASSWORD=ci-password
+          POSTGRES_PORT=5432
+          GCW_READER_PASSWORD=ci-reader-password
+          GCW_LANDING_HOST_DIR=$LANDING
+          EOF
+          uv run python tests/synthetic/instagram.py --out "$LANDING"
+      - name: make e2e (first run)
+        run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-1.log; test "${PIPESTATUS[0]}" -eq 0
+      - name: Dashboard is healthy and the marts are populated
+        run: |
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8501/_stcore/health)" = 200
+          psql() { docker compose --env-file "$ENV_FILE" exec -T db psql -U gcw -d gcw_dev -tA -c "$1"; }
+          test "$(psql 'SELECT count(*) FROM raw.messages')" -gt 0
+          test "$(psql 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
+          test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -gt 0
+          grep -qx "target database: gcw_dev" e2e-1.log
+      - name: make e2e (second run inserts nothing)
+        run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-2.log; test "${PIPESTATUS[0]}" -eq 0
+      - name: Second run was idempotent
+        run: |
+          psql() { docker compose --env-file "$ENV_FILE" exec -T db psql -U gcw -d gcw_dev -tA -c "$1"; }
+          test "$(psql 'SELECT count(*) FROM raw.load_runs')" -ge 2
+          test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -eq 0
+          test "$(psql 'SELECT count(*) FROM raw.messages')" -gt 0
+          grep "rows inserted:" e2e-2.log | tail -n 1 | grep -qx "rows inserted: 0"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8501/_stcore/health)" = 200
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose --env-file "$ENV_FILE" logs --no-color --tail=80 db dashboard

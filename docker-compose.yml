@@ -32,10 +32,9 @@ services:
         condition: service_healthy
     environment:
       GCW_LANDING_DIR: /opt/gcw-landing
-      # Defaults to the synthetic database. Pointing a run at another database is a deliberate,
-      # manual act: export GCW_DBNAME yourself before `make airflow-up`.
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${GCW_DBNAME:-gcw_dev}
-      DBT_DEV_DBNAME: ${GCW_DBNAME:-gcw_dev}
+      # GCW_DB_NAME is the one setting that picks the target database for gcw and dbt (no default:
+      # it comes from the env file, so a real run is a deliberate choice).
+      GCW_DB_NAME: ${GCW_DB_NAME:?set GCW_DB_NAME in the env file}
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
@@ -56,9 +55,23 @@ services:
       db:
         condition: service_healthy
     environment:
-      DASHBOARD_DATABASE_URL: postgresql://gcw_reader:${GCW_READER_PASSWORD}@db:5432/${GCW_DBNAME:-gcw_dev}
+      GCW_DB_NAME: ${GCW_DB_NAME:?set GCW_DB_NAME in the env file}
+      GCW_READER_PASSWORD: ${GCW_READER_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
     ports:
       - "127.0.0.1:8501:8501"
+    healthcheck:
+      # The slim image has no curl; Streamlit answers 200 on this path without touching the DB.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request as u; u.urlopen('http://localhost:8501/_stcore/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
 volumes:
   pgdata:
