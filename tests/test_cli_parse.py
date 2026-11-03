@@ -13,7 +13,13 @@ from synthetic.instagram import generate_pair
 @pytest.fixture(autouse=True)
 def no_db_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Run as a machine with no DB env vars and no .env file."""
-    for var in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT", "DATABASE_URL"):
+    for var in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_PORT",
+        "DATABASE_URL",
+        "GCW_DB_NAME",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
     get_settings.cache_clear()
@@ -110,7 +116,7 @@ def test_parse_empty_path_reports_error(tmp_path: Path, capsys: pytest.CaptureFi
 def test_ingest_with_no_threads_fails_before_touching_the_database(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for var in ("DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD"):
+    for var in ("DATABASE_URL", "GCW_DB_NAME", "POSTGRES_USER", "POSTGRES_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
 
     assert main(["ingest", str(tmp_path)]) == 1

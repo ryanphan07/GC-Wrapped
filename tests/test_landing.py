@@ -10,7 +10,13 @@ from synthetic.instagram import generate_pair
 
 @pytest.fixture(autouse=True)
 def no_db_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
-    for var in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT", "DATABASE_URL"):
+    for var in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_PORT",
+        "DATABASE_URL",
+        "GCW_DB_NAME",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
     get_settings.cache_clear()

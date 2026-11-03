@@ -4,7 +4,12 @@ export
 # That module imports streamlit/pandas (dashboard group), which lint-test and dev installs lack.
 IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up
+# `make e2e ENV_FILE=...` points compose at another env file (real runs keep theirs outside the repo).
+ENV_FILE ?= .env
+COMPOSE = docker compose --env-file $(ENV_FILE)
+DASHBOARD_URL = http://localhost:8501
+
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e
 
 up:
 	mkdir -p data/landing data/archive
@@ -37,6 +42,16 @@ test-warehouse:
 # Streamlit on http://localhost:8501, connecting as gcw_reader.
 dashboard-up:
 	docker compose up -d --build dashboard
+
+# One command, fresh export to dashboard: db + dashboard up and healthy, then the Airflow DAG once
+# (check landing -> migrate -> ingest -> dbt build -> summary), the same path CI verifies.
+# Safe to re-run: ingest is idempotent. Any failure exits non-zero. Prints counts, never content.
+e2e:
+	@test -f "$(ENV_FILE)" || { echo "error: env file not found (set ENV_FILE)"; exit 1; }
+	$(COMPOSE) up -d --build --wait db dashboard
+	$(COMPOSE) build airflow
+	$(COMPOSE) run --rm -T --no-deps airflow bash -c 		'set -euo pipefail; airflow db migrate >/dev/null; airflow dags test gcw_pipeline; /opt/gcw-venv/bin/gcw last-run'
+	@echo "dashboard: $(DASHBOARD_URL)"
 
 lint:
 	uv run ruff check

@@ -164,3 +164,21 @@ Decision: Tests that need a built warehouse (dbt marts plus the reader role) use
 Alternative: Mark them `integration`; or put the dashboard group in the default sync.
 Why: `integration` tests run before dbt build in CI and reset schemas, so tests that read marts would fail there. A separate marker keeps the order explicit and keeps the lint job's install small.
 Tradeoff: Another marker to remember; DataFrames are untyped (Any) under mypy.
+
+### 2026-11-03 — One-command e2e via compose and the DAG, verified in CI
+Decision: `make e2e ENV_FILE=…` starts Postgres and the dashboard with compose and runs the Airflow DAG once; CI runs the same command on synthetic data, twice, to prove idempotency.
+Alternative: A separate script that bypasses Airflow; or testing compose only by hand.
+Why: The real-data run should use exactly the code path CI verifies; the second run proves re-ingest safety end to end.
+Tradeoff: CI is slower (image builds, compose startup).
+
+### 2026-11-03 — Single source of truth for the target database
+Decision: One env variable (GCW_DB_NAME) decides the target database for gcw, dbt and the dashboard; a mismatch fails fast. gcw and the dashboard build their URLs from components, and an explicit DATABASE_URL / DASHBOARD_DATABASE_URL is accepted only if it names the same database. dbt's profile reads GCW_DB_NAME with no default.
+Alternative: Separate variables per tool.
+Why: With separate variables, a real run could ingest into gcw_real and build dbt models in gcw_dev without any error.
+Tradeoff: Tool-native config (DATABASE_URL, profiles) is derived rather than set directly.
+
+### 2026-11-03 — Replace lone surrogates in the parser
+Decision: clean_text replaces lone UTF-16 surrogates with U+FFFD before hashing.
+Alternative: Let the load fail.
+Why: Postgres rejects them, and one bad row rolls back the entire load.
+Tradeoff: The original code unit is lost; it was not displayable text anyway.

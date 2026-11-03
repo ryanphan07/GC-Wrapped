@@ -2,7 +2,7 @@
 
 Tasks only shell out to the gcw CLI and dbt in the isolated /opt/gcw-venv, so Airflow's own
 environment never imports project code or dbt. Both print counts only, never message content.
-Configuration comes from the environment (GCW_LANDING_DIR, DATABASE_URL, POSTGRES_*), not from
+Configuration comes from the environment (GCW_LANDING_DIR, GCW_DB_NAME, POSTGRES_*), not from
 Airflow connections. Ingest is idempotent, so every run re-ingests the whole landing directory.
 """
 

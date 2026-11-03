@@ -7,8 +7,38 @@ DB credentials: `Settings` has defaults only, `DatabaseSettings` has required fi
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_HOST = "localhost"
+
+
+def resolve_url(
+    explicit: SecretStr,
+    *,
+    user: str,
+    password: SecretStr,
+    host: str,
+    port: int,
+    dbname: str,
+) -> SecretStr:
+    """The connection string for `dbname`: the explicit URL if given and it agrees, else built.
+
+    GCW_DB_NAME is the one variable that picks the target database. An explicit URL (empty means
+    unset) is only accepted when it names that same database, so ingest and dbt cannot silently
+    diverge.
+    """
+    if not explicit.get_secret_value():
+        return SecretStr(
+            make_conninfo(
+                host=host, port=port, user=user, password=password.get_secret_value(), dbname=dbname
+            )
+        )
+    url_db = conninfo_to_dict(explicit.get_secret_value()).get("dbname")
+    if url_db != dbname:  # names only: database names are not secrets, the URL is
+        raise ValueError(f"URL targets database {url_db!r} but GCW_DB_NAME is {dbname!r}")
+    return explicit
 
 
 class Settings(BaseSettings):
@@ -26,10 +56,25 @@ class DatabaseSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    gcw_db_name: str
     postgres_user: str
     postgres_password: SecretStr
+    postgres_host: str = DEFAULT_HOST
     postgres_port: int = 5432
-    database_url: SecretStr
+    # Optional: built from the parts above when empty; checked against gcw_db_name when set.
+    database_url: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def _resolve_database_url(self) -> "DatabaseSettings":
+        self.database_url = resolve_url(
+            self.database_url,
+            user=self.postgres_user,
+            password=self.postgres_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            dbname=self.gcw_db_name,
+        )
+        return self
 
 
 class DashboardSettings(BaseSettings):
@@ -37,7 +82,23 @@ class DashboardSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    dashboard_database_url: SecretStr
+    gcw_db_name: str
+    gcw_reader_password: SecretStr
+    postgres_host: str = DEFAULT_HOST
+    postgres_port: int = 5432
+    dashboard_database_url: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def _resolve_dashboard_url(self) -> "DashboardSettings":
+        self.dashboard_database_url = resolve_url(
+            self.dashboard_database_url,
+            user="gcw_reader",
+            password=self.gcw_reader_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            dbname=self.gcw_db_name,
+        )
+        return self
 
 
 @lru_cache

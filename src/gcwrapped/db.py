@@ -6,7 +6,7 @@ from gcwrapped.config import get_database_settings
 
 
 def database_url() -> str:
-    """The connection string from DATABASE_URL. Never log it: it contains the password."""
+    """The connection string for GCW_DB_NAME. Never log it: it contains the password."""
     return get_database_settings().database_url.get_secret_value()
 
 
