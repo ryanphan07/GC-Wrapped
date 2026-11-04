@@ -1,51 +1,72 @@
-> **PROVISIONAL — not yet verified against a real export.**
-> Built from public third-party descriptions, not from Meta documentation (none found) or from
-> Ryan's export. Replace with the output of `scripts/inspect_export.py` run on the real export,
-> then reconcile `src/gcwrapped/parsers/instagram_format.py`, the only module that encodes these
-> assumptions.
+# Export structure
 
-# Instagram DM export format (JSON)
+## Directory layout
 
-## Sources
-- [chatpack Instagram parser](https://docs.rs/crate/chatpack/latest/source/src/parsers/instagram.rs): `participants` + `messages` per file; `sender_name`, `timestamp_ms`, `content`; `share_text` used when a shared post has no `content`; mojibake repair applied to `sender_name` and `content`.
-- [Instagram-Direct-Stats](https://github.com/dudynets/Instagram-Direct-Stats) and [igmd](https://github.com/kr3t3n/igmd): thread folders contain `message_N.json`; media (photos, videos, audio, shares, stickers) appear as per-message keys.
-- [Analyzing Instagram chat data using Python](https://devqueue.medium.com/analyzing-instagram-chat-data-using-python-500ab6941dc3): per-message keys `share`, `reactions`, `photos`, `audio_files`, `videos`; `timestamp_ms` is epoch milliseconds.
-- [StackOverflow: Facebook JSON badly encoded (mirror)](https://magenaut.com/?p=21847): UTF-8 bytes written as latin-1 code points; fix is `s.encode("latin-1").decode("utf-8")`.
-
-## Layout (assumed)
 ```
-<export root>/your_instagram_activity/messages/inbox/<thread folder>/message_1.json
-                                                                     message_2.json ...
+.
+thread_001/
+  message_N.json x1
+  audio/
+    N.mp4 x1
+  photos/
+    N.heic x1
+    N.jpg x14
+    N.png x31
 ```
-- `message_1.json` holds the newest messages; each file is ordered newest-first.
-- Thread identity = folder name (stable however the files are chunked).
 
-## File object (assumed)
-| key | type | used |
-|---|---|---|
-| `participants` | `[{"name": str}]` | no (member identity is a dbt concern) |
-| `messages` | `[message]` | yes |
-| `title` | str | yes → `thread_title` |
-| `thread_path` | str | no |
+Thread folders: 1
 
-## Message object (assumed)
-| key | type | required | maps to |
-|---|---|---|---|
-| `sender_name` | str (display name, not username) | yes | `sender_name` |
-| `timestamp_ms` | int, epoch ms | yes | `sent_at` (UTC) |
-| `content` | str | no (absent for media-only or unsent) | `content` |
-| `photos` / `videos` / `audio_files` | `[{"uri": str, ...}]` | no | `media_count`, key |
-| `sticker` | `{"uri": str}` | no | `media_count`, key |
-| `share` | `{"link": str, "share_text": str}` | no | `share_url` |
-| `reactions` | `[{"reaction": str, "actor": str}]` | no | `reactions` |
+## File name patterns
 
-## Encoding quirk
-All strings (`sender_name`, `content`, `title`, reaction fields) have UTF-8 bytes serialized as
-latin-1 code points. The parser repairs this before hashing; strings that are already clean (or
-don't round-trip) are returned unchanged.
+| pattern | files |
+|---|---|
+| `N.heic` | 1 |
+| `N.jpg` | 14 |
+| `N.mp4` | 1 |
+| `N.png` | 31 |
+| `message_N.json` | 1 |
 
-## Known unknowns to check against the real export
-- Exact root path (`your_instagram_activity/messages/inbox` vs older `messages/inbox`).
-- Whether reaction objects, `share`, and `sticker` have the shapes above.
-- Whether `uri` values are stable across exports (they feed the message key).
-- Message shapes not modeled: calls, unsent messages, story replies, system messages (dbt later).
+## JSON schema: `message_N.json`
+
+Files: 1 (unparseable: 0)
+
+| path | types | presence | array len (min-max) | strings empty | strings mojibake | int digits (min-max) |
+|---|---|---|---|---|---|---|
+| `$` | object | - | - | - | - | - |
+| `$.image` | object | 1/1 (100.0%) | - | - | - | - |
+| `$.image.creation_timestamp` | integer | 1/1 (100.0%) | - | - | - | 10-10 |
+| `$.image.uri` | string | 1/1 (100.0%) | - | 0/1 (0.0%) | 0/1 (0.0%) | - |
+| `$.is_still_participant` | boolean | 1/1 (100.0%) | - | - | - | - |
+| `$.joinable_mode` | object | 1/1 (100.0%) | - | - | - | - |
+| `$.joinable_mode.link` | string | 1/1 (100.0%) | - | 0/1 (0.0%) | 0/1 (0.0%) | - |
+| `$.joinable_mode.mode` | integer | 1/1 (100.0%) | - | - | - | 1-1 |
+| `$.magic_words` | array | 1/1 (100.0%) | 0-0 | - | - | - |
+| `$.messages` | array | 1/1 (100.0%) | 3220-3220 | - | - | - |
+| `$.messages[]` | object | - | - | - | - | - |
+| `$.messages[].audio_files` | array | 1/3220 (0.0%) | 1-1 | - | - | - |
+| `$.messages[].audio_files[]` | object | - | - | - | - | - |
+| `$.messages[].audio_files[].creation_timestamp` | integer | 1/1 (100.0%) | - | - | - | 10-10 |
+| `$.messages[].audio_files[].uri` | string | 1/1 (100.0%) | - | 0/1 (0.0%) | 0/1 (0.0%) | - |
+| `$.messages[].content` | string | 3152/3220 (97.9%) | - | 0/3152 (0.0%) | 652/3152 (20.7%) | - |
+| `$.messages[].is_geoblocked_for_viewer` | boolean | 3220/3220 (100.0%) | - | - | - | - |
+| `$.messages[].is_unsent_image_by_messenger_kid_parent` | boolean | 3213/3220 (99.8%) | - | - | - | - |
+| `$.messages[].photos` | array | 44/3220 (1.4%) | 1-2 | - | - | - |
+| `$.messages[].photos[]` | object | - | - | - | - | - |
+| `$.messages[].photos[].creation_timestamp` | integer | 46/46 (100.0%) | - | - | - | 10-10 |
+| `$.messages[].photos[].uri` | string | 46/46 (100.0%) | - | 0/46 (0.0%) | 0/46 (0.0%) | - |
+| `$.messages[].reactions` | array | 1405/3220 (43.6%) | 1-4 | - | - | - |
+| `$.messages[].reactions[]` | object | - | - | - | - | - |
+| `$.messages[].reactions[].actor` | string | 2492/2492 (100.0%) | - | 0/2492 (0.0%) | 1061/2492 (42.6%) | - |
+| `$.messages[].reactions[].reaction` | string | 2492/2492 (100.0%) | - | 0/2492 (0.0%) | 2492/2492 (100.0%) | - |
+| `$.messages[].sender_name` | string | 3220/3220 (100.0%) | - | 0/3220 (0.0%) | 1119/3220 (34.8%) | - |
+| `$.messages[].share` | object | 1101/3220 (34.2%) | - | - | - | - |
+| `$.messages[].share.link` | string | 1090/1101 (99.0%) | - | 0/1090 (0.0%) | 0/1090 (0.0%) | - |
+| `$.messages[].share.original_content_owner` | string | 1098/1101 (99.7%) | - | 1/1098 (0.1%) | 0/1098 (0.0%) | - |
+| `$.messages[].share.share_text` | string | 1088/1101 (98.8%) | - | 98/1088 (9.0%) | 608/1088 (55.9%) | - |
+| `$.messages[].timestamp_ms` | integer | 3220/3220 (100.0%) | - | - | - | 13-13 |
+| `$.participants` | array | 1/1 (100.0%) | 5-5 | - | - | - |
+| `$.participants[]` | object | - | - | - | - | - |
+| `$.participants[].name` | string | 5/5 (100.0%) | - | 0/5 (0.0%) | 2/5 (40.0%) | - |
+| `$.thread_path` | string | 1/1 (100.0%) | - | 0/1 (0.0%) | 0/1 (0.0%) | - |
+| `$.title` | string | 1/1 (100.0%) | - | 0/1 (0.0%) | 0/1 (0.0%) | - |
+
