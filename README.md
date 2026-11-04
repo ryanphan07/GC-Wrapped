@@ -87,15 +87,23 @@ If your Postgres volume already existed before this change, the init script will
 
 ## Running on real data
 
-Real exports and the real-data env file live outside the repo, in a file outside the repo that you pass as `ENV_FILE`. The env file sets `GCW_DB_NAME=gcw_real`, the passwords, and `GCW_LANDING_HOST_DIR` (an absolute path to a folder with one subfolder per export). Run these in your own terminal, never through a coding assistant:
+Real data gets its **own compose project**: its own containers, its own Postgres volume and its own superuser password, so the dev credentials in the repo's `.env` cannot reach it. Real exports and the real-data env file live outside the repo; you pass the file as `ENV_FILE`. The env file sets:
+
+- `COMPOSE_PROJECT_NAME=gc-wrapped-real` (overrides the pinned `name: gc-wrapped`; every make target passes `--env-file "$(ENV_FILE)"`, and make also reads that file instead of `.env`)
+- `GCW_DB_NAME=gcw_real`
+- its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`, different from `.env`
+- `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export (mounted read-only into the Airflow container as `GCW_LANDING_DIR`)
+- `POSTGRES_HOST_PORT` and `DASHBOARD_PORT` if the dev stack may be running at the same time (defaults 5432 and 8501)
+
+Run these in your own terminal, never through a coding assistant:
 
 ```
-# once, if the Postgres volume predates the reader role:
-docker compose --env-file <ENV_FILE> exec db bash /docker-entrypoint-initdb.d/02-reader-role.sh
 make e2e ENV_FILE=<ENV_FILE>
+# ...look at the dashboard, then stop the real stack:
+make down ENV_FILE=<ENV_FILE>
 ```
 
-Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
+The real stack is started only for a run and stopped afterward. A fresh volume runs the reader-role init script itself, so no manual step is needed. Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
 
 ## Privacy
 

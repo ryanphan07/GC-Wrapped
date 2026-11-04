@@ -7,7 +7,9 @@
       "Edit(~/gcw-private/**)",
       "Write(~/gcw-private/**)",
       "Bash(*gcw-private*)",
-      "Bash(*gcw_real*)"
+      "Bash(*gcw_real*)",
+      "Bash(*gc-wrapped-real*)",
+      "Bash(*real.env*)"
     ]
   }
 }

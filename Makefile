@@ -1,33 +1,37 @@
--include .env
+# `make <target> ENV_FILE=...` selects the env file for everything: make's own environment AND compose.
+# Compose gives shell variables precedence over --env-file, so including a different file here
+# (not always .env) is what stops dev values leaking into a run that names another env file.
+ENV_FILE ?= .env
+-include $(ENV_FILE)
 export
 
 # That module imports streamlit/pandas (dashboard group), which lint-test and dev installs lack.
 IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 
-# `make e2e ENV_FILE=...` points compose at another env file (real runs keep theirs outside the repo).
-ENV_FILE ?= .env
-COMPOSE = docker compose --env-file $(ENV_FILE)
-DASHBOARD_URL = http://localhost:8501
+# Every compose call takes its variables, including COMPOSE_PROJECT_NAME (which overrides the pinned
+# `name:` in docker-compose.yml), from ENV_FILE. Real runs keep theirs outside the repo.
+COMPOSE = docker compose --env-file "$(ENV_FILE)"
+DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
 .PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e
 
 up:
 	mkdir -p data/landing data/archive
-	docker compose up -d --wait
+	$(COMPOSE) up -d --wait
 
 down:
-	docker compose down
+	$(COMPOSE) down
 
 # Airflow UI on http://localhost:8080. Mounts GCW_LANDING_HOST_DIR (default data/landing) read-only.
 airflow-up:
 	mkdir -p data/landing
-	docker compose up -d --build airflow
+	$(COMPOSE) up -d --build airflow
 
 logs:
-	docker compose logs -f db
+	$(COMPOSE) logs -f db
 
 psql-dev:
-	docker compose exec db psql -U $(POSTGRES_USER) -d gcw_dev
+	$(COMPOSE) exec db psql -U $(POSTGRES_USER) -d gcw_dev
 
 test:
 	uv run pytest -m "not integration and not warehouse" $(IGNORE_WAREHOUSE)
@@ -41,7 +45,7 @@ test-warehouse:
 
 # Streamlit on http://localhost:8501, connecting as gcw_reader.
 dashboard-up:
-	docker compose up -d --build dashboard
+	$(COMPOSE) up -d --build dashboard
 
 # One command, fresh export to dashboard: db + dashboard up and healthy, then the Airflow DAG once
 # (check landing -> migrate -> ingest -> dbt build -> summary), the same path CI verifies.

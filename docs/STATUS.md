@@ -1,21 +1,21 @@
-Last session: 2026-11-03 — Local synthetic run in WSL2 and README screenshot
-Brief completed: yes
+Last session: 2026-11-03 — Separate Docker stack for real-data runs
+Brief completed: partial until CI passes on PR #12 and the merge hashes are recorded (see Commits)
 Done:
-- Created .env from .env.example with random passwords (openssl rand -hex 16); GCW_DB_NAME=gcw_dev; .env confirmed gitignored (.gitignore line 3).
-- Followed the README Quickstart as written on a fresh WSL2 Docker setup (uv sync, synthetic generator, make e2e): worked with no code changes.
-- Second `make e2e`: rows inserted 0 (load id 2). `make test-integration`: 18 passed. `make test-warehouse`: 18 passed (after a fresh e2e, see below).
-- Dashboard screenshot via Playwright Docker image (mcr.microsoft.com/playwright/python:v1.49.0-noble, --network host, no sudo): docs/images/dashboard-synthetic.png, embedded in README with a synthetic-data caption.
-- Dev stack stopped with `make down`; no containers left running.
+- Every Makefile compose call (up, down, logs, psql-dev, airflow-up, dashboard-up, e2e) goes through COMPOSE = docker compose --env-file "$(ENV_FILE)".
+- Verified with a throwaway synthetic env file: COMPOSE_PROJECT_NAME in --env-file DOES override the pinned `name: gc-wrapped` (no -p needed). The e2e run created gc-wrapped-probe_pgdata and left gc-wrapped_pgdata alone; probe stack, volume and file removed afterward.
+- Host ports: POSTGRES_HOST_PORT (falls back to POSTGRES_PORT, then 5432) and DASHBOARD_PORT (8501). Checked with 5433/8502: published ports and dashboard health matched.
+- CI e2e env file sets COMPOSE_PROJECT_NAME=gc-wrapped-ci; new step asserts volume gc-wrapped-ci_pgdata exists and no gc-wrapped_* volume does.
+- .claude/settings.json: deny Bash(*gc-wrapped-real*) and Bash(*real.env*).
+- .env.example and README "Running on real data" updated; decisions.md has the brief's entry plus one more (below).
 Deviations from the brief (what + why):
-- README only: added a note that test-integration resets raw in gcw_dev (tests/conftest.py), so test-warehouse needs a fresh `make e2e` first. Running them in the brief's order (integration, then warehouse) failed 2 warehouse tests with `schema "raw" does not exist` until e2e was rerun. CI already orders it this way.
-- A first Bash command that also listed data/landing was denied; I did not retry the listing (data/ is off limits).
-In progress / broken:
-- Nothing. CI on PR #10: lint-test, integration, airflow, e2e all pass.
-Next up: real-data run and format reconciliation.
-Open questions for planning: should test-warehouse depend on e2e in the Makefile so the ordering trap goes away? (Left as a docs note; small diff.)
+- Found a leak the brief did not mention: the Makefile did `-include .env` + `export`, and compose gives shell vars precedence over --env-file (verified). A run with ENV_FILE=<other> would have used .env's passwords and DB name. Fixed by `-include $(ENV_FILE)`. Consequence: ENV_FILE must be plain KEY=value (no quotes/spaces). Logged in decisions.md.
+- README says GCW_LANDING_HOST_DIR (absolute path), not "GCW_LANDING_DIR": the host-side variable is _HOST_DIR; GCW_LANDING_DIR is the in-container path set by compose.
+- psql-dev kept its name (brief said "psql") and still targets gcw_dev only.
+- Airflow UI port 8080 is not configurable (not in the brief); only `make airflow-up` publishes it, so two stacks can't both run that target.
+In progress / broken: nothing known. Local: make e2e on default .env ran twice, both inserted 0 (dev volume already held the data); make lint test clean.
+Next up: real-data run by Ryan in his own terminal with the new env file, then format reconciliation.
+Open questions for planning: none.
 Measured this session (exact value + source):
-- First make e2e: rows parsed 140, inserted 140, dbt PASS=125 WARN=0 ERROR=0 (gcw last-run, dbt output).
-- Second make e2e: rows parsed 140, rows inserted 0 (gcw last-run, load id 2).
-- make test-integration: 18 passed, 87 deselected. make test-warehouse: 18 passed, 105 deselected. make lint test: clean, 87 passed, 18 deselected.
-Commits: 6efd149 — Verify local synthetic e2e; add dashboard screenshot to README; 79acbaa — Merge pull request #10 (merge commit on main)
+- Probe e2e (fresh volume): rows parsed 140, inserted 140 (gcw last-run). Default-.env e2e x2: parsed 140, inserted 0 each. make lint test: 87 passed, 18 deselected.
+Commits: pending (PR #12 open; hashes recorded after merge)
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x]
