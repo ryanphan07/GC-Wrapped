@@ -206,3 +206,15 @@ Decision: dbt's gcw_timezone var reads env_var('CHAT_TIMEZONE', 'America/Los_Ang
 Alternative: Keep the reserved fields in Settings.
 Why: Nothing in Python read them, so changing them silently did nothing; the one consumer of the time zone is dbt.
 Tradeoff: Settings has no time zone field; if Python code needs it later, add it back with a reader.
+
+### 2026-11-03 — Separate compose stack for real data
+Decision: Real-data runs use their own compose project (gc-wrapped-real) with a separate Postgres volume and superuser password, set only in an env file outside the repo.
+Alternative: One Postgres cluster hosting both gcw_dev and gcw_real.
+Why: The dev .env lives in the repo where the coding agent can read it; with a shared cluster, the dev superuser could read real messages. Separate stacks mean repo credentials can't reach real data.
+Tradeoff: Two stacks to manage; the real stack is started only for runs and stopped afterward.
+
+### 2026-11-03 — The Makefile includes ENV_FILE, not always .env
+Decision: The Makefile does `-include $(ENV_FILE)` (default .env) and every compose call passes `--env-file "$(ENV_FILE)"`.
+Alternative: Keep `-include .env` and rely on --env-file alone.
+Why: Compose gives shell variables precedence over --env-file (verified), and `export` puts .env values in the shell. A run with ENV_FILE=<other> would have silently used the dev passwords and database name from .env.
+Tradeoff: ENV_FILE is parsed by make, so values must be plain KEY=value (no quotes or spaces), as in .env.example.

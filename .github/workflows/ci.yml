@@ -138,6 +138,7 @@ jobs:
           ENV_FILE="$RUNNER_TEMP/ci.env"
           LANDING="$RUNNER_TEMP/ci-landing"
           cat > "$ENV_FILE" <<EOF
+          COMPOSE_PROJECT_NAME=gc-wrapped-ci
           GCW_DB_NAME=gcw_dev
           POSTGRES_USER=gcw
           POSTGRES_PASSWORD=ci-password
@@ -148,6 +149,12 @@ jobs:
           uv run python tests/synthetic/instagram.py --out "$LANDING"
       - name: make e2e (first run)
         run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-1.log; test "${PIPESTATUS[0]}" -eq 0
+      - name: Compose project comes from the env file, not the pinned default
+        run: |
+          docker volume ls --format '{{.Name}}'
+          docker volume ls --format '{{.Name}}' | grep -qx 'gc-wrapped-ci_pgdata'
+          # No volume under the pinned default project name may exist.
+          ! docker volume ls --format '{{.Name}}' | grep -q '^gc-wrapped_'
       - name: Dashboard is healthy and the marts are populated
         run: |
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8501/_stcore/health)" = 200
