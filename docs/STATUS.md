@@ -1,5 +1,5 @@
 Last session: 2026-11-03 — Separate Docker stack for real-data runs
-Brief completed: partial until CI passes on PR #12 and the merge hashes are recorded (see Commits)
+Brief completed: yes (CI on PR #12: lint-test, integration, airflow, e2e all pass, including the volume-name assertion)
 Done:
 - Every Makefile compose call (up, down, logs, psql-dev, airflow-up, dashboard-up, e2e) goes through COMPOSE = docker compose --env-file "$(ENV_FILE)".
 - Verified with a throwaway synthetic env file: COMPOSE_PROJECT_NAME in --env-file DOES override the pinned `name: gc-wrapped` (no -p needed). The e2e run created gc-wrapped-probe_pgdata and left gc-wrapped_pgdata alone; probe stack, volume and file removed afterward.
@@ -17,5 +17,5 @@ Next up: real-data run by Ryan in his own terminal with the new env file, then f
 Open questions for planning: none.
 Measured this session (exact value + source):
 - Probe e2e (fresh volume): rows parsed 140, inserted 140 (gcw last-run). Default-.env e2e x2: parsed 140, inserted 0 each. make lint test: 87 passed, 18 deselected.
-Commits: pending (PR #12 open; hashes recorded after merge)
+Commits: 9ee61c9 — Separate compose stack for real-data runs; aa69fbd — Update STATUS for separate real-data stack; 1e2da55 — Merge pull request #12 (merge commit on main)
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x]
