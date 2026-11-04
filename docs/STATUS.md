@@ -1,20 +1,21 @@
-Last session: 2026-11-03 — Rename project to "GC Wrapped"
-Brief completed: yes
+Last session: 2026-11-03 — Local synthetic run in WSL2 and README screenshot
+Brief completed: partial (PR not yet opened/merged, CI not yet run on this branch; see below)
 Done:
-- origin now https://github.com/ryanphan07/GC-Wrapped.git (was .../GC-Wrapped-Group-Chat-AI-Platform.git).
-- Only stale repo reference in tracked files was the README clone line; now `git clone https://github.com/ryanphan07/GC-Wrapped.git && cd GC-Wrapped`. Titles (README, CLAUDE.md, dashboard, package docstring, CLI) already read "GC Wrapped" with no subtitle; body sentences "Group chat analytics platform ..." (README, CLAUDE.md, pyproject description) left as plain descriptions.
-- docker-compose.yml: top-level `name: gc-wrapped`.
-- decisions.md: new entry for the rename and compose name.
-- Folder-independence check: Makefile, scripts, CI use no folder-derived names (CI uses github.workspace/RUNNER_TEMP). Image names are fixed (gcw-airflow:runtime, gcw-dashboard).
+- Created .env from .env.example with random passwords (openssl rand -hex 16); GCW_DB_NAME=gcw_dev; .env confirmed gitignored (.gitignore line 3).
+- Followed the README Quickstart as written on a fresh WSL2 Docker setup (uv sync, synthetic generator, make e2e): worked with no code changes.
+- Second `make e2e`: rows inserted 0 (load id 2). `make test-integration`: 18 passed. `make test-warehouse`: 18 passed (after a fresh e2e, see below).
+- Dashboard screenshot via Playwright Docker image (mcr.microsoft.com/playwright/python:v1.49.0-noble, --network host, no sudo): docs/images/dashboard-synthetic.png, embedded in README with a synthetic-data caption.
+- Dev stack stopped with `make down`; no containers left running.
 Deviations from the brief (what + why):
-- Nothing to change in METRICS.md, .env.example, DAG tags, Dockerfiles, CI names, pyproject URLs: none contained the old slug or a subtitle.
+- README only: added a note that test-integration resets raw in gcw_dev (tests/conftest.py), so test-warehouse needs a fresh `make e2e` first. Running them in the brief's order (integration, then warehouse) failed 2 warehouse tests with `schema "raw" does not exist` until e2e was rerun. CI already orders it this way.
+- A first Bash command that also listed data/landing was denied; I did not retry the listing (data/ is off limits).
 In progress / broken:
-- Compose volume names change from the old folder-derived project name to gc-wrapped_*. An existing local dev DB volume will look empty after this; re-create with make e2e (synthetic data) or migrate the volume. The real-data DB (gcw_real) volume, if it lives in the same compose project, needs the migration below before the first `up`.
-- tests/test_dashboard_warehouse.py needs GCW_DB_NAME/GCW_READER_PASSWORD and a running DB; locally without them it errors (13) with or without this change. CI passes it.
-Next up: Ryan renames the local folder (commands in session summary), then real-data run and format reconciliation.
-Open questions for planning: none.
+- Nothing committed. Branch local-synthetic-run has README.md and docs/images/dashboard-synthetic.png uncommitted. PR, CI result and merge hashes are still to do; I will not guess them.
+Next up: commit, open PR, wait for CI, merge (merge commit), then record the real hashes here. Then real-data run and format reconciliation.
+Open questions for planning: should test-warehouse depend on e2e in the Makefile so the ordering trap goes away? (Left as a docs note; small diff.)
 Measured this session (exact value + source):
-- Local: ruff check, ruff format --check, mypy --strict clean; pytest -m "not integration" --ignore=tests/test_dashboard_warehouse.py: 87 passed, 18 deselected.
-- CI on PR #8: lint-test, integration, airflow, e2e all pass.
-Commits: 71c154f — Rename to GC Wrapped: README clone URL, pin compose project name; 38c274e — Merge pull request #8 (merge commit on main).
+- First make e2e: rows parsed 140, inserted 140, dbt PASS=125 WARN=0 ERROR=0 (gcw last-run, dbt output).
+- Second make e2e: rows parsed 140, rows inserted 0 (gcw last-run, load id 2).
+- make test-integration: 18 passed, 87 deselected. make test-warehouse: 18 passed, 105 deselected. make lint test: clean, 87 passed, 18 deselected.
+Commits: none yet
 Phase 1 checklist: parser [x] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x]

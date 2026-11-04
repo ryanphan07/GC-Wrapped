@@ -25,12 +25,18 @@ make e2e                              # db + dashboard up, Airflow DAG once, cou
 
 `make e2e` reads the env file named by `ENV_FILE` (default `.env`). **`GCW_DB_NAME` is the single variable that decides the target database** for gcw, dbt and the dashboard. `DATABASE_URL` is optional; if set, it must name the same database or gcw refuses to start. See `.env.example` for every variable.
 
+![GC Wrapped dashboard on synthetic data](docs/images/dashboard-synthetic.png)
+
+*The dashboard on the synthetic export (`gcw_dev`). All names, threads and counts are generated; no real chat data.*
+
 Development:
 
 ```
 uv sync --all-groups
 make lint test
-make test-integration       # needs the db container up
+make test-integration       # needs the db container up; resets raw in gcw_dev
+make e2e                    # rebuild the marts after test-integration, then:
+make test-warehouse         # needs the marts from a fresh e2e
 make dbt-debug
 ```
 
