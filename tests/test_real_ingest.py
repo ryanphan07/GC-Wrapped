@@ -30,6 +30,7 @@ GOOD_ENV = {
     "COMPOSE_PROJECT_NAME": "gcw-synthetic-realtest",
     "POSTGRES_HOST_PORT": "5544",
     "DASHBOARD_PORT": "8599",
+    "GCW_DB_NAME": "gcw_synthetic_realtest",
     "GCW_THREAD_ALLOWLIST": "111,222",
 }
 
@@ -94,6 +95,20 @@ def test_refuses_missing_or_dev_ports(tmp_path: Path, var: str, dev_port: str) -
         check_guards(write_env(tmp_path, **{var: dev_port}))
     with pytest.raises(GuardError, match=f"{var} .*not a number"):
         check_guards(write_env(tmp_path, **{var: "SENTINELNAME"}))
+
+
+def test_port_must_be_ascii_digits(tmp_path: Path) -> None:
+    for bad in ("5²", "٣٣٣٣", "55 44", "-5544", "55.4"):
+        with pytest.raises(GuardError, match=r"POSTGRES_HOST_PORT .*not a number"):
+            check_guards(write_env(tmp_path, POSTGRES_HOST_PORT=bad))
+
+
+def test_refuses_a_missing_or_dev_database_name(tmp_path: Path) -> None:
+    with pytest.raises(GuardError, match="GCW_DB_NAME is not set"):
+        check_guards(write_env(tmp_path, GCW_DB_NAME=None))
+    with pytest.raises(GuardError) as info:
+        check_guards(write_env(tmp_path, GCW_DB_NAME="gcw_dev"))
+    assert str(info.value) == "GCW_DB_NAME in the env file is the dev database"
 
 
 def test_refuses_a_missing_empty_or_invalid_allowlist(tmp_path: Path) -> None:
@@ -213,6 +228,8 @@ ALLOWED_RAW = [
     "allowlisted IDs not found: 0",
     "allowlisted threads to ingest: 3",
     "target database: gcw_dev",
+    "target database: gcw_real",
+    "target database: gcw_ci",
     "migrations applied: 0",
     "threads allowlisted: 3",
     "folders skipped (not allowlisted): 0",
@@ -248,6 +265,8 @@ NOISE = [
     "rows inserted: 5\\nSENTINELTEXT",
     "status: SENTINELNAME",
     "target database: SENTINELNAME",
+    "target database: gcw_ci_extra",
+    "target database: gcw_prod",
     "root SENTINELNAME folders other: 1",
     "folders skipped (not allowlisted): SENTINELNAME",
     "[SENTINELNAME] rows inserted: 5",
@@ -318,10 +337,15 @@ def test_successful_run_logs_everything_privately_and_prints_allowlisted_lines(
     )
 
     assert code == 0
-    assert shown[:2] == ["rows inserted: 0", "rows inserted: 0"]
-    assert re.fullmatch(r"pipeline seconds: \d+\.\d{2}", shown[2])
+    assert shown[:4] == [
+        "== step: check-landing ==",
+        "rows inserted: 0",
+        "== step: e2e ==",
+        "rows inserted: 0",
+    ]
+    assert re.fullmatch(r"pipeline seconds: \d+\.\d{2}", shown[4])
     assert shown[-1] == "real-ingest: ok"
-    assert len(shown) == 4
+    assert len(shown) == 6
     assert "SENTINEL" not in "\n".join(shown)
     # The full output is in the private log, stderr included.
     assert log_text.count("SENTINELNAME wrote SENTINELTEXT") == 2
@@ -349,7 +373,11 @@ def test_failure_stops_at_the_failing_step_and_keeps_its_exit_status(tmp_path: P
     )
 
     assert code == 3
-    assert shown[0] == "allowlisted IDs found: 1"
+    assert shown[:3] == [
+        "== step: check-landing ==",
+        "allowlisted IDs found: 1",
+        "== step: e2e ==",
+    ]
     assert shown[-1] == "real-ingest: failed at e2e; full log in GCW_LOG_DIR"
     assert "real-ingest: ok" not in shown
     assert "SENTINEL" not in "\n".join(shown)
@@ -370,3 +398,35 @@ def test_failure_at_the_first_step_never_starts_the_second(tmp_path: Path) -> No
     assert code == 1
     assert shown[-1] == "real-ingest: failed at check-landing; full log in GCW_LOG_DIR"
     assert not marker.exists()
+
+
+def test_every_step_gets_the_env_file_in_its_environment(tmp_path: Path) -> None:
+    env_file = write_env(tmp_path)
+    body = "import os; print('rows parsed: ' + str(len(os.environ['ENV_FILE'])))"
+    shown: list[str] = []
+
+    code = run(env_file, steps_for=lambda _p: [_python_step("e2e", body)], show=shown.append)
+
+    assert code == 0
+    assert f"rows parsed: {len(env_file)}" in shown
+
+
+def test_the_runner_overrides_an_inherited_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENV_FILE", ".env")
+    env_file = write_env(tmp_path)
+    body = "import os; print('rows parsed: ' + str(int(os.environ['ENV_FILE'] != '.env')))"
+    shown: list[str] = []
+
+    run(env_file, steps_for=lambda _p: [_python_step("e2e", body)], show=shown.append)
+
+    assert "rows parsed: 1" in shown
+
+
+def test_default_steps_have_the_documented_headers(tmp_path: Path) -> None:
+    plan = check_guards(write_env(tmp_path))
+
+    headers = [real_ingest.step_header(step) for step in real_ingest.build_steps(plan)]
+
+    assert headers == ["== step: check-landing ==", "== step: e2e =="]

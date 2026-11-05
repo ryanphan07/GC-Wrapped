@@ -4,13 +4,39 @@ Split in two so that code which never touches the database (e.g. `gcw parse`) do
 DB credentials: `Settings` has defaults only, `DatabaseSettings` has required fields.
 """
 
+import os
 from functools import lru_cache
+from typing import Any
 
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_HOST = "localhost"
+ENV_FILE_VAR = "ENV_FILE"
+DEFAULT_ENV_FILE = ".env"
+
+
+def env_file_path() -> str:
+    """The one env file host-side settings read: ENV_FILE if set and non-empty, else `.env`.
+
+    A run that names another file never falls back to the repo's `.env` (decisions.md,
+    2026-11-05), so a key missing from that file cannot be filled with a dev value.
+    """
+    return os.environ.get(ENV_FILE_VAR) or DEFAULT_ENV_FILE
+
+
+class _HostSettings(BaseSettings):
+    """Base of every settings class: reads the process environment plus `env_file_path()`.
+
+    Process environment wins over the file. An explicit `_env_file=` argument (tests) overrides it.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    def __init__(self, **values: Any) -> None:
+        values.setdefault("_env_file", env_file_path())
+        super().__init__(**values)
 
 
 def resolve_url(
@@ -40,30 +66,24 @@ def resolve_url(
     return explicit
 
 
-class Settings(BaseSettings):
+class Settings(_HostSettings):
     """Typed view of the environment that needs no credentials. Fields map to upper-case vars."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     log_level: str = "INFO"
 
 
-class ConsentSettings(BaseSettings):
+class ConsentSettings(_HostSettings):
     """The consent allowlist as written, parsed by `gcwrapped.consent`.
 
     Kept as a plain string on purpose: a pydantic validator error would echo the raw value, and a
     mistyped entry could be a person's name.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
     gcw_thread_allowlist: str = ""
 
 
-class DatabaseSettings(BaseSettings):
+class DatabaseSettings(_HostSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     gcw_db_name: str
     postgres_user: str
@@ -86,10 +106,8 @@ class DatabaseSettings(BaseSettings):
         return self
 
 
-class DashboardSettings(BaseSettings):
+class DashboardSettings(_HostSettings):
     """Dashboard connection. Must be the read-only gcw_reader role, never the pipeline user."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     gcw_db_name: str
     gcw_reader_password: SecretStr

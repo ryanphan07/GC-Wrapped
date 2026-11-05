@@ -41,8 +41,6 @@ services:
       # Consent allowlist: gcw ingest and check-landing read it. Empty by default, which makes
       # ingest fail (deny by default); the env file must list the thread IDs. No bypass exists.
       GCW_THREAD_ALLOWLIST: ${GCW_THREAD_ALLOWLIST:-}
-      # Only set by real-data env files; the host-side `make real-ingest` writes the log there.
-      GCW_LOG_DIR: ${GCW_LOG_DIR:-}
       # GCW_DB_NAME is the one setting that picks the target database for gcw and dbt (no default:
       # it comes from the env file, so a real run is a deliberate choice).
       GCW_DB_NAME: ${GCW_DB_NAME:?set GCW_DB_NAME in the env file}

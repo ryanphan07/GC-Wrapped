@@ -4,6 +4,8 @@
 ENV_FILE ?= .env
 -include $(ENV_FILE)
 export
+# Explicit on purpose: host-side `gcw` reads its settings from this file only (config.env_file_path).
+export ENV_FILE
 
 # That module imports streamlit/pandas (dashboard group), which lint-test and dev installs lack.
 IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py

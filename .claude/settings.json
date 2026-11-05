@@ -12,7 +12,10 @@
       "Bash(*gcw-private*)",
       "Bash(*gcw_real*)",
       "Bash(*gc-wrapped-real*)",
-      "Bash(*real.env*)"
+      "Bash(*real.env*)",
+      "Bash(*make real-ingest*)",
+      "Bash(*5433*)",
+      "Bash(*8502*)"
     ]
   }
 }

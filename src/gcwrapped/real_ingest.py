@@ -3,8 +3,10 @@
 Why this exists (decisions.md, 2026-11-05): Airflow logs, dbt output and Python tracebacks can echo
 row values, and a denylist cannot know every name. So the full output goes to a private log file
 (GCW_LOG_DIR, outside the repo) and the terminal gets only whole lines that match a fixed set of
-patterns made of fixed labels and numbers. Safe by construction: what is printed is rebuilt from the
-digits the pattern captured, never from the raw line.
+patterns made of fixed labels and numbers. Safe by construction: a line is printed only if the whole
+remaining line (after known wrappers are removed) fully matched one fixed pattern, and what is
+printed is that line, which can therefore contain nothing but a fixed label and numbers. The runner
+also prints two fixed step headers from code.
 
 Everything here is tested on synthetic data with sentinel strings. The code never knows where a real
 env file lives; the caller passes it.
@@ -28,6 +30,7 @@ DEV_COMPOSE_PROJECT = "gc-wrapped"
 DEV_POSTGRES_PORT = 5432
 DEV_DASHBOARD_PORT = 8501
 DEV_ENV_FILE_NAMES = frozenset({".env", ".env.example"})
+DEV_DB_NAME = "gcw_dev"
 DEFAULT_LANDING = "./data/landing"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -52,7 +55,7 @@ ALLOWED_LINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         rf"allowlisted IDs not found: {_NUM}",
         rf"allowlisted threads to ingest: {_NUM}",
         # gcw migrate / ingest / last-run
-        r"target database: (gcw_dev|gcw_real)",
+        r"target database: (gcw_dev|gcw_real|gcw_ci)",
         rf"migrations applied: {_NUM}",
         rf"threads allowlisted: {_NUM}",
         rf"folders skipped \(not allowlisted\): {_NUM}",
@@ -123,11 +126,15 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+# ASCII digits only, as in consent.py: str.isdigit() accepts characters such as "²".
+_ASCII_DIGITS = re.compile(r"[0-9]+")
+
+
 def _port(env: Mapping[str, str], name: str, dev_port: int) -> None:
     raw = env.get(name, "")
     if not raw:
         raise GuardError(f"{name} is not set in the env file")
-    if not raw.isdigit():
+    if _ASCII_DIGITS.fullmatch(raw) is None:
         raise GuardError(f"{name} in the env file is not a number")
     if int(raw) == dev_port:
         raise GuardError(f"{name} in the env file equals the dev stack's port")
@@ -165,6 +172,12 @@ def check_guards(env_file: str, *, repo_root: Path = REPO_ROOT) -> Plan:
         raise GuardError("COMPOSE_PROJECT_NAME in the env file is the dev project name")
     _port(env, "POSTGRES_HOST_PORT", DEV_POSTGRES_PORT)
     _port(env, "DASHBOARD_PORT", DEV_DASHBOARD_PORT)
+
+    db_name = env.get("GCW_DB_NAME", "")
+    if not db_name:
+        raise GuardError("GCW_DB_NAME is not set in the env file")
+    if db_name == DEV_DB_NAME:
+        raise GuardError("GCW_DB_NAME in the env file is the dev database")
 
     try:
         allowlist = parse_allowlist(env.get(ALLOWLIST_VAR, ""))
@@ -209,6 +222,11 @@ def build_steps(plan: Plan) -> list[Step]:
     ]
 
 
+def step_header(step: Step) -> str:
+    """Fixed text from code (the step name is ours, never from the run), shown before each step."""
+    return f"== step: {step.name} =="
+
+
 def _run_step(step: Step, env: Mapping[str, str], log: TextIO, show: Callable[[str], None]) -> int:
     """Run one step: every output line goes to the private log, allowlisted lines to the screen."""
     with subprocess.Popen(
@@ -243,7 +261,8 @@ def run(
         return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = plan.log_dir / f"real-ingest-{stamp}.log"
-    env = {**os.environ, **plan.env}
+    # ENV_FILE is set for every step so host-side gcw commands read this file, not the repo's .env.
+    env = {**os.environ, **plan.env, "ENV_FILE": str(plan.env_file)}
     started = time.perf_counter()
     status = 0
     failed = ""
@@ -252,6 +271,9 @@ def run(
         fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as log:
             for step in steps_for(plan):
+                header = step_header(step)
+                log.write(header + "\n")
+                show(header)
                 status = _run_step(step, env, log, show)
                 if status != 0:
                     failed = step.name
