@@ -13,7 +13,7 @@ Deviations from the brief (what + why):
 - Non-strict xfail on the 3 tests needing Ryan's code, so `make lint test` passes now and they go green on their own.
 In progress / broken: `make inspect` fails until mask_uri is implemented. Verified by stubbing mask_uri in a scratch run that the rest of the report contains no sentinel strings.
 Next up:
-1. Ryan implements mask_uri and assert_no_leak (scripts/inspect_export.py, tests/test_inspect_export.py), removes the needs_ryan markers, runs `make lint test`.
+1. Ryan implements the allowlist mask_uri and assert_no_leak (scripts/inspect_export.py, tests/test_inspect_export.py), removes the needs_ryan markers (now strict: they must go once implemented), runs `make lint test`.
 2. Ryan runs `make inspect` on the real export (below), reviews, commits to docs/formats/instagram-schema.md via PR.
 3. Reconciliation session (not started).
 Open questions for planning: mask_uri edge cases (a URI segment equal to another thread's lowercase-only folder name passes [a-z_]+); whether the real "inbox" listing needs more than 'inbox' next to it.

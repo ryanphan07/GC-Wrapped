@@ -2,9 +2,10 @@
 
 Usage: uv run python tests/synthetic/sentinel.py [--out DIR]
 
-Every name, content field and folder name carries SENTINELNAME or SENTINELTEXT, so any appearance
-of either string in the inspector's output is a leak. The shapes (bare-digit folders, 16-digit
-suffixes, mojibake, duplicate basenames, mixed message order) have known counts, in EXPECTED.
+Every name, content field and folder name carries SENTINELNAME or SENTINELTEXT (or is the
+lowercase sentinel), so any appearance of any of them, case-insensitively, in the inspector's
+output is a leak. The shapes (bare-digit folders, 16-digit suffixes, mojibake, duplicate
+basenames, mixed message order) have known counts, in EXPECTED.
 """
 
 import argparse
@@ -12,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-SENTINELS = ("SENTINELNAME", "SENTINELTEXT")
+LOWER = "sentinellower"  # lowercase, no digits: passes any [a-z_]+ gate
+SENTINELS = ("SENTINELNAME", "SENTINELTEXT", LOWER)
 INBOX = Path("your_instagram_activity/messages/inbox")
 
 MOJIBAKE_TEXT = "SENTINELTEXT café \U0001f600".encode().decode("latin-1")
@@ -23,22 +25,24 @@ THREAD_B = "SENTINELNAME_alpha_12345678901234567"  # <name>_<17 digits>
 THREAD_C = "123456789012345"  # bare, 15 digits
 THREAD_D = "12345678901234"  # bare, 14 digits
 THREAD_E = "SENTINELNAME-no-suffix"  # other
-THREADS = (THREAD_A, THREAD_B, THREAD_C, THREAD_D, THREAD_E)
+THREAD_F = LOWER  # other; also used as a path segment in THREAD_A's URIs
+THREADS = (THREAD_A, THREAD_B, THREAD_C, THREAD_D, THREAD_E, THREAD_F)
 
 # Known values the tests assert against.
 EXPECTED: dict[str, Any] = {
-    "thread_shapes": {"<name>_<digits>": 2, "<digits>": 2, "other": 1},
+    "thread_shapes": {"<name>_<digits>": 2, "<digits>": 2, "other": 2},
     "digit_lengths": {14: 1, 15: 1, 16: 1, 17: 1},
-    "files_per_thread": {1: 3, 2: 1, 3: 1},
-    "message_files": 8,
-    "messages": 17,
+    "files_per_thread": {1: 4, 2: 1, 3: 1},
+    "message_files": 9,
+    "messages": 19,
     "mojibake_messages": 2,
-    "timestamp_digit_lengths": {13: 17},
-    "order": {"newest-first": 2, "oldest-first": 2, "mixed": 1, "indeterminate": 3},
-    "attachments_per_key": {"photos": 4, "videos": 1, "audio_files": 1},
+    "timestamp_digit_lengths": {13: 19},
+    "order": {"newest-first": 2, "oldest-first": 2, "mixed": 1, "indeterminate": 4},
+    "attachments_per_key": {"photos": 5, "videos": 1, "audio_files": 1},
     "duplicate_basenames": 1,
     "masked_uris": {
         ("photos", "your_instagram_activity/messages/inbox/<thread>/photos/<file>.jpg"): 4,
+        ("photos", "your_instagram_activity/messages/inbox/<x>/photos/<file>.jpg"): 1,
         ("videos", "your_instagram_activity/messages/inbox/<thread>/videos/<file>.jpg"): 1,
         ("audio_files", "your_instagram_activity/messages/inbox/<thread>/<x>/<file>.mp4"): 1,
     },
@@ -91,6 +95,8 @@ def build(root: Path) -> None:
             _msg(T0 + 1, content="SENTINELTEXT old"),
             _msg(T0 + 2, photos=[{"uri": _uri(THREAD_A, "photos", "SENTINELTEXT_1.jpg")}]),
             _msg(T0 + 3, videos=[{"uri": _uri(THREAD_A, "videos", "SENTINELTEXT_1.jpg")}]),
+            # Another thread's lowercase folder as a segment: must mask to <x>, not survive.
+            _msg(T0 + 4, photos=[{"uri": _uri(LOWER, "photos", "x.jpg")}]),
         ],
         THREAD_A,
     )
@@ -133,9 +139,11 @@ def build(root: Path) -> None:
         [_msg(T0, photos=[{"uri": _uri(THREAD_E, "photos", "SENTINELTEXT_4.jpg")}])],
         THREAD_E,
     )
-    # Siblings of inbox: two safe names, one that must print as <x>.
+    _write(inbox / THREAD_F / "message_1.json", [_msg(T0, content="SENTINELTEXT")], THREAD_F)
+    # Siblings of inbox: two allowlisted names, two that must print as <x> (a file and a directory).
     (root / INBOX.parent / "message_requests").mkdir(parents=True, exist_ok=True)
     (root / INBOX.parent / "photos").mkdir(parents=True, exist_ok=True)
+    (root / INBOX.parent / LOWER).mkdir(parents=True, exist_ok=True)
     (root / INBOX.parent / "SENTINELNAME.json").write_text("{}", encoding="utf-8")
 
 

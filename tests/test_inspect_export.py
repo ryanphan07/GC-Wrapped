@@ -11,8 +11,11 @@ from synthetic import sentinel
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_export.py"
 
 # The two write-it-yourself pieces raise NotImplementedError until Ryan implements them.
-# Tests that need them are xfail (non-strict): they turn green on their own once implemented.
-needs_ryan = pytest.mark.xfail(raises=NotImplementedError, reason="write-it-yourself: not done")
+# Tests that need them are xfail (strict): once implemented they XPASS and fail, which is the
+# reminder to remove the marker.
+needs_ryan = pytest.mark.xfail(
+    raises=NotImplementedError, strict=True, reason="write-it-yourself: not done"
+)
 
 
 def _load_script() -> ModuleType:
@@ -44,8 +47,9 @@ def report(root: Path) -> Any:
 def assert_no_leak(output: str) -> None:
     """WRITE IT YOURSELF: the core assertions of the leak test.
 
-    Should fail if any of sentinel.SENTINELS appears in `output` (consider case-insensitivity),
-    and also if a raw folder name, a full URI or the mojibake text appears.
+    Fail if any sentinel (case-insensitive), any fixture thread folder name, str(sentinel.T0),
+    or MOJIBAKE_TEXT appears in `output`; also fail if the output is empty or lacks the report
+    title ("Instagram export format report").
     """
     raise NotImplementedError
 
@@ -57,7 +61,7 @@ def test_no_sentinel_in_output(root: Path) -> None:
 
 def test_inbox_and_siblings(report: Any) -> None:
     assert report.inbox_exists
-    assert dict(report.siblings) == {"inbox": 1, "message_requests": 1, "photos": 1, "<x>": 1}
+    assert dict(report.siblings) == {"inbox": 1, "message_requests": 1, "photos": 1, "<x>": 2}
 
 
 def test_folder_shapes_and_digit_lengths(report: Any) -> None:
@@ -110,7 +114,15 @@ def test_mask_uri_cases() -> None:
     assert inspect_export.mask_uri(uri, thread) == (
         "your_instagram_activity/messages/inbox/<thread>/photos/<file>.jpg"
     )
-    assert inspect_export.mask_uri("a/lowercase/x.jpg", "lowercase") == "a/<thread>/<file>.jpg"
+    other = f"{sentinel.INBOX.as_posix()}/{sentinel.LOWER}/photos/x.jpg"
+    assert inspect_export.mask_uri(other, thread) == (
+        "your_instagram_activity/messages/inbox/<x>/photos/<file>.jpg"
+    )
+    assert inspect_export.mask_uri("a/lowercase/x.jpg", "lowercase") == "<x>/<thread>/<file>.jpg"
+    assert inspect_export.mask_uri("x.jpg", "t") == "<file>.jpg"
+    assert inspect_export.mask_uri("x.SENTINELTEXT", "t") == "<file>"
+    assert inspect_export.mask_uri("x", "t") == "<file>"
+    assert inspect_export.mask_uri("x.JPG", "t") == "<file>.jpg"
 
 
 def test_report_without_inbox(tmp_path: Path) -> None:

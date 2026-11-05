@@ -5,9 +5,10 @@ Usage: uv run python scripts/inspect_export.py <export_root>      (or: make insp
 Prints Markdown with aggregates only: counts, histograms, key frequencies and masked URI shapes.
 Never a participant name, folder name, message text or full URI, so the report is safe to commit.
 
-Privacy: every string that reaches the output is either a fixed label, a number, or a name that
-matched a strict allowlist regex (otherwise it is replaced by <x>). tests/test_inspect_export.py
-runs this on a sentinel fixture and fails if any sentinel string appears in the output.
+Privacy: every string that reaches the output is a fixed label, a number, a name in a fixed
+allowlist, or a key matching a strict regex (anything else becomes <x>).
+tests/test_inspect_export.py runs this on a sentinel fixture and fails if any sentinel string
+appears in the output.
 """
 
 from __future__ import annotations
@@ -21,11 +22,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-MESSAGES_DIR = Path("your_instagram_activity/messages/inbox")  # mirrors parsers.instagram_format
+from gcwrapped.parsers.instagram_format import MESSAGES_DIR
 
 SAFE_KEY = re.compile(r"^[a-z_]+$")
-SAFE_ENTRY = re.compile(r"^[a-z_]+(\.json)?$")
-SAFE_EXT = re.compile(r"^[a-z0-9]{1,5}$")
+STRUCTURAL_SEGMENTS = frozenset(
+    {
+        "your_instagram_activity",
+        "messages",
+        "inbox",
+        "photos",
+        "videos",
+        "audio",
+        "gifs",
+        "files",
+        "stickers_used",
+    }
+)
+SAFE_EXTS = frozenset(
+    {"jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "m4a", "aac", "wav", "pdf"}
+)
+SIBLING_ALLOWLIST = frozenset(
+    {"inbox", "message_requests", "photos", "your_scheduled_chat_notifications.json"}
+)
 MESSAGE_FILE = re.compile(r"^message_\d+\.json$")
 THREAD_NAME_DIGITS = re.compile(r"^.+_(\d+)$", re.DOTALL)
 THREAD_DIGITS = re.compile(r"^\d+$")
@@ -46,12 +64,13 @@ def safe_key(key: str) -> str:
 def mask_uri(uri: str, thread_folder: str) -> str:
     """Reduce an attachment URI to a shape that carries no names.
 
-    WRITE IT YOURSELF. Rules (from the session brief):
-      - a segment equal to `thread_folder` becomes `<thread>` (check this BEFORE the next rule:
-        a folder name made only of [a-z_] would otherwise survive unmasked);
-      - the last segment becomes `<file>.<ext>`, keeping the extension only if it is safe;
-      - any other segment not matching [a-z_]+ becomes `<x>`.
-    Think about: segments that are another thread's folder name, an empty extension, no slashes.
+    WRITE IT YOURSELF. Rules (deny by default):
+      - a segment equal to `thread_folder` becomes `<thread>`;
+      - the last segment becomes `<file>.<ext>` if its lowercase extension is in SAFE_EXTS,
+        else `<file>`;
+      - any other segment is kept only if it is in STRUCTURAL_SEGMENTS, else `<x>`;
+      - a URI with no slash is just the last-segment rule.
+    Think about: another thread's folder name, uppercase extensions, no extension, no slashes.
     """
     raise NotImplementedError
 
@@ -179,7 +198,7 @@ def collect(root: Path) -> Report:
     if not rep.inbox_exists:
         return rep
     for p in inbox.parent.iterdir():
-        rep.siblings[p.name if SAFE_ENTRY.match(p.name) else OTHER_KEY] += 1
+        rep.siblings[p.name if p.name in SIBLING_ALLOWLIST else OTHER_KEY] += 1
     for thread in sorted(p for p in inbox.iterdir() if p.is_dir() and not p.is_symlink()):
         shape, digits = thread_shape(thread.name)
         rep.thread_shapes[shape] += 1

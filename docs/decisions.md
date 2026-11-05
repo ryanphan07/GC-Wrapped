@@ -238,3 +238,9 @@ Decision: the schema inspector emits aggregates only (counts, key frequencies, m
 Alternative: inspect real files by hand, or let Claude Code read samples.
 Why: the format must be learned from real data, but no real names or content may reach a third-party API or the repo. A leak test turns "I was careful" into an enforced property.
 Tradeoff: aggregates can hide rare edge cases; the shape buckets ("other", <x>) surface them as counts to investigate.
+
+## 2026-11-04 — Inspector name gates are allowlists, and the leak fixture is adversarial to them
+Decision: URI segments, file extensions, and inbox siblings print only if they're in a fixed allowlist of structural names; everything else is <x>. The sentinel fixture includes a lowercase sentinel placed where a name could pass a lowercase pattern.
+Alternative: pattern gates ([a-z_]+) with uppercase-only sentinels (the previous state).
+Why: real Instagram folder names are lowercased usernames, which pass [a-z_]+. Uppercase sentinels are always masked by the pattern itself, so the old test could never detect a lowercase leak. Deny-by-default plus an adversarial fixture closes that gap.
+Tradeoff: new structural folders show as <x> until added to the allowlist deliberately. JSON key names still use a pattern gate (an allowlist would defeat key discovery); Ryan's manual review before committing the report is the backstop.
