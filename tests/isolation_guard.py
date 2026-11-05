@@ -11,6 +11,7 @@ variable and the rule, never the value.
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REAL_PORT = "5433"
 REAL_DB_NAME = "gcw_real"
@@ -18,10 +19,12 @@ REAL_COMPOSE_PROJECT = "gc-wrapped-real"
 PRIVATE_DIR_NAME = "gcw-private"
 
 PORT_VARS = ("POSTGRES_PORT", "POSTGRES_HOST_PORT")
+URL_VARS = ("DATABASE_URL", "DASHBOARD_DATABASE_URL")
 # ENV_FILE is also a data path, but it resolves against the working directory (as config.py does).
 PATH_VARS = ("GCW_LANDING_HOST_DIR", "GCW_LANDING_DIR", "GCW_LOG_DIR")
 GUARDED_VARS = (
     *PORT_VARS,
+    *URL_VARS,
     "GCW_DB_NAME",
     "COMPOSE_PROJECT_NAME",
     "ENV_FILE",
@@ -80,11 +83,28 @@ def check_not_private(path: Path, home: Path, var: str) -> None:
         raise IsolationError(f"{var} resolves under the private real-data directory")
 
 
+def check_database_url(var: str, url: str) -> None:
+    """Fail closed: reject the real port or database, and any URL that cannot be parsed."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port  # raises ValueError on a non-numeric or out-of-range port
+        database = parts.path.lstrip("/")
+    except ValueError:
+        raise IsolationError(f"{var} cannot be parsed") from None
+    if port is not None and str(port) == REAL_PORT:
+        raise IsolationError(f"{var} uses the real stack's Postgres port")
+    if database == REAL_DB_NAME:
+        raise IsolationError(f"{var} names the real database")
+
+
 def check_isolation(config: Mapping[str, str], *, repo_root: Path, home: Path, cwd: Path) -> None:
     """Raise IsolationError if `config` targets the real stack. `config` holds GUARDED_VARS."""
     for var in PORT_VARS:
         if config.get(var, "").strip() == REAL_PORT:
             raise IsolationError(f"{var} is the real stack's Postgres port")
+    for var in URL_VARS:
+        if config.get(var, "").strip():
+            check_database_url(var, config[var].strip())
     if config.get("GCW_DB_NAME", "").strip() == REAL_DB_NAME:
         raise IsolationError("GCW_DB_NAME is the real database")
     if config.get("COMPOSE_PROJECT_NAME", "").strip() == REAL_COMPOSE_PROJECT:
