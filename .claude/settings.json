@@ -3,6 +3,9 @@
     "deny": [
       "Read(./data/**)",
       "Edit(./data/**)",
+      "Read(./real.env)",
+      "Edit(./real.env)",
+      "Write(./real.env)",
       "Read(~/gcw-private/**)",
       "Edit(~/gcw-private/**)",
       "Write(~/gcw-private/**)",

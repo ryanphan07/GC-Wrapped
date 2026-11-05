@@ -27,3 +27,4 @@ dbt/dbt_packages/
 tests/fixtures/synthetic/
 
 dbt/.user.yml
+real.env
