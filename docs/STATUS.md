@@ -1,29 +1,27 @@
 # Status
-Last session: 2026-11-05 — Workflow follow-ups (CLAUDE.md fixes, guard covers database URLs)
+Last session: 2026-11-05 — Isolation guard fails closed on database URLs; CLAUDE.md wording fixes
 
 ## Phase & state
-Phase 1 (Pipeline) complete. This session changed workflow, the test guard and docs only.
+Phase 1 (Pipeline) complete. This session changed the test guard and CLAUDE.md only.
 Checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] e2e [x] real-data run [x] metrics [x]
 
 ## Done this session
-- CLAUDE.md: stop trigger 6 (brief conflicts with decisions/STATUS or expands scope); STATUS carry-forward rule; "Claude Code never merges PRs" replaces the merge-if-green line; "never merge" dropped from Real-data steps.
-- tests/isolation_guard.py: DATABASE_URL and DASHBOARD_DATABASE_URL added to GUARDED_VARS; check_database_url rejects port 5433, database gcw_real, and unparsable URLs or invalid ports (fail closed). Messages name the variable only.
-- tests/test_isolation_guard.py: URL tests (port, database, unparsable, invalid port, dev passes, sentinel password hidden, env file vs environ).
-- METRICS.md: header table name raw.ingestion_runs -> raw.load_runs (migrations/001_raw_schema.sql); header line only.
-- docs/decisions.md: D66 appended.
-- Resolved: PR 26's "CI has not run on this branch" (merged with all checks green).
+- tests/isolation_guard.py: check_database_url now accepts only postgresql:// and postgres:// (the schemes libpq/psycopg take, which config.py and db.py pass DATABASE_URL to). Other schemes and non-URLs (keyword DSNs) fail with "<VAR> cannot be parsed". The path is percent-decoded before comparison. Query-string `port=5433` and `dbname=gcw_real` are rejected; other parameters (sslmode) pass. Messages name the variable and rule only.
+- tests/test_isolation_guard.py: parametrized over both URL vars: query-string port, query-string dbname, percent-encoded path, keyword DSN, unsupported scheme; sslmode=disable passes; sentinel password not leaked from a query-string rejection.
+- CLAUDE.md: stop trigger 6 wording, "Done and Deviations" moved out of the list, "hash updates" dropped.
+- Resolved: PR 27's "CI on this branch" (passed) and "empty DATABASE_URL passes" (harmless: the guard checks the component variables the code falls back to).
+- Makes the code match D66; no new decision.
 
 ## Deviations from brief
 - none
 
 ## Checks
-- make lint test: ruff, format, mypy --strict pass; 295 passed, 22 deselected.
-- grep "never merge" CLAUDE.md: no output; grep "never merges PRs": one line (11).
+- make lint test: ruff, format, mypy --strict pass; 315 passed, 22 deselected.
+- grep "hash updates" CLAUDE.md: no output; grep "^- Done and Deviations": no output; "Done and Deviations cover this session only": one line.
 - dbt tests, integration, warehouse tests: not run (no pipeline change).
 
 ## Not verified
 - CI on this branch. No real-data make target needed.
-- An empty DATABASE_URL (as in .env.example) is treated as unset and passes.
 
 ## Open issues and questions
 - tests/conftest.py clean_db: make test-integration empties gcw_dev; consider a separate gcw_test database. Run make e2e before make metrics afterward.

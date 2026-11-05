@@ -11,10 +11,12 @@ variable and the rule, never the value.
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 REAL_PORT = "5433"
 REAL_DB_NAME = "gcw_real"
+# The schemes libpq (psycopg) accepts in a connection URI; config.py and db.py pass the value to it.
+URL_SCHEMES = ("postgresql", "postgres")
 REAL_COMPOSE_PROJECT = "gc-wrapped-real"
 PRIVATE_DIR_NAME = "gcw-private"
 
@@ -84,17 +86,29 @@ def check_not_private(path: Path, home: Path, var: str) -> None:
 
 
 def check_database_url(var: str, url: str) -> None:
-    """Fail closed: reject the real port or database, and any URL that cannot be parsed."""
+    """Fail closed: accept only postgresql:// or postgres:// URLs that avoid the real stack.
+
+    Rejects the real port or database in the authority, the percent-decoded path, or the query
+    string (libpq lets `?port=` and `?dbname=` override them). Anything else, including keyword
+    DSNs and other schemes, is unparsable. Messages name the variable only, never the value.
+    """
     try:
         parts = urlsplit(url)
+        if parts.scheme.lower() not in URL_SCHEMES:
+            raise ValueError
         port = parts.port  # raises ValueError on a non-numeric or out-of-range port
-        database = parts.path.lstrip("/")
+        database = unquote(parts.path).lstrip("/")
+        query = parse_qs(parts.query, keep_blank_values=True)
     except ValueError:
         raise IsolationError(f"{var} cannot be parsed") from None
     if port is not None and str(port) == REAL_PORT:
         raise IsolationError(f"{var} uses the real stack's Postgres port")
     if database == REAL_DB_NAME:
         raise IsolationError(f"{var} names the real database")
+    if REAL_PORT in (v.strip() for v in query.get("port", [])):
+        raise IsolationError(f"{var} query string uses the real stack's Postgres port")
+    if REAL_DB_NAME in (v.strip() for v in query.get("dbname", [])):
+        raise IsolationError(f"{var} query string names the real database")
 
 
 def check_isolation(config: Mapping[str, str], *, repo_root: Path, home: Path, cwd: Path) -> None:
