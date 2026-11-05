@@ -85,6 +85,52 @@ def test_dotdot_cannot_hide_a_private_path(home: Path) -> None:
         _check({**DEV, "GCW_LANDING_HOST_DIR": str(sneaky)}, home)
 
 
+URL_VARS = ["DATABASE_URL", "DASHBOARD_DATABASE_URL"]
+
+
+@pytest.mark.parametrize("var", URL_VARS)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@localhost:5433/gcw_dev",
+        "postgresql://u:p@localhost:5432/gcw_real",
+        "postgresql://u:p@localhost:5432/gcw_real?sslmode=disable",
+        "postgresql://u:p@localhost:notaport/gcw_dev",
+        "postgresql://u:p@localhost:99999/gcw_dev",
+        "postgresql://u:p@[::1/gcw_dev",
+    ],
+)
+def test_bad_database_urls_are_rejected(var: str, url: str, home: Path) -> None:
+    with pytest.raises(IsolationError, match=var):
+        _check({**DEV, var: url}, home)
+
+
+@pytest.mark.parametrize("var", URL_VARS)
+def test_dev_database_url_passes(var: str, home: Path) -> None:
+    _check({**DEV, var: "postgresql://u:p@localhost:5432/gcw_dev"}, home)
+    _check({**DEV, var: ""}, home)
+
+
+@pytest.mark.parametrize("var", URL_VARS)
+def test_rejected_url_error_hides_password_and_url(var: str, home: Path) -> None:
+    url = "postgresql://user:SENTINELPW@localhost:5433/gcw_dev"
+    with pytest.raises(IsolationError) as info:
+        _check({**DEV, var: url}, home)
+    assert "SENTINELPW" not in str(info.value)
+    assert url not in str(info.value)
+    assert "localhost" not in str(info.value)
+
+
+def test_database_url_from_env_file_and_environ(home: Path, tmp_path: Path) -> None:
+    env_file = tmp_path / "t.env"
+    env_file.write_text("DATABASE_URL=postgresql://u:p@localhost:5433/x\n", encoding="utf-8")
+    environ = {"ENV_FILE": str(env_file)}
+    with pytest.raises(IsolationError):
+        check_session(environ, cwd=tmp_path, repo_root=REPO_ROOT, home=home)
+    environ["DATABASE_URL"] = "postgresql://u:p@localhost:5432/gcw_dev"  # environ wins
+    check_session(environ, cwd=tmp_path, repo_root=REPO_ROOT, home=home)
+
+
 def test_landing_outside_repo_is_rejected(home: Path, tmp_path: Path) -> None:
     with pytest.raises(IsolationError):
         _check({**DEV, "GCW_LANDING_HOST_DIR": str(tmp_path / "landing")}, home)

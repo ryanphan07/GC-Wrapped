@@ -363,3 +363,9 @@ Decision: Adopt fixed session rules in CLAUDE.md: a fixed-format docs/STATUS.md 
 Alternative: Free-form STATUS.md, "stop and ask on any design question", numbers stated wherever convenient, and relying only on .claude/settings.json deny rules for data isolation.
 Why: Briefs are written without repo access, so factual mismatches are expected and should not cost a session; a fixed handoff makes review fast and turns open issues directly into the next brief; one home for numbers prevents drift in resume metrics; deny rules restrict Claude Code but not the test code itself, so isolation needs its own test.
 Tradeoff: More ceremony per session, and Claude Code may occasionally adapt where Ryan would have chosen differently, mitigated by recording every deviation in STATUS.md for review.
+
+## D66 — 2026-11-05 — Close PR 26 workflow gaps: stop trigger, carried-forward issues, no-merge, URL guard
+Decision: Add a stop-and-ask trigger for briefs that conflict with recorded decisions or expand phase scope; carry open issues forward in STATUS.md until resolved; state that Claude Code never merges; extend the test-isolation guard to DATABASE_URL and DASHBOARD_DATABASE_URL. Refines D65.
+Alternative: Keep the rules as merged in PR 26.
+Why: PR 26 removed the old "say so if the brief conflicts with STATUS/decisions or expands scope" and "open items stay until resolved" rules without replacing them; "never merge unless green" read as permission to merge; and D34 accepts explicit database URLs, which the guard did not inspect, so a URL could point the suite at the real stack's port.
+Tradeoff: One more stop trigger may end a session the brief intended as a deliberate change, so briefs that supersede a decision or expand scope must now say so explicitly.

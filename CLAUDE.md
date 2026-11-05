@@ -8,7 +8,7 @@ Context is cleared after every session. Anything not written into the repo is lo
 2. Ryan pastes a session brief. Do that task only.
 
 ## Git and CI
-- Never merge a PR unless every check on its latest commit is green. If a check fails for an infrastructure reason, re-run it or push an empty commit; never merge around it.
+- Claude Code never merges PRs; Ryan merges after review. If a check fails for an infrastructure reason, re-run it or push an empty commit.
 - main is protected: all changes go through a PR, including STATUS.md hash updates.
 
 ## Current phase
@@ -69,7 +69,8 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
   2. a change would alter a table or dbt model schema, an API route shape, or a make-target interface beyond what the brief specifies;
   3. you would delete files the brief didn't mention;
   4. a change would touch .claude/settings.json or the redaction, consent, or allowlist code beyond what the brief specifies;
-  5. the acceptance criteria can't be met as written.
+  5. the acceptance criteria can't be met as written;
+  6. the brief conflicts with a decision in docs/decisions.md or with docs/STATUS.md, or expands scope beyond the current phase, unless the brief explicitly says it supersedes that decision or expands scope.
 - Otherwise, don't wait for plan approval: state a plan in 10 lines or fewer and proceed.
 - When docs and code disagree, the code and test runs win. Fix the doc.
 
@@ -93,6 +94,7 @@ Sections, in this order:
 - Not verified: what Ryan should run or check, including any real-data make target
 - Open issues (file:line) and open questions for planning
 - Suggested next session
+- Done and Deviations cover this session only. Open issues and questions carry forward until resolved; when one is resolved, say so once under Done, then drop it.
 
 ### Numbers and decisions
 - Measured numbers (test and model counts, runtimes, eval scores, latency, cost) appear only in METRICS.md and the current docs/STATUS.md. Other docs, including this file, link to METRICS.md instead of stating numbers.
@@ -107,4 +109,4 @@ Sections, in this order:
 - **Real-data boundary:** never read, list, or run anything outside the repo, including `~/gcw-private`, `real.env`, the `gc-wrapped-real` stack, and `./data` contents. Ryan runs all real-data commands himself.
 - **Real-data tooling:** any tool meant for real data is a make target taking `EXPORT_DIR` or `ENV_FILE`. It is tested only on synthetic fixtures, prints aggregates only (counts, key names, masked shapes), and has a sentinel-leak test asserting no fixture name or content string appears in its output.
 - **Environment:** Ryan uses WSL Ubuntu with zsh. The real stack uses `ENV_FILE=$HOME/gcw-private/real.env` (project `gc-wrapped-real`, Postgres 5433, dashboard 8502). The dev stack uses `.env` and `./data/landing` (synthetic only).
-- **Real-data steps:** never merge. If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).
+- **Real-data steps:** If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).
