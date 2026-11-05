@@ -5,10 +5,7 @@ Group chat analytics platform: chat exports → Postgres warehouse (dbt) → LLM
 ## Every session
 Context is cleared after every session. Anything not written into the repo is lost, so write it down.
 1. Read `docs/STATUS.md` (where things stand) and skim `docs/decisions.md` (why things are the way they are).
-2. Ryan pastes a session brief. Do that task only. If it conflicts with STATUS/decisions, or expands scope beyond the current phase, say so before writing code.
-3. When Ryan says "wrap up" or the task is done: run `make lint test`, update `docs/STATUS.md`, append any new decisions to `docs/decisions.md`, and propose a commit message.
-
-`docs/STATUS.md` is the handoff back to the planning chat: Ryan pastes it there to plan the next session. Write it for a reader who wasn't in this session. Be specific about what's broken, what you deviated from in the brief and why, and anything you need decided.
+2. Ryan pastes a session brief. Do that task only.
 
 ## Git and CI
 - Never merge a PR unless every check on its latest commit is green. If a check fails for an infrastructure reason, re-run it or push an empty commit; never merge around it.
@@ -61,36 +58,53 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 
 ## Workflow rules
 - Commit only after `make lint test` exits 0, chained with `&&`; never chain a commit after tests with `;`.
-- docs/STATUS.md describes only the latest session: rewrite it each session, never carry forward earlier Done or Deviations items. Open items stay until resolved.
+
+## Session rules
+
+### Briefs and deviations
+- Session briefs are written in a planning chat that cannot see this repo. File names, paths, and helper names in a brief may be wrong.
+- For factual mismatches, adapt minimally and record each one under "Deviations from brief" in docs/STATUS.md.
+- Stop and ask (end the session without opening a PR and state the question) only if:
+  1. the brief doesn't answer a design question;
+  2. a change would alter a table or dbt model schema, an API route shape, or a make-target interface beyond what the brief specifies;
+  3. you would delete files the brief didn't mention;
+  4. a change would touch .claude/settings.json or the redaction, consent, or allowlist code beyond what the brief specifies;
+  5. the acceptance criteria can't be met as written.
+- Otherwise, don't wait for plan approval: state a plan in 10 lines or fewer and proceed.
+- When docs and code disagree, the code and test runs win. Fix the doc.
+
+### Testing
+- Mock only external boundaries (LLM APIs, network calls, third-party services, external binaries such as dbt). Never mock the logic under test.
+- The test-isolation guard (tests/conftest.py, tests/isolation_guard.py, tests/test_isolation_guard.py) must never be weakened, skipped, or marked xfail.
+
+### Session end (in this order)
+1. Stop any dev-stack containers or processes you started (docker compose down for the dev project only).
+2. Never run docker compose against the real project (COMPOSE_PROJECT_NAME=gc-wrapped-real) or with ENV_FILE pointing at real.env.
+3. Overwrite docs/STATUS.md in the format below.
+4. Append new decisions to docs/decisions.md.
+5. Run make lint test, then create a branch, commit, push, and open a PR with gh. If the brief says to update an existing PR, push to that PR's branch instead of opening a new one.
+
+### docs/STATUS.md format (overwrite every session, max 40 lines)
+Sections, in this order:
+- Phase & state (1-2 lines, plus the phase checklist if one exists)
+- Done this session (grouped by file)
+- Deviations from brief (or "none")
+- Checks: lint, tests, dbt tests, each with pass/fail and count, plus any other value measured this session with its exact source
+- Not verified: what Ryan should run or check, including any real-data make target
+- Open issues (file:line) and open questions for planning
+- Suggested next session
+
+### Numbers and decisions
+- Measured numbers (test and model counts, runtimes, eval scores, latency, cost) appear only in METRICS.md and the current docs/STATUS.md. Other docs, including this file, link to METRICS.md instead of stating numbers.
+- Every METRICS.md row has a date and commit SHA, plus model and dataset version for eval results. Add new rows; never edit or delete an existing row. Never round up or estimate.
+- docs/decisions.md is append-only. Each entry has an ID and date in its header ("## D<n> — <YYYY-MM-DD> — <title>"). To revise a decision, add a new entry that says "Supersedes D<n>"; never edit an old entry.
 
 ## Working with Ryan
 - He must be able to explain every line in an interview. After each change, briefly explain the why and the tradeoffs.
-- Claude Code implements all code, including privacy-critical functions. If a design question is not answered by the brief, stop and ask Ryan; do not guess or scaffold. Ryan reviews every diff closely enough to explain each line, so end each session with a short explanation of the key design choices.
-- Never invent or round metrics. Numbers come from `raw.load_runs`, dbt output, or commands Ryan ran, with exact values and dates.
-
-## docs/STATUS.md format (overwrite each session, under ~40 lines)
-```
-Last session: <date> — <title>
-Brief completed: yes / partial (which acceptance criteria failed)
-Done:
-Deviations from the brief (what + why):
-In progress / broken:
-Next up:
-Open questions for planning:
-Measured this session (exact value + source):
-Commits: <short hash — message>
-Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [ ] dashboard [ ] one-command e2e [ ]
-```
-- In docs/STATUS.md, record actual commit and merge hashes (git log --oneline), never "see PR".
-
-## docs/decisions.md format (append-only)
-```
-### YYYY-MM-DD — <decision>
-Chose X over Y because ... Tradeoff: ...
-```
+- Claude Code implements all code, including privacy-critical functions. Ryan reviews every diff closely enough to explain each line, so end each session with a short explanation of the key design choices.
 
 ## Working agreement
 - **Real-data boundary:** never read, list, or run anything outside the repo, including `~/gcw-private`, `real.env`, the `gc-wrapped-real` stack, and `./data` contents. Ryan runs all real-data commands himself.
 - **Real-data tooling:** any tool meant for real data is a make target taking `EXPORT_DIR` or `ENV_FILE`. It is tested only on synthetic fixtures, prints aggregates only (counts, key names, masked shapes), and has a sentinel-leak test asserting no fixture name or content string appears in its output.
 - **Environment:** Ryan uses WSL Ubuntu with zsh. The real stack uses `ENV_FILE=$HOME/gcw-private/real.env` (project `gc-wrapped-real`, Postgres 5433, dashboard 8502). The dev stack uses `.env` and `./data/landing` (synthetic only).
-- **Session end:** update `docs/STATUS.md`, append to `docs/decisions.md`, run `make lint test`, create a branch, commit, push, and run `gh pr create --fill`. Never merge. If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).
+- **Real-data steps:** never merge. If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).

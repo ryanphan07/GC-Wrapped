@@ -1,6 +1,6 @@
 # Metrics
 
-Every value must be an exact number with its source (`raw.ingestion_runs`, dbt output, or a command Ryan ran) and a date. Nothing is estimated or rounded.
+Every value must be an exact number with its source (`raw.ingestion_runs`, dbt output, or a command Ryan ran). Every row carries a date and a commit SHA; eval rows also carry the model and dataset version. Nothing is estimated or rounded. Add new rows; never edit or delete an existing row.
 
 ## Pipeline
 
