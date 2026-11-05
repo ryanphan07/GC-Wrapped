@@ -154,8 +154,20 @@ def test_count_manifest_splits_by_resource_type_and_ignores_packages() -> None:
     )
 
 
-def test_buildable_nodes_is_what_dbt_build_reports() -> None:
-    assert DBT.buildable == 125  # 9 models + 111 data tests + 4 unit tests + 1 hook
+def test_buildable_counts_exactly_what_dbt_build_runs() -> None:
+    counts = DbtCounts(
+        models=1,
+        data_tests=10,
+        generic_tests=4,
+        singular_tests=6,
+        unit_tests=100,
+        sources=1000,
+        seeds=10000,
+        hooks=100000,
+    )
+
+    # sources are not built; every other field is, so a wrongly included/omitted field shifts this
+    assert counts.buildable == 110111
 
 
 def test_count_manifest_without_unit_tests_is_zero() -> None:
@@ -265,3 +277,41 @@ def test_dbt_step_uses_no_env_file_values_and_writes_outside_the_repo(
             assert not path.is_relative_to(project)
     assert not (project / "target").exists()
     assert not (project / "logs").exists()
+
+
+def test_dbt_deps_runs_before_parse_with_only_the_options_each_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / "sentinel.env"
+    env_file.write_text("POSTGRES_PASSWORD=SENTINELPASSWORD\nGCW_DB_NAME=SENTINELDB\n")
+    monkeypatch.setenv("ENV_FILE", str(env_file))
+    project = tmp_path / "dbt"
+    project.mkdir()  # no dbt_packages directory
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        if "--target-path" in argv:
+            target = Path(argv[argv.index("--target-path") + 1])
+            target.mkdir(parents=True)
+            (target / "manifest.json").write_text('{"nodes": {}}')
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    metrics.dbt_counts(project)
+
+    assert [argv[1] for argv in calls] == ["deps", "parse"]
+    deps, parse = calls
+    assert {a for a in deps if a.startswith("--")} == {
+        "--project-dir",
+        "--profiles-dir",
+        "--log-path",
+    }
+    assert {a for a in parse if a.startswith("--")} == {
+        "--project-dir",
+        "--profiles-dir",
+        "--target-path",
+        "--log-path",
+    }
+    assert not any("SENTINEL" in a for argv in calls for a in argv)

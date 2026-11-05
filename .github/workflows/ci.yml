@@ -248,6 +248,9 @@ jobs:
           grep -qx "metrics: ok" "$RUNNER_TEMP/out_metrics.txt"
           grep -qx "target database: gcw_ci" "$RUNNER_TEMP/out_metrics.txt"
           grep -qE "^warehouse raw messages: [1-9][0-9]*$" "$RUNNER_TEMP/out_metrics.txt"
+          built="$(sed -nE 's/^Done\. PASS=.* TOTAL=([0-9]+)$/\1/p' "$RUNNER_TEMP/out1.txt" | sort -u)"
+          counted="$(sed -nE 's/^dbt buildable nodes: ([0-9]+)$/\1/p' "$RUNNER_TEMP/out_metrics.txt")"
+          if ! [[ "$built" =~ ^[0-9]+$ && "$built" = "$counted" ]]; then echo "dbt buildable nodes differs from run 1 dbt build total"; exit 1; fi
           if grep -qi sentinel "$RUNNER_TEMP/out_metrics.txt"; then echo "sentinel string on terminal output"; exit 1; fi
       - name: make real-ingest (third run, an allowlisted thread with a malformed message file)
         run: |

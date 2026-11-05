@@ -266,11 +266,13 @@ def dbt_counts(project_dir: Path = DBT_DIR) -> DbtCounts:
     env = {**os.environ, **DBT_PARSE_ENV}
     dbt = str(Path(sys.executable).parent / "dbt")
     with tempfile.TemporaryDirectory() as tmp:
-        out = ["--target-path", str(Path(tmp) / "target"), "--log-path", str(Path(tmp) / "logs")]
-        common = ["--project-dir", str(project_dir), "--profiles-dir", str(project_dir), *out]
-        commands = [["parse", *common]]
+        base = ["--project-dir", str(project_dir), "--profiles-dir", str(project_dir)]
+        logs = ["--log-path", str(Path(tmp) / "logs")]
+        # `dbt deps` rejects --target-path (it builds no target), so each command gets only the
+        # options it accepts.
+        commands = [["parse", *base, "--target-path", str(Path(tmp) / "target"), *logs]]
         if not (project_dir / "dbt_packages").is_dir():
-            commands.insert(0, ["deps", *common])
+            commands.insert(0, ["deps", *base, *logs])
         for command in commands:
             subprocess.run(
                 [dbt, *command],
