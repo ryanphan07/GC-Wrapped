@@ -98,6 +98,15 @@ URL_VARS = ["DATABASE_URL", "DASHBOARD_DATABASE_URL"]
         "postgresql://u:p@localhost:notaport/gcw_dev",
         "postgresql://u:p@localhost:99999/gcw_dev",
         "postgresql://u:p@[::1/gcw_dev",
+        "postgresql://u:p@localhost/gcw_dev?port=5433",
+        "postgresql://u:p@localhost/gcw_dev?sslmode=disable&port=5433",
+        "postgresql://u:p@localhost/gcw_dev?dbname=gcw_real",
+        "postgresql://u:p@localhost/gcw%5Freal",
+        "postgres://u:p@localhost/gcw%5Freal",
+        "host=localhost port=5433 dbname=gcw_dev",
+        "host=localhost port=5432 dbname=gcw_real",
+        "mysql://u:p@localhost:5432/gcw_dev",
+        "http://u:p@localhost:5432/gcw_dev",
     ],
 )
 def test_bad_database_urls_are_rejected(var: str, url: str, home: Path) -> None:
@@ -108,6 +117,8 @@ def test_bad_database_urls_are_rejected(var: str, url: str, home: Path) -> None:
 @pytest.mark.parametrize("var", URL_VARS)
 def test_dev_database_url_passes(var: str, home: Path) -> None:
     _check({**DEV, var: "postgresql://u:p@localhost:5432/gcw_dev"}, home)
+    _check({**DEV, var: "postgres://u:p@localhost:5432/gcw_dev"}, home)
+    _check({**DEV, var: "postgresql://u:p@localhost/gcw_dev?sslmode=disable"}, home)
     _check({**DEV, var: ""}, home)
 
 
@@ -119,6 +130,15 @@ def test_rejected_url_error_hides_password_and_url(var: str, home: Path) -> None
     assert "SENTINELPW" not in str(info.value)
     assert url not in str(info.value)
     assert "localhost" not in str(info.value)
+
+
+@pytest.mark.parametrize("var", URL_VARS)
+def test_rejected_query_string_url_hides_password(var: str, home: Path) -> None:
+    url = "postgresql://user:SENTINELPW@localhost/gcw_dev?port=5433"
+    with pytest.raises(IsolationError, match=var) as info:
+        _check({**DEV, var: url}, home)
+    assert "SENTINELPW" not in str(info.value)
+    assert url not in str(info.value)
 
 
 def test_database_url_from_env_file_and_environ(home: Path, tmp_path: Path) -> None:

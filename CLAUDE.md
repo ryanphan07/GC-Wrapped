@@ -9,7 +9,7 @@ Context is cleared after every session. Anything not written into the repo is lo
 
 ## Git and CI
 - Claude Code never merges PRs; Ryan merges after review. If a check fails for an infrastructure reason, re-run it or push an empty commit.
-- main is protected: all changes go through a PR, including STATUS.md hash updates.
+- main is protected: all changes go through a PR.
 
 ## Current phase
 Phase 1 — Pipeline: parse one platform's export → clean/dedupe → Postgres `raw` schema → dbt models (messages, member activity, reply times, threads, activity over time) with tests → Airflow landing-zone DAG → simple dashboard.
@@ -70,7 +70,7 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
   3. you would delete files the brief didn't mention;
   4. a change would touch .claude/settings.json or the redaction, consent, or allowlist code beyond what the brief specifies;
   5. the acceptance criteria can't be met as written;
-  6. the brief conflicts with a decision in docs/decisions.md or with docs/STATUS.md, or expands scope beyond the current phase, unless the brief explicitly says it supersedes that decision or expands scope.
+  6. the brief conflicts with a decision in docs/decisions.md or with a constraint recorded in docs/STATUS.md (choosing a different task than Suggested next session is not a conflict), or expands scope beyond the current phase, unless the brief explicitly says it supersedes that decision or expands scope.
 - Otherwise, don't wait for plan approval: state a plan in 10 lines or fewer and proceed.
 - When docs and code disagree, the code and test runs win. Fix the doc.
 
@@ -94,7 +94,8 @@ Sections, in this order:
 - Not verified: what Ryan should run or check, including any real-data make target
 - Open issues (file:line) and open questions for planning
 - Suggested next session
-- Done and Deviations cover this session only. Open issues and questions carry forward until resolved; when one is resolved, say so once under Done, then drop it.
+
+Done and Deviations cover this session only. Open issues and questions carry forward until resolved; when one is resolved, say so once under Done, then drop it.
 
 ### Numbers and decisions
 - Measured numbers (test and model counts, runtimes, eval scores, latency, cost) appear only in METRICS.md and the current docs/STATUS.md. Other docs, including this file, link to METRICS.md instead of stating numbers.
