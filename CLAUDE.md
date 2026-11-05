@@ -81,3 +81,10 @@ Phase 1 checklist: parser [ ] loader [ ] dbt staging [ ] marts [ ] Airflow DAG [
 ### YYYY-MM-DD — <decision>
 Chose X over Y because ... Tradeoff: ...
 ```
+
+## Working agreement
+- **Real-data boundary:** never read, list, or run anything outside the repo, including `~/gcw-private`, `real.env`, the `gc-wrapped-real` stack, and `./data` contents. Ryan runs all real-data commands himself.
+- **Real-data tooling:** any tool meant for real data is a make target taking `EXPORT_DIR` or `ENV_FILE`. It is tested only on synthetic fixtures, prints aggregates only (counts, key names, masked shapes), and has a sentinel-leak test asserting no fixture name or content string appears in its output.
+- **Environment:** Ryan uses WSL Ubuntu with zsh. The real stack uses `ENV_FILE=$HOME/gcw-private/real.env` (project `gc-wrapped-real`, Postgres 5433, dashboard 8502). The dev stack uses `.env` and `./data/landing` (synthetic only).
+- **Session end:** update `docs/STATUS.md`, append to `docs/decisions.md`, run `make lint test`, create a branch, commit, push, and run `gh pr create --fill`. Never merge. If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).
+- **"Write it myself" items:** scaffold signatures and tests only, and leave the implementation as `raise NotImplementedError`.
