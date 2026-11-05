@@ -11,7 +11,7 @@ from pathlib import Path
 import psycopg
 from pydantic import ValidationError
 
-from gcwrapped import real_ingest
+from gcwrapped import metrics, real_ingest
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.landing import check_landing, find_export_roots
@@ -78,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         "parse-check", help="parse a whole export, count errors per class, print counts only"
     )
     pcheck.add_argument("path", type=Path, metavar="EXPORT_DIR", help="one export root")
+    sub.add_parser(
+        "metrics", help="aggregate counts report: warehouse, dbt and pytest (fixed labels only)"
+    )
     real = sub.add_parser(
         "real-ingest",
         help="guarded pipeline run for a real-data env file; prints allowlisted lines only",
@@ -259,6 +262,8 @@ def _run(argv: Sequence[str] | None) -> int:
         return _check_landing(args.landing)
     if args.command == "real-ingest":
         return real_ingest.run(args.env_file)
+    if args.command == "metrics":
+        return metrics.run()
     if args.command == "last-run":
         return _last_run()
     if args.command == "migrate":

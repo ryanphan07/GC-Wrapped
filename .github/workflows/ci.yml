@@ -241,6 +241,14 @@ jobs:
           grep -qx "rows inserted: 0" "$RUNNER_TEMP/out2.txt"
           test "$(grep '^rows inserted:' "$RUNNER_TEMP/out2.txt" | sort -u)" = "rows inserted: 0"
           if grep -qi sentinel "$RUNNER_TEMP/out2.txt"; then echo "sentinel string on terminal output"; exit 1; fi
+      - name: make metrics (aggregate report, fixed labels only)
+        run: |
+          make metrics ENV_FILE="$ENV_FILE" 2>&1 | tee "$RUNNER_TEMP/out_metrics.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "metrics: ok" "$RUNNER_TEMP/out_metrics.txt"
+          grep -qx "target database: gcw_ci" "$RUNNER_TEMP/out_metrics.txt"
+          grep -qE "^warehouse raw messages: [1-9][0-9]*$" "$RUNNER_TEMP/out_metrics.txt"
+          if grep -qi sentinel "$RUNNER_TEMP/out_metrics.txt"; then echo "sentinel string on terminal output"; exit 1; fi
       - name: make real-ingest (third run, an allowlisted thread with a malformed message file)
         run: |
           BAD="$LANDING/export_sentinel/your_instagram_activity/messages/inbox/SENTINELNAME_99999999999999"
