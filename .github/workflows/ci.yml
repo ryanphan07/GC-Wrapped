@@ -187,3 +187,79 @@ jobs:
       - name: Compose logs on failure
         if: failure()
         run: docker compose --env-file "$ENV_FILE" logs --no-color --tail=80 db dashboard
+
+  # `make real-ingest` is never run locally by the coding assistant (decisions.md, 2026-11-05), so
+  # this job is its end-to-end test. Same command as a real run, on the synthetic sentinel landing:
+  # its own compose project, ports and database (gcw_ci), and a log dir outside the workspace.
+  # Any SENTINEL string on the terminal output (case-insensitive) fails the job.
+  real-ingest-synthetic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - name: Write the env file and generate the sentinel landing dir
+        run: |
+          LANDING="$RUNNER_TEMP/sentinel-landing"
+          LOGS="$RUNNER_TEMP/real-ingest-logs"
+          mkdir -p "$LOGS"
+          echo "ENV_FILE=$RUNNER_TEMP/real-ingest.env" >> "$GITHUB_ENV"
+          echo "LANDING=$LANDING" >> "$GITHUB_ENV"
+          echo "LOGS=$LOGS" >> "$GITHUB_ENV"
+          # Allowlist, listed explicitly (no bypass): sentinel threads A, C, D, plus 99999999999999,
+          # the folder the third run adds. Sentinel thread B and the two other-shape folders stay
+          # off the list so the run also proves they are skipped.
+          cat > "$RUNNER_TEMP/real-ingest.env" <<EOF
+          COMPOSE_PROJECT_NAME=gc-wrapped-ci-real
+          POSTGRES_HOST_PORT=5544
+          DASHBOARD_PORT=8599
+          GCW_DB_NAME=gcw_ci
+          GCW_LOG_DIR=$LOGS
+          GCW_THREAD_ALLOWLIST=1234567890123456,123456789012345,12345678901234,99999999999999
+          POSTGRES_USER=gcw
+          POSTGRES_PASSWORD=ci-password
+          POSTGRES_PORT=5544
+          GCW_READER_PASSWORD=ci-reader-password
+          GCW_LANDING_HOST_DIR=$LANDING
+          EOF
+          uv run python tests/synthetic/sentinel.py --out "$LANDING/export_sentinel"
+      - name: make real-ingest (first run)
+        run: |
+          make real-ingest ENV_FILE="$ENV_FILE" 2>&1 | tee "$RUNNER_TEMP/out1.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "real-ingest: ok" "$RUNNER_TEMP/out1.txt"
+          grep -qx "== step: check-landing ==" "$RUNNER_TEMP/out1.txt"
+          grep -qx "== step: e2e ==" "$RUNNER_TEMP/out1.txt"
+          grep -qx "target database: gcw_ci" "$RUNNER_TEMP/out1.txt"
+          grep -qE "^rows inserted: [1-9][0-9]*$" "$RUNNER_TEMP/out1.txt"
+          ! grep -qi sentinel "$RUNNER_TEMP/out1.txt"
+      - name: make real-ingest (second run inserts nothing)
+        run: |
+          make real-ingest ENV_FILE="$ENV_FILE" 2>&1 | tee "$RUNNER_TEMP/out2.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "real-ingest: ok" "$RUNNER_TEMP/out2.txt"
+          grep -qx "rows inserted: 0" "$RUNNER_TEMP/out2.txt"
+          test "$(grep '^rows inserted:' "$RUNNER_TEMP/out2.txt" | sort -u)" = "rows inserted: 0"
+          ! grep -qi sentinel "$RUNNER_TEMP/out2.txt"
+      - name: make real-ingest (third run, an allowlisted thread with a malformed message file)
+        run: |
+          BAD="$LANDING/export_sentinel/your_instagram_activity/messages/inbox/SENTINELNAME_99999999999999"
+          mkdir -p "$BAD"
+          echo '{"participants": [{"name": "SENTINELNAME x"}], "title": "SENTINELNAME t", "messages": [{"sender_name": "SENTINELNAME bad", "timestamp_ms": "SENTINELTEXT not an int"}]}' > "$BAD/message_1.json"
+          set +e
+          make real-ingest ENV_FILE="$ENV_FILE" 2>&1 | tee "$RUNNER_TEMP/out3.txt"
+          code="${PIPESTATUS[0]}"
+          set -e
+          test "$code" -ne 0
+          grep -q "^real-ingest: failed at " "$RUNNER_TEMP/out3.txt"
+          ! grep -qx "real-ingest: ok" "$RUNNER_TEMP/out3.txt"
+          ! grep -qi sentinel "$RUNNER_TEMP/out3.txt"
+      - name: Private log (synthetic data only) on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-ingest-synthetic-logs
+          path: ${{ runner.temp }}/real-ingest-logs
+      - name: Stop the stack
+        if: always()
+        run: docker compose --env-file "$ENV_FILE" down -v

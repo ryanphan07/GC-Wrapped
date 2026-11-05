@@ -187,14 +187,16 @@ def _copy_and_merge(
     return parsed, inserted
 
 
+# finished_at uses clock_timestamp(), not now(): now() is the START of the current transaction, and
+# the parse runs lazily inside it, so now() stamped the finish about 0 s after the start.
 def _mark_failed(database_url: str, load_id: int, exc: BaseException) -> None:
     """Record the failure from a fresh connection: the load transaction has rolled back."""
     summary = exc.summary if isinstance(exc, LoadError) else type(exc).__name__
     try:
         with psycopg.connect(database_url, autocommit=True) as conn:
             conn.execute(
-                "UPDATE raw.load_runs SET status = 'failed', finished_at = now(), error = %s "
-                "WHERE load_id = %s",
+                "UPDATE raw.load_runs SET status = 'failed', finished_at = clock_timestamp(), "
+                "error = %s WHERE load_id = %s",
                 (summary, load_id),  # never exception text: it can echo data
             )
     except Exception:
@@ -215,7 +217,8 @@ def load_messages(
             with conn.transaction():
                 parsed, inserted = _copy_and_merge(conn, load_id, messages)
                 conn.execute(
-                    "UPDATE raw.load_runs SET status = 'succeeded', finished_at = now(), "
+                    "UPDATE raw.load_runs SET status = 'succeeded', "
+                    "finished_at = clock_timestamp(), "
                     "rows_parsed = %s, rows_inserted = %s WHERE load_id = %s",
                     (parsed, inserted, load_id),
                 )

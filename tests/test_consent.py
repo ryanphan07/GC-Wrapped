@@ -15,6 +15,7 @@ from gcwrapped.config import get_settings
 from gcwrapped.consent import AllowlistError, parse_allowlist, require_allowlist
 from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import ParseStats, parse_export, parse_export_consented
+from synthetic import sentinel
 from synthetic.instagram import SYNTHETIC_THREAD_IDS, generate_pair
 
 REPO = Path(__file__).resolve().parents[1]
@@ -106,6 +107,15 @@ def test_require_allowlist_reads_the_environment(monkeypatch: pytest.MonkeyPatch
     assert require_allowlist() == {"111", "222"}
 
 
+# The real-ingest-synthetic CI job: sentinel threads A, C, D, plus the folder its third run adds.
+SENTINEL_JOB_IDS = {
+    sentinel.THREAD_A.rsplit("_", 1)[-1],
+    sentinel.THREAD_C,
+    sentinel.THREAD_D,
+    "99999999999999",
+}
+
+
 def test_env_example_and_ci_list_the_synthetic_ids() -> None:
     """One code path in dev, CI and real: synthetic IDs are listed explicitly, never bypassed."""
     for name in (".env.example", ".github/workflows/ci.yml"):
@@ -114,7 +124,8 @@ def test_env_example_and_ci_list_the_synthetic_ids() -> None:
         values = re.findall(r"GCW_THREAD_ALLOWLIST[:=]\s*(\S+)", uncommented)
         assert values, name
         for value in values:
-            assert parse_allowlist(value) == set(SYNTHETIC_THREAD_IDS), name
+            # CI has two synthetic landings: the generator's and the real-ingest-synthetic job's.
+            assert parse_allowlist(value) in (set(SYNTHETIC_THREAD_IDS), SENTINEL_JOB_IDS), name
 
 
 def test_no_bypass_switch_exists_in_source() -> None:

@@ -95,7 +95,7 @@ Real data gets its **own compose project**: its own containers, its own Postgres
 - `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export (mounted read-only into the Airflow container as `GCW_LANDING_DIR`)
 - `POSTGRES_HOST_PORT` and `DASHBOARD_PORT`, different from the dev stack's (5432 and 8501); `make real-ingest` requires this
 - `GCW_THREAD_ALLOWLIST`: the numeric thread IDs you have consent to ingest (ingest fails without it)
-- `GCW_LOG_DIR`: an existing directory outside the repo for the private full log (`make real-ingest` only)
+- `GCW_LOG_DIR`: an existing directory outside the repo for the private full log (written by the host-side `make real-ingest`; not passed to containers)
 
 Run these in your own terminal, never through a coding assistant:
 
@@ -106,7 +106,9 @@ make real-ingest ENV_FILE=<ENV_FILE>     # guards, check-landing, e2e; allowlist
 make down ENV_FILE=<ENV_FILE>
 ```
 
-`make real-ingest` refuses to start unless the env file is not `.env`/`.env.example`, names its own compose project and ports, has a valid non-empty allowlist, and has an existing `GCW_LOG_DIR` outside the repo. `make e2e ENV_FILE=<ENV_FILE>` still works for the pipeline alone, with the same allowlist requirement but without the guards or the filtered output.
+Host-side `gcw` commands read settings from the file named by `ENV_FILE` only (plus the process environment), never from the repo's `.env` unless that is the file named. An env file must therefore be complete.
+
+`make real-ingest` refuses to start unless the env file is not `.env`/`.env.example`, names its own compose project and ports, sets `GCW_DB_NAME` to something other than `gcw_dev`, has a valid non-empty allowlist, and has an existing `GCW_LOG_DIR` outside the repo. The terminal output has a `== step: ... ==` header per step; a few lines (such as `rows inserted` or `elapsed seconds`) appear twice because the Airflow task log and the plain command each print them, which is expected. `make e2e ENV_FILE=<ENV_FILE>` still works for the pipeline alone, with the same allowlist requirement but without the guards or the filtered output.
 
 The real stack is started only for a run and stopped afterward. A fresh volume runs the reader-role init script itself, so no manual step is needed. Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
 

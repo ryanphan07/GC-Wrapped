@@ -1,7 +1,10 @@
 import json
+import re
+import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -10,7 +13,7 @@ from gcwrapped.cli import main
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.models import ParsedMessage
 from gcwrapped.parsers import instagram_format as fmt
-from gcwrapped.parsers.instagram import parse_export
+from gcwrapped.parsers.instagram import parse_export, parse_export_consented
 from synthetic.instagram import SYNTHETIC_THREAD_IDS, generate_pair
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("synthetic_allowlist")]
@@ -293,3 +296,35 @@ def test_cli_ingest_loads_only_allowlisted_threads(
     with psycopg.connect(migrated_db) as conn:
         threads = {r[0] for r in conn.execute("SELECT DISTINCT thread_id FROM raw.messages")}
     assert threads == {first}
+
+
+def test_load_run_duration_covers_the_parse_and_last_run_prints_it(
+    migrated_db: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """finished_at - started_at is wall time of the run. It was ~0 because now() is the start of
+    the transaction the (lazy) parse runs in."""
+    a, _ = generate_pair(tmp_path)
+    real_parse = parse_export_consented
+
+    def slow_parse(*args: Any, **kwargs: Any) -> Iterator[ParsedMessage]:
+        time.sleep(0.2)
+        yield from real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("gcwrapped.cli.parse_export_consented", slow_parse)
+
+    assert main(["ingest", str(a)]) == 0
+    capsys.readouterr()
+
+    with psycopg.connect(migrated_db) as conn:
+        row = conn.execute(
+            "SELECT EXTRACT(EPOCH FROM finished_at - started_at)::float8 FROM raw.load_runs"
+        ).fetchone()
+    assert row is not None
+    assert row[0] >= 0.2
+    assert main(["last-run"]) == 0
+    printed = re.search(r"elapsed seconds: (\d+\.\d{2})", capsys.readouterr().out)
+    assert printed is not None
+    assert float(printed.group(1)) >= 0.2

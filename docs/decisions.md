@@ -297,3 +297,15 @@ Alternative: only the guards listed in the brief; `rm -rf` of whatever --out nam
 Why: the log holds raw pipeline output, and a log file inside the repo is one `git add .` from being committed. `--out` is a path typed on a command line, and recursive deletion of it should not be able to hit a project or home directory.
 Tradeoff: a log directory must live elsewhere; `--out` must be a dedicated scratch folder.
 
+
+## 2026-11-05 — real-ingest is verified end to end only in CI
+Decision: Claude Code never runs make real-ingest locally (deny rule in .claude/settings.json plus CLAUDE.md). A CI job runs it on every PR against a synthetic env file with its own compose project, ports, database (gcw_ci) and a log dir outside the workspace, on the sentinel landing. The job fails if a sentinel string reaches the terminal, and it also runs a deliberately failing allowlisted thread to check the failure path.
+Alternative: a CLAUDE.md exception letting the assistant run it locally with /tmp/gcw-synth-*.env files.
+Why: permission rules match command prefixes and deny beats allow, so an exception could only be written as prose. Keeping the rule absolute keeps it tool-enforced. CI also turns the run into an end-to-end leak test against real Airflow, dbt and traceback output, which unit tests with hand-written noise cannot do.
+Tradeoff: about 4-6 extra CI minutes per PR, and runner wiring bugs surface only after a push.
+
+## 2026-11-05 — Host-side settings load only the file named by ENV_FILE
+Decision: when ENV_FILE names a file other than .env, host-side gcw commands load settings from that file and the process environment only, never from the repo's .env. .env is used only when ENV_FILE is unset or is .env.
+Alternative: env_file=".env" for every settings class, with process env overriding it (previous behavior).
+Why: with the previous behavior, any key the real env file lacked was silently filled from the dev .env, so a host command could target the dev database or use the synthetic allowlist. One file per run is the only predictable rule.
+Tradeoff: an env file must be complete. A missing key now fails or falls back to the code default instead of borrowing dev's value.
