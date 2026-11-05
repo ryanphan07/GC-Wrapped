@@ -62,17 +62,21 @@ def safe_key(key: str) -> str:
 
 
 def mask_uri(uri: str, thread_folder: str) -> str:
-    """Reduce an attachment URI to a shape that carries no names.
+    """Reduce an attachment URI to a shape that carries no names (deny by default).
 
-    WRITE IT YOURSELF. Rules (deny by default):
-      - a segment equal to `thread_folder` becomes `<thread>`;
-      - the last segment becomes `<file>.<ext>` if its lowercase extension is in SAFE_EXTS,
-        else `<file>`;
-      - any other segment is kept only if it is in STRUCTURAL_SEGMENTS, else `<x>`;
-      - a URI with no slash is just the last-segment rule.
-    Think about: another thread's folder name, uppercase extensions, no extension, no slashes.
+    Split on "/". The last segment is always `<file>` plus `.<ext>` when its lowercase extension
+    (text after the last ".") is in SAFE_EXTS; it is never matched against `thread_folder`.
+    Any other segment is `<thread>` if it equals `thread_folder`, kept if it is in
+    STRUCTURAL_SEGMENTS, else `<x>`.
     """
-    raise NotImplementedError
+    *dirs, name = uri.split("/")
+    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
+    last = f"<file>.{ext}" if ext in SAFE_EXTS else "<file>"
+    head = [
+        "<thread>" if seg == thread_folder else seg if seg in STRUCTURAL_SEGMENTS else "<x>"
+        for seg in dirs
+    ]
+    return "/".join([*head, last])
 
 
 def thread_shape(name: str) -> tuple[str, int | None]:

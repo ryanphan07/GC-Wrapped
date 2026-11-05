@@ -10,13 +10,6 @@ from synthetic import sentinel
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_export.py"
 
-# The two write-it-yourself pieces raise NotImplementedError until Ryan implements them.
-# Tests that need them are xfail (strict): once implemented they XPASS and fail, which is the
-# reminder to remove the marker.
-needs_ryan = pytest.mark.xfail(
-    raises=NotImplementedError, strict=True, reason="write-it-yourself: not done"
-)
-
 
 def _load_script() -> ModuleType:
     spec = importlib.util.spec_from_file_location("inspect_export", SCRIPT)
@@ -45,16 +38,23 @@ def report(root: Path) -> Any:
 
 
 def assert_no_leak(output: str) -> None:
-    """WRITE IT YOURSELF: the core assertions of the leak test.
+    """Fail if the output is empty, lacks the report title, or contains any needle (any case)."""
+    assert output, "inspector output is empty"
+    assert "Instagram export format report" in output, "report title missing"
+    haystack = output.lower()
+    needles = {
+        *sentinel.SENTINELS,
+        *sentinel.THREADS,
+        str(sentinel.T0),
+        sentinel.MOJIBAKE_TEXT,
+    }
+    for needle in sorted(needles):
+        i = haystack.find(needle.lower())
+        if i != -1:
+            context = output[max(0, i - 40) : i + len(needle) + 40]
+            pytest.fail(f"leak: {needle!r} found near {context!r}")
 
-    Fail if any sentinel (case-insensitive), any fixture thread folder name, str(sentinel.T0),
-    or MOJIBAKE_TEXT appears in `output`; also fail if the output is empty or lacks the report
-    title ("Instagram export format report").
-    """
-    raise NotImplementedError
 
-
-@needs_ryan
 def test_no_sentinel_in_output(root: Path) -> None:
     assert_no_leak(inspect_export.describe(root))
 
@@ -102,12 +102,10 @@ def test_key_frequencies(report: Any) -> None:
     assert keys["$.messages[].timestamp_ms"].present == EXP["messages"]
 
 
-@needs_ryan
 def test_uri_masking_counts(report: Any) -> None:
     assert dict(inspect_export.masked_uri_counts(report)) == EXP["masked_uris"]
 
 
-@needs_ryan
 def test_mask_uri_cases() -> None:
     thread = sentinel.THREAD_A
     uri = f"{sentinel.INBOX.as_posix()}/{thread}/photos/SENTINELTEXT_1.jpg"
@@ -123,6 +121,10 @@ def test_mask_uri_cases() -> None:
     assert inspect_export.mask_uri("x.SENTINELTEXT", "t") == "<file>"
     assert inspect_export.mask_uri("x", "t") == "<file>"
     assert inspect_export.mask_uri("x.JPG", "t") == "<file>.jpg"
+    assert inspect_export.mask_uri("x.tar.gz", "t") == "<file>"
+    assert inspect_export.mask_uri("https://cdn/x.jpg", "t") == "<x>/<x>/<x>/<file>.jpg"
+    assert inspect_export.mask_uri("inbox/", "t") == "inbox/<file>"
+    assert inspect_export.mask_uri("inbox/t", "t") == "inbox/<file>"
 
 
 def test_report_without_inbox(tmp_path: Path) -> None:

@@ -244,3 +244,9 @@ Decision: URI segments, file extensions, and inbox siblings print only if they'r
 Alternative: pattern gates ([a-z_]+) with uppercase-only sentinels (the previous state).
 Why: real Instagram folder names are lowercased usernames, which pass [a-z_]+. Uppercase sentinels are always masked by the pattern itself, so the old test could never detect a lowercase leak. Deny-by-default plus an adversarial fixture closes that gap.
 Tradeoff: new structural folders show as <x> until added to the allowlist deliberately. JSON key names still use a pattern gate (an allowlist would defeat key discovery); Ryan's manual review before committing the report is the backstop.
+
+## 2026-11-04 — Claude Code implements all code; retire the write-it-yourself workflow
+Decision: Claude Code implements all code, including privacy-critical functions; Ryan makes design choices in the planning chat instead of writing implementations.
+Alternative: Scaffold-only "write it yourself" functions (tests + signatures, NotImplementedError) for Ryan to implement.
+Why: Hand implementation was the bottleneck during recruiting; design choices and close diff review carry the interview value.
+Tradeoff: Less hands-on implementation practice; Ryan must review every diff closely enough to explain each line.
