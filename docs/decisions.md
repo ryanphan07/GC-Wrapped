@@ -232,3 +232,21 @@ Decision: real.env lives at ~/gcw-private/real.env (outside the repo); `real.env
 Alternative: Bash-only deny patterns and an in-repo real.env (the previous state).
 Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able to open it. One private root means one set of deny rules covers everything real.
 Tradeoff: the private root is a fixed convention that must be documented for anyone cloning the repo.
+
+## 2026-11-04 — Format discovery via a content-free inspector, run only by Ryan
+Decision: the schema inspector emits aggregates only (counts, key frequencies, masked URI shapes) and is tested against a sentinel fixture that asserts no name or content leaks. Claude Code builds and tests it on synthetic data; only Ryan runs it on real exports.
+Alternative: inspect real files by hand, or let Claude Code read samples.
+Why: the format must be learned from real data, but no real names or content may reach a third-party API or the repo. A leak test turns "I was careful" into an enforced property.
+Tradeoff: aggregates can hide rare edge cases; the shape buckets ("other", <x>) surface them as counts to investigate.
+
+## 2026-11-04 — Inspector name gates are allowlists, and the leak fixture is adversarial to them
+Decision: URI segments, file extensions, and inbox siblings print only if they're in a fixed allowlist of structural names; everything else is <x>. The sentinel fixture includes a lowercase sentinel placed where a name could pass a lowercase pattern.
+Alternative: pattern gates ([a-z_]+) with uppercase-only sentinels (the previous state).
+Why: real Instagram folder names are lowercased usernames, which pass [a-z_]+. Uppercase sentinels are always masked by the pattern itself, so the old test could never detect a lowercase leak. Deny-by-default plus an adversarial fixture closes that gap.
+Tradeoff: new structural folders show as <x> until added to the allowlist deliberately. JSON key names still use a pattern gate (an allowlist would defeat key discovery); Ryan's manual review before committing the report is the backstop.
+
+## 2026-11-04 — Claude Code implements all code; retire the write-it-yourself workflow
+Decision: Claude Code implements all code, including privacy-critical functions; Ryan makes design choices in the planning chat instead of writing implementations.
+Alternative: Scaffold-only "write it yourself" functions (tests + signatures, NotImplementedError) for Ryan to implement.
+Why: Hand implementation was the bottleneck during recruiting; design choices and close diff review carry the interview value.
+Tradeoff: Less hands-on implementation practice; Ryan must review every diff closely enough to explain each line.

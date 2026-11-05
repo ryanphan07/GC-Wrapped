@@ -28,3 +28,4 @@ tests/fixtures/synthetic/
 
 dbt/.user.yml
 real.env
+tests/fixtures/sentinel/

@@ -58,7 +58,7 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 
 ## Working with Ryan
 - He must be able to explain every line in an interview. After each change, briefly explain the why and the tradeoffs.
-- Implement fully unless the session brief's "Write it myself" field lists parts to scaffold only. Ryan must still be able to explain everything, so end each session with a short explanation of the key design choices.
+- Claude Code implements all code, including privacy-critical functions. If a design question is not answered by the brief, stop and ask Ryan; do not guess or scaffold. Ryan reviews every diff closely enough to explain each line, so end each session with a short explanation of the key design choices.
 - Never invent or round metrics. Numbers come from `raw.load_runs`, dbt output, or commands Ryan ran, with exact values and dates.
 
 ## docs/STATUS.md format (overwrite each session, under ~40 lines)
@@ -87,4 +87,3 @@ Chose X over Y because ... Tradeoff: ...
 - **Real-data tooling:** any tool meant for real data is a make target taking `EXPORT_DIR` or `ENV_FILE`. It is tested only on synthetic fixtures, prints aggregates only (counts, key names, masked shapes), and has a sentinel-leak test asserting no fixture name or content string appears in its output.
 - **Environment:** Ryan uses WSL Ubuntu with zsh. The real stack uses `ENV_FILE=$HOME/gcw-private/real.env` (project `gc-wrapped-real`, Postgres 5433, dashboard 8502). The dev stack uses `.env` and `./data/landing` (synthetic only).
 - **Session end:** update `docs/STATUS.md`, append to `docs/decisions.md`, run `make lint test`, create a branch, commit, push, and run `gh pr create --fill`. Never merge. If the work needs a real-data run, end the reply with a "Run in your terminal" block containing the exact command and what output Ryan should share (aggregates only).
-- **"Write it myself" items:** scaffold signatures and tests only, and leave the implementation as `raise NotImplementedError`.
