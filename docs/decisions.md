@@ -232,3 +232,9 @@ Decision: real.env lives at ~/gcw-private/real.env (outside the repo); `real.env
 Alternative: Bash-only deny patterns and an in-repo real.env (the previous state).
 Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able to open it. One private root means one set of deny rules covers everything real.
 Tradeoff: the private root is a fixed convention that must be documented for anyone cloning the repo.
+
+## 2026-11-04 — Format discovery via a content-free inspector, run only by Ryan
+Decision: the schema inspector emits aggregates only (counts, key frequencies, masked URI shapes) and is tested against a sentinel fixture that asserts no name or content leaks. Claude Code builds and tests it on synthetic data; only Ryan runs it on real exports.
+Alternative: inspect real files by hand, or let Claude Code read samples.
+Why: the format must be learned from real data, but no real names or content may reach a third-party API or the repo. A leak test turns "I was careful" into an enforced property.
+Tradeoff: aggregates can hide rare edge cases; the shape buckets ("other", <x>) surface them as counts to investigate.

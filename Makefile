@@ -13,7 +13,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel
 
 up:
 	mkdir -p data/landing data/archive
@@ -81,3 +81,13 @@ ingest:
 
 synth:
 	uv run python tests/synthetic/instagram.py
+
+# Content-free format report (counts, histograms, masked URI shapes) for an export ROOT.
+# Real exports: Ryan runs this himself, e.g. make inspect EXPORT_DIR="$EXPORT" > /tmp/instagram-schema.md
+inspect:
+	@test -n "$(EXPORT_DIR)" || { echo "error: set EXPORT_DIR to the export root (make inspect EXPORT_DIR=<path>)"; exit 1; }
+	@uv run python scripts/inspect_export.py "$(EXPORT_DIR)"
+
+# Sentinel export for the inspector's leak test: tests/fixtures/sentinel (gitignored).
+synth-sentinel:
+	uv run python tests/synthetic/sentinel.py --out tests/fixtures/sentinel

@@ -1,14 +1,18 @@
 import importlib.util
-import json
-import re
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
+from synthetic import sentinel
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_export.py"
-TIMESTAMP = 1700000000123
+
+# The two write-it-yourself pieces raise NotImplementedError until Ryan implements them.
+# Tests that need them are xfail (non-strict): they turn green on their own once implemented.
+needs_ryan = pytest.mark.xfail(raises=NotImplementedError, reason="write-it-yourself: not done")
 
 
 def _load_script() -> ModuleType:
@@ -22,102 +26,98 @@ def _load_script() -> ModuleType:
 
 
 inspect_export = _load_script()
+EXP = sentinel.EXPECTED
 
 
-def _write(path: Path, data: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data), encoding="utf-8")
+@pytest.fixture(scope="module")
+def root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("sentinel")
+    sentinel.build(path)
+    return path
 
 
-@pytest.fixture
-def export_dir(tmp_path: Path) -> Path:
-    root = tmp_path / "export"
-    inbox = root / "your_instagram_activity" / "messages" / "inbox"
-    thread_a = inbox / "SENTINEL_SECRET_thread_a"
-    sender = "SENTINEL_SECRET_sender"
-    participants = [{"name": sender}, {"name": "SENTINEL_SECRET_other"}]
-    _write(
-        thread_a / "message_1.json",
-        {
-            "participants": participants,
-            "title": "SENTINEL_SECRET_title",
-            "messages": [
-                {"sender_name": sender, "timestamp_ms": TIMESTAMP, "content": "SENTINEL_SECRET_hi"},
-                {
-                    "sender_name": sender,
-                    "timestamp_ms": TIMESTAMP,
-                    "content": "SENTINEL_SECRET_cafÃ©",
-                },
-            ],
-        },
+@pytest.fixture(scope="module")
+def report(root: Path) -> Any:
+    return inspect_export.collect(root)
+
+
+def assert_no_leak(output: str) -> None:
+    """WRITE IT YOURSELF: the core assertions of the leak test.
+
+    Should fail if any of sentinel.SENTINELS appears in `output` (consider case-insensitivity),
+    and also if a raw folder name, a full URI or the mojibake text appears.
+    """
+    raise NotImplementedError
+
+
+@needs_ryan
+def test_no_sentinel_in_output(root: Path) -> None:
+    assert_no_leak(inspect_export.describe(root))
+
+
+def test_inbox_and_siblings(report: Any) -> None:
+    assert report.inbox_exists
+    assert dict(report.siblings) == {"inbox": 1, "message_requests": 1, "photos": 1, "<x>": 1}
+
+
+def test_folder_shapes_and_digit_lengths(report: Any) -> None:
+    assert dict(report.thread_shapes) == EXP["thread_shapes"]
+    assert dict(report.digit_lengths) == EXP["digit_lengths"]
+    assert dict(report.files_per_thread) == EXP["files_per_thread"]
+    assert report.message_files == EXP["message_files"]
+
+
+def test_message_totals_and_timestamps(report: Any) -> None:
+    assert report.messages == EXP["messages"]
+    assert dict(report.timestamp_digits) == EXP["timestamp_digit_lengths"]
+
+
+def test_mojibake_count(report: Any) -> None:
+    assert report.mojibake_messages == EXP["mojibake_messages"]
+    assert inspect_export.has_mojibake("café".encode().decode("latin-1"))
+    assert not inspect_export.has_mojibake("café")
+
+
+def test_order_detection(report: Any) -> None:
+    assert dict(report.order) == EXP["order"]
+    assert inspect_export.message_order([3, 2, 1]) == "newest-first"
+    assert inspect_export.message_order([1, 2, 3]) == "oldest-first"
+    assert inspect_export.message_order([1, 3, 2]) == "mixed"
+    assert inspect_export.message_order([5]) == "indeterminate"
+
+
+def test_duplicate_basenames(report: Any) -> None:
+    assert report.duplicate_basenames == EXP["duplicate_basenames"]
+
+
+def test_key_frequencies(report: Any) -> None:
+    keys = report.keys
+    assert keys["$"].objects == EXP["message_files"]
+    assert keys["$.messages[].share.link"].present == 1
+    assert keys["$.messages[].reactions[].actor"].present == 1
+    assert keys["$.messages[].timestamp_ms"].present == EXP["messages"]
+
+
+@needs_ryan
+def test_uri_masking_counts(report: Any) -> None:
+    assert dict(inspect_export.masked_uri_counts(report)) == EXP["masked_uris"]
+
+
+@needs_ryan
+def test_mask_uri_cases() -> None:
+    thread = sentinel.THREAD_A
+    uri = f"{sentinel.INBOX.as_posix()}/{thread}/photos/SENTINELTEXT_1.jpg"
+    assert inspect_export.mask_uri(uri, thread) == (
+        "your_instagram_activity/messages/inbox/<thread>/photos/<file>.jpg"
     )
-    _write(
-        thread_a / "message_2.json",
-        {
-            "participants": participants,
-            "title": "SENTINEL_SECRET_title",
-            "messages": [
-                {"sender_name": sender, "timestamp_ms": TIMESTAMP, "content": ""},
-                {
-                    "sender_name": sender,
-                    "timestamp_ms": TIMESTAMP,
-                    "photos": [{"uri": "SENTINEL_SECRET_uri", "SENTINEL_SECRET_key": 5}],
-                },
-            ],
-        },
-    )
-    (thread_a / "photos").mkdir()
-    (thread_a / "photos" / "SENTINEL_SECRET_photo_123.jpg").write_bytes(b"SENTINEL_SECRET_bytes")
-    # Lowercase thread name would pass the key regex, so only thread detection hides it.
-    _write(inbox / "bob_smith_42" / "message_1.json", {"messages": []})
-    _write(
-        root / "SENTINEL_SECRET_dir" / "SENTINEL_SECRET_file.json",
-        {"SENTINEL_SECRET_dynamic": "SENTINEL_SECRET_value", "count": TIMESTAMP},
-    )
-    return root
+    assert inspect_export.mask_uri("a/lowercase/x.jpg", "lowercase") == "a/<thread>/<file>.jpg"
 
 
-def test_no_value_reaches_output(export_dir: Path) -> None:
-    out = inspect_export.describe(export_dir)
-    assert "SENTINEL_SECRET" not in out
-    for leaked in ("bob_smith", str(TIMESTAMP), "photo_123", "hi\n"):
-        assert leaked not in out
+def test_report_without_inbox(tmp_path: Path) -> None:
+    out = inspect_export.describe(tmp_path)
+    assert "exists under the root: False" in out
 
 
-def test_threads_are_renamed(export_dir: Path) -> None:
-    out = inspect_export.describe(export_dir)
-    assert "thread_001/" in out
-    assert "thread_002/" in out
-    assert "Thread folders: 2" in out
-    assert "<dir>/" in out
-
-
-def test_file_patterns(export_dir: Path) -> None:
-    out = inspect_export.describe(export_dir)
-    assert "| `message_N.json` | 3 |" in out
-    assert "| `A_A_A_N.jpg` | 1 |" in out
-    assert "| `A_A_A.json` | 1 |" in out
-
-
-def test_key_paths_and_rates(export_dir: Path) -> None:
-    out = inspect_export.describe(export_dir)
-    section = out.split("## JSON schema: `message_N.json`")[1].split("## JSON schema:")[0]
-    rows = {
-        m.group(1): m.group(2) for m in re.finditer(r"^\| `([^`]+)` \| (.*) \|$", section, re.M)
-    }
-    # Columns after the path: types | presence | array len | empty | mojibake | int digits
-    content = [c.strip() for c in rows["$.messages[].content"].split("|")]
-    assert content == ["string", "3/4 (75.0%)", "-", "1/3 (33.3%)", "1/3 (33.3%)", "-"]
-    timestamp = [c.strip() for c in rows["$.messages[].timestamp_ms"].split("|")]
-    assert timestamp == ["integer", "4/4 (100.0%)", "-", "-", "-", "13-13"]
-    messages = [c.strip() for c in rows["$.messages"].split("|")]
-    assert messages[0] == "array"
-    assert messages[2] == "0-2"
-    assert "$.messages[].photos[].<dynamic_key>" in rows
-    assert "$.messages[].photos[].uri" in rows
-    assert "$.participants[].name" in rows
-
-
-def test_main_rejects_missing_dir(tmp_path: Path) -> None:
+def test_main_rejects_bad_args(tmp_path: Path) -> None:
     assert inspect_export.main(["inspect_export.py", str(tmp_path / "nope")]) == 2
     assert inspect_export.main(["inspect_export.py"]) == 2
