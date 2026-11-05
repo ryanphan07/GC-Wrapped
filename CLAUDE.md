@@ -29,6 +29,7 @@ NOT in Phase 1: LLM calls, embeddings, analysis of image/video content, React fr
 - Ryan runs real-data commands in his own terminal and reports aggregate numbers. Never ask him to paste real messages, names, or output containing them.
 - Logs and error messages never include message bodies, sender names, phone numbers, or emails. Log counts, IDs, durations, file hashes.
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
+- Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
 - No external API calls from pipeline code in Phase 1.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 

@@ -13,7 +13,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest
 
 up:
 	mkdir -p data/landing data/archive
@@ -97,3 +97,15 @@ synth-sentinel:
 parse-check:
 	@test -n "$(EXPORT_DIR)" || { echo "error: set EXPORT_DIR to the export root (make parse-check EXPORT_DIR=<path>)"; exit 1; }
 	@uv run gcw parse-check "$(EXPORT_DIR)"
+
+# Consent check of a landing dir, counts only: thread folders by shape and how many allowlisted
+# IDs were found. Reads GCW_THREAD_ALLOWLIST from ENV_FILE (default .env). Never prints names.
+check-landing:
+	@uv run gcw check-landing "$(or $(GCW_LANDING_HOST_DIR),./data/landing)"
+
+# Guarded real-data run: guards -> check-landing -> e2e against the env file's own stack. Full
+# output goes to GCW_LOG_DIR (private); the terminal gets allowlisted summary lines only. Ryan runs
+# this himself: make real-ingest ENV_FILE=<env file outside the repo>. The $(origin) test passes an
+# empty value when ENV_FILE was left at its .env default, which the guards refuse.
+real-ingest:
+	@uv run gcw real-ingest --env-file "$(if $(filter file,$(origin ENV_FILE)),,$(ENV_FILE))"

@@ -2,6 +2,8 @@
 
 Usage: uv run python tests/synthetic/instagram.py [--out DIR] [--seed N]
 
+The output directory is emptied first, so nothing from an older generator survives.
+
 Writes two overlapping exports of the same threads (`export_a`, `export_b`) in the real format
 (docs/formats/instagram-schema.md): <name>_<digits> and bare <digits> thread folders, newest-first
 message files chunked at fmt.MAX_MESSAGES_PER_FILE, mojibake text, extensionless photos, external
@@ -13,6 +15,8 @@ different query string. Layout and key names come from gcwrapped.parsers.instagr
 import argparse
 import json
 import random
+import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +51,10 @@ THREADS: list[tuple[str, str, list[str], int]] = [
     ("sam_293847561029384", "Sam Lee", ["Ana Ruiz", "Sam Lee"], 40),
     ("48271936502817364", "Priya Raman", ["Ana Ruiz", "Priya Raman"], 30),
 ]
+
+# The numeric thread IDs of THREADS: what GCW_THREAD_ALLOWLIST must list for synthetic data.
+# .env.example and CI list the same IDs (tests/test_consent.py keeps them in sync).
+SYNTHETIC_THREAD_IDS: list[str] = [m.group(1) for t in THREADS if (m := re.search(r"(\d+)$", t[0]))]
 
 # Folder renames applied in export b: the name part changes, the digits (the thread_id) do not.
 RENAMED_IN_B = {THREADS[1][0]: "samantha_293847561029384"}
@@ -281,11 +289,41 @@ def generate_pair(
     return root_a, root_b
 
 
+def clear_output_dir(out: Path, cwd: Path | None = None) -> None:
+    """Remove everything inside `out`, so exports from older generators cannot survive.
+
+    Empties the directory rather than deleting it: it may be a bind-mounted landing folder. It
+    refuses a directory that looks like more than a scratch folder (a filesystem root, the home
+    directory, a git checkout, or the working directory or one of its parents), since this is
+    recursive deletion of a path given on the command line.
+    """
+    if not out.exists():
+        return
+    target = out.resolve()
+    here = (cwd or Path.cwd()).resolve()
+    if (
+        target == Path(target.anchor)
+        or target == Path.home().resolve()
+        or (target / ".git").exists()
+        or target == here
+        or target in here.parents
+    ):
+        raise SystemExit(
+            "refusing to clear this --out directory; choose a dedicated scratch folder"
+        )
+    for child in target.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate synthetic Instagram DM exports")
     ap.add_argument("--out", type=Path, default=Path("tests/fixtures/synthetic"))
     ap.add_argument("--seed", type=int, default=1234)
     args = ap.parse_args()
+    clear_output_dir(args.out)
     a, b = generate_pair(args.out, args.seed)
     print(f"wrote {a} and {b}")
 

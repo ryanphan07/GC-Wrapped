@@ -11,9 +11,9 @@ from gcwrapped.load import LoadError, load_messages
 from gcwrapped.models import ParsedMessage
 from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import parse_export
-from synthetic.instagram import generate_pair
+from synthetic.instagram import SYNTHETIC_THREAD_IDS, generate_pair
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("synthetic_allowlist")]
 
 
 def _keys(url: str) -> set[str]:
@@ -236,7 +236,7 @@ def test_cli_ingest_failure_output_is_value_free(
         yield from good[:2]
         raise RuntimeError(f"boom {SENTINEL}")
 
-    monkeypatch.setattr("gcwrapped.cli.parse_export", explode)
+    monkeypatch.setattr("gcwrapped.cli.parse_export_consented", explode)
 
     assert main(["ingest", str(a)]) == 1
 
@@ -250,7 +250,7 @@ def test_cli_ingest_with_no_threads_creates_no_run_row(
 ) -> None:
     assert main(["ingest", str(tmp_path)]) == 1
 
-    assert "no message threads" in capsys.readouterr().out
+    assert "no allowlisted message threads" in capsys.readouterr().out
     assert _runs(migrated_db) == []
 
 
@@ -273,3 +273,23 @@ def test_ingest_landing_dir_is_idempotent_and_last_run_reports_counts(
     assert "rows inserted: 0" in out
     assert "status: succeeded" in out
     assert "elapsed seconds: " in out
+
+
+def test_cli_ingest_loads_only_allowlisted_threads(
+    migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consent is per chat: other threads, even malformed ones, never reach raw.messages."""
+    a, _ = generate_pair(tmp_path)
+    first = SYNTHETIC_THREAD_IDS[0]
+    expected = {m.message_key for m in parse_export([a]) if m.thread_id == first}
+    bad = a / fmt.MESSAGES_DIR / "SENTINELNAME_999"
+    bad.mkdir()
+    (bad / "message_1.json").write_text("{ not json", encoding="utf-8")
+    monkeypatch.setenv("GCW_THREAD_ALLOWLIST", first)
+
+    assert main(["ingest", str(a)]) == 0
+
+    assert _keys(migrated_db) == expected
+    with psycopg.connect(migrated_db) as conn:
+        threads = {r[0] for r in conn.execute("SELECT DISTINCT thread_id FROM raw.messages")}
+    assert threads == {first}
