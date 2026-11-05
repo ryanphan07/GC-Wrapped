@@ -1,22 +1,45 @@
-Last session: 2026-11-05 — CLI prints exception type only on unhandled errors
-Brief completed: yes locally (make lint test passes); CI result to be confirmed on the PR.
+Last session: 2026-11-05 — make metrics (aggregate report) + PR 23 follow-ups
+Brief completed: yes locally (make lint test: 254 passed; make test-integration: 22 passed); CI result to be confirmed on the PR.
 Done:
-- cli.main() wraps everything (incl. setup_logging): unhandled Exception -> stderr "gcw: failed: <Type>", exit 1. GCW_TRACEBACK=1 re-raises (dev only). Tests: tests/test_cli_errors.py. Earlier session: CI negation fix, real-ingest deny rules, ENV_FILE must exist (see decisions.md).
-- ci.yml: every `! cmd` line replaced by `if cmd; then echo "<fixed reason>"; exit 1; fi` (real-ingest-synthetic sentinel checks for out1/out2/out3, the "unexpected real-ingest: ok" check, and the docker volume check). errexit ignores `!`, so before this only the last line of each run block was enforced.
-- tests/test_ci_workflow.py: fails if any line in .github/workflows/*.yml matches ^\s*!\s.
-- .claude/settings.json + REQUIRED_DENY: added `Bash(*gcw real-ingest*)` and `Bash(*gcwrapped.real_ingest*)`.
-- config.env_file_path(): a named ENV_FILE (not unset/empty/.env) that is not an existing file raises EnvFileMissingError (ValueError) with the message "ENV_FILE names a file that does not exist"; never the path. Tests in tests/test_env_file.py.
-- CLAUDE.md: "Workflow rules" section with the commit-after-tests rule. decisions.md: entry appended verbatim.
+- `gcw metrics` / `make metrics` (src/gcwrapped/metrics.py): fixed-label report from the warehouse named by ENV_FILE, dbt manifest (after dbt parse) and pytest --collect-only. Prints nothing until every step succeeds; failure prints "metrics: failed at <step> (<ExceptionType>)", exit 1. Starts only the db service, leaves it running.
+- Tests: tests/test_metrics.py (line shapes, error path with SENTINELTEXT, manifest counting, Makefile selection pin), tests/test_metrics_integration.py (SENTINELNAME/SENTINELTEXT seeded, counts asserted).
+- CI: new "make metrics" step in real-ingest-synthetic after run 2 (asserts ok, gcw_ci, raw messages >= 1, no sentinel).
+- PR 23 follow-ups in tests/test_cli_errors.py: real migrate/last-run/ingest by subprocess with POSTGRES_PORT=SENTINELVALUE (no patching) and an import-every-module test with a missing ENV_FILE. Both passed with no source change.
+- CLAUDE.md, METRICS.md (3 rows), decisions.md (2 entries) updated.
 Deviations from the brief (what + why):
-- Tests (a)/(d): a bad POSTGRES_PORT does not escape main() (migrate/last-run/ingest catch the DB-settings ValidationError; Settings has no int field). Per Ryan, they run gcw's main by subprocess with the migrate command patched to build DatabaseSettings() directly.
-- Also converted `! docker volume ls ... | grep -q '^gc-wrapped_'` (not a `! grep` line) because the new test forbids any line starting with `!`.
-- `python -m gcwrapped.real_ingest` is not an entry point (no __main__ block; pyproject has only the `gcw` script). I added the deny rule anyway because it also matches `python -c "from gcwrapped.real_ingest ..."`. Say if you want it removed.
-- Other invocation paths: `make real-ingest` (already denied) and `gcw real-ingest`.
-In progress / broken: nothing known. The previously dead checks are now live; a failure in real-ingest-synthetic would be a real finding (e.g. "sentinel" in the output of run 1/2/3).
-Next up: Session C (make metrics with the dbt model/test split, shared parse loop); Ryan re-runs real-ingest after merge.
-Open questions for planning: none.
-Measured this session (exact value + source):
-- make lint test: 228 passed, 20 deselected (was 220); ruff and mypy clean.
-- grep -nE '^\s*!\s' .github/workflows/*.yml: no output.
-Commits: see git log on branch fix/ci-negation-env-file
-Phase 1 checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] real-data run [x]
+- No source fixes were needed for tasks 6/7: no command printed str(exc) or the input value, and no module loads settings at import.
+- dbt packages: `dbt parse` needs dbt_utils, so metrics runs `dbt deps` first when dbt/dbt_packages is missing. It writes dbt/dbt_packages (gitignored) besides target/, and needs network the first time.
+- `make metrics` runs `uv run --group dbt --group dashboard` (dbt for parse; dashboard group so the ignored dashboard test file collects). In CI this installs both groups.
+- "dbt parse" is invoked via the dbt binary next to the Python interpreter with profile env vars taken from ENV_FILE settings, not the shell.
+- Integration count = all collected tests minus make test's selection, so the dashboard warehouse tests are included.
+- Integration test stands in for analytics.fct_messages with a throwaway schema (metrics_probe) so a real dbt mart in gcw_dev is untouched.
+- Latest run still 'running' or without counts fails the warehouse step (NoLoadRunError) so the status line is only succeeded|failed.
+- METRICS.md "dbt project and test suite" row cites 251e9f9 (the code commit); docs were committed after it.
+In progress / broken: nothing known.
+Next up: Ryan runs make metrics on real data; then Session C2 (shared parse loop).
+Open questions for planning:
+- "participants" is count(distinct sender_name) across fct_messages, per the brief. The same display name in two threads counts once; dim_members counts per (thread, name). Say if you want the per-thread figure.
+- real-ingest-synthetic run 3 (failure path) takes about 323 s of pipeline time, probably Airflow task retries; not investigated.
+Measured this session (exact value + source), make metrics, default .env, 2026-11-05 (dev, synthetic):
+target database: gcw_dev
+warehouse raw messages: 170
+warehouse modeled messages: 170
+warehouse threads: 3
+warehouse participants: 7
+latest load id: 1
+latest load status: succeeded
+latest load rows parsed: 170
+latest load rows inserted: 170
+latest load seconds: 0.04
+dbt models: 9
+dbt data tests: 111
+dbt generic tests: 109
+dbt singular tests: 2
+dbt unit tests: 4
+dbt sources: 2
+dbt seeds: 0
+pytest unit tests collected: 254
+pytest integration tests collected: 40
+metrics: ok
+Commits: 251e9f9 — feat: make metrics aggregate report, CLI error-output tests (docs commit follows on the branch)
+Phase 1 checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] real-data run [x] metrics [x]

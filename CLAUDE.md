@@ -48,6 +48,7 @@ make lint                       # ruff + mypy
 make dbt-deps / make dbt-build  # against gcw_dev only
 make airflow-up / dashboard-up  # Airflow UI :8080 / Streamlit dashboard
 make e2e [ENV_FILE=...]         # one-command end to end
+make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
 
@@ -60,6 +61,7 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 
 ## Workflow rules
 - Commit only after `make lint test` exits 0, chained with `&&`; never chain a commit after tests with `;`.
+- docs/STATUS.md describes only the latest session: rewrite it each session, never carry forward earlier Done or Deviations items. Open items stay until resolved.
 
 ## Working with Ryan
 - He must be able to explain every line in an interview. After each change, briefly explain the why and the tradeoffs.

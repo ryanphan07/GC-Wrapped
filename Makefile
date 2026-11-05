@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics
 
 up:
 	mkdir -p data/landing data/archive
@@ -111,3 +111,9 @@ check-landing:
 # empty value when ENV_FILE was left at its .env default, which the guards refuse.
 real-ingest:
 	@uv run gcw real-ingest --env-file "$(if $(filter file,$(origin ENV_FILE)),,$(ENV_FILE))"
+
+# Aggregate counts report (fixed labels, numbers only): warehouse named by ENV_FILE, dbt manifest,
+# pytest collection. Starts only the db service and leaves it running (`make down` stops it).
+# Writes nothing tracked; dbt writes its gitignored dbt/target. Real-data runs are Ryan's.
+metrics:
+	@uv run --group dbt --group dashboard gcw metrics

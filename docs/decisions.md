@@ -321,3 +321,15 @@ Decision: gcw's entry point catches any unhandled Exception, prints "gcw: failed
 Alternative: Python's default handler, which prints the traceback and the exception message.
 Why: settings load before real-ingest's own error handling. pydantic's ValidationError and logging's level errors include the raw input value, so a malformed value in the real env file (thread IDs, credentials) would reach the terminal, and from there the planning chat.
 Tradeoff: real-data failures show only a type name. Diagnosis means reproducing on synthetic data or reading the private log.
+
+## 2026-11-05 — make metrics prints fixed-label counts and never writes tracked files
+Decision: make metrics prints one fixed label per line with a numeric value (plus the target database and load status), from the dbt manifest, pytest collection, and the warehouse named by ENV_FILE. It does not edit METRICS.md; rows are copied in after a person reads them.
+Alternative: have the target update METRICS.md itself, or print a free-form summary.
+Why: a target Ryan runs on real data must not modify tracked files, and every number is read by a person before it becomes a resume claim. Fixed line shapes make the leak test strict: any line that doesn't match an allowed pattern fails.
+Tradeoff: a manual copy step, and each new metric needs a new label and a test update.
+
+## 2026-11-05 — dbt counts come from the manifest, not dbt build output
+Decision: dbt model and test counts are read by resource type from target/manifest.json after dbt parse.
+Alternative: parse the PASS=/TOTAL= summary that dbt build prints.
+Why: the build summary is one total across models, tests, seeds and sources. The manifest splits them and needs no database.
+Tradeoff: it counts what is defined, not what ran. dbt build in CI and in real-ingest shows they run.
