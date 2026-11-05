@@ -315,3 +315,9 @@ Decision: if ENV_FILE names a file other than .env and that file does not exist,
 Alternative: pydantic-settings' default, which silently ignores a missing env file.
 Why: a typo in the path would otherwise run with process-environment settings only, and whether that fails depends on which keys happen to be exported. Failing loudly is the predictable rule.
 Tradeoff: a run with a mistyped path stops immediately instead of possibly working from exported variables.
+
+## 2026-11-05 — Unhandled CLI errors print the exception type only
+Decision: gcw's entry point catches any unhandled Exception, prints "gcw: failed: <type name>" and exits 1. GCW_TRACEBACK=1 restores the traceback for synthetic-data debugging.
+Alternative: Python's default handler, which prints the traceback and the exception message.
+Why: settings load before real-ingest's own error handling. pydantic's ValidationError and logging's level errors include the raw input value, so a malformed value in the real env file (thread IDs, credentials) would reach the terminal, and from there the planning chat.
+Tradeoff: real-data failures show only a type name. Diagnosis means reproducing on synthetic data or reading the private log.

@@ -125,6 +125,7 @@ Real chat data is sensitive, and the AI coding assistant used on this repo is a 
 - **Reader role.** The dashboard connects as `gcw_reader`, a read-only Postgres role with `SELECT` on mart tables only. CI asserts permission-denied on `raw` and staging.
 - **Content-free logs and errors.** Logs, CLI output and stored error summaries carry counts, IDs, durations, file hashes and exception class names, never message text, sender names, phone numbers or emails. Sentinel tests enforce this.
 - **Coding-agent isolation.** The assistant never reads, prints, searches, or lists anything under `data/` or the real env file, and only connects to `gcw_dev` (synthetic data). `gcw_real` is for the repo owner alone; real-data commands are run in the owner's terminal and only aggregate numbers are shared back.
+- **Unhandled errors.** `gcw` prints `gcw: failed: <ExceptionTypeName>` and exits 1, never the message or a traceback. `GCW_TRACEBACK=1` restores the traceback: dev only; never set on real-data runs.
 - Chat data, media, `.env` files, and `members.yaml` are never committed. `data/` is git-ignored.
 
 ## Metrics
