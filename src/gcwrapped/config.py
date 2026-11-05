@@ -17,13 +17,24 @@ ENV_FILE_VAR = "ENV_FILE"
 DEFAULT_ENV_FILE = ".env"
 
 
+class EnvFileMissingError(ValueError):
+    """ENV_FILE names a file that does not exist. The message never includes the path."""
+
+
 def env_file_path() -> str:
     """The one env file host-side settings read: ENV_FILE if set and non-empty, else `.env`.
+
+    A named file other than `.env` must exist (decisions.md, 2026-11-05): a typo would otherwise
+    fall back to process-environment settings only. Unset, empty or `.env` is allowed to be
+    missing, because containers have no `.env`.
 
     A run that names another file never falls back to the repo's `.env` (decisions.md,
     2026-11-05), so a key missing from that file cannot be filled with a dev value.
     """
-    return os.environ.get(ENV_FILE_VAR) or DEFAULT_ENV_FILE
+    named = os.environ.get(ENV_FILE_VAR) or DEFAULT_ENV_FILE
+    if named != DEFAULT_ENV_FILE and not os.path.isfile(named):
+        raise EnvFileMissingError(f"{ENV_FILE_VAR} names a file that does not exist")
+    return named
 
 
 class _HostSettings(BaseSettings):

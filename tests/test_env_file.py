@@ -14,6 +14,7 @@ from gcwrapped.cli import main
 from gcwrapped.config import (
     ConsentSettings,
     DatabaseSettings,
+    EnvFileMissingError,
     Settings,
     env_file_path,
     get_settings,
@@ -125,3 +126,30 @@ def test_make_check_landing_uses_the_named_files_allowlist(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stdout[-500:]
     assert "allowlisted IDs configured: 1" in result.stdout
+
+
+def test_a_named_missing_env_file_raises_without_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "typo_SECRETPATH.env"
+    monkeypatch.setenv("ENV_FILE", str(missing))
+
+    with pytest.raises(EnvFileMissingError) as exc:
+        env_file_path()
+
+    assert str(exc.value) == "ENV_FILE names a file that does not exist"
+    assert "SECRETPATH" not in str(exc.value)
+    with pytest.raises(EnvFileMissingError):
+        Settings()
+
+
+@pytest.mark.parametrize("value", [None, "", ".env"])
+def test_unset_empty_or_dot_env_may_be_missing(
+    value: str | None, clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (clean_env / ".env").unlink()
+    if value is not None:
+        monkeypatch.setenv("ENV_FILE", value)
+
+    assert env_file_path() == ".env"
+    Settings()  # does not raise

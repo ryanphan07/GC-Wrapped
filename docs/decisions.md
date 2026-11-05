@@ -309,3 +309,9 @@ Decision: when ENV_FILE names a file other than .env, host-side gcw commands loa
 Alternative: env_file=".env" for every settings class, with process env overriding it (previous behavior).
 Why: with the previous behavior, any key the real env file lacked was silently filled from the dev .env, so a host command could target the dev database or use the synthetic allowlist. One file per run is the only predictable rule.
 Tradeoff: an env file must be complete. A missing key now fails or falls back to the code default instead of borrowing dev's value.
+
+## 2026-11-05 — A named ENV_FILE must exist
+Decision: if ENV_FILE names a file other than .env and that file does not exist, host-side settings raise an error naming the variable only. ENV_FILE unset or .env keeps the old behavior.
+Alternative: pydantic-settings' default, which silently ignores a missing env file.
+Why: a typo in the path would otherwise run with process-environment settings only, and whether that fails depends on which keys happen to be exported. Failing loudly is the predictable rule.
+Tradeoff: a run with a mistyped path stops immediately instead of possibly working from exported variables.
