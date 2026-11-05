@@ -59,7 +59,7 @@ def test_metrics_counts_are_correct_and_leak_nothing(
             warehouse=lambda: metrics.warehouse_stats(
                 migrated_db, modeled_messages=(PROBE_SCHEMA, "fct_messages")
             ),
-            dbt=lambda: DbtCounts(1, 2, 1, 1, 0, 1, 0),
+            dbt=lambda: DbtCounts(1, 2, 1, 1, 0, 1, 0, 0),
             pytest=lambda: PytestCounts(3, 4),
         )
 
@@ -74,7 +74,7 @@ def test_metrics_counts_are_correct_and_leak_nothing(
     assert "warehouse raw messages: 5" in lines
     assert "warehouse modeled messages: 4" in lines
     assert "warehouse threads: 2" in lines
-    assert "warehouse participants: 2" in lines
+    assert "warehouse distinct senders: 2" in lines
     assert "latest load status: succeeded" in lines
     assert "latest load rows parsed: 5" in lines
     assert "latest load rows inserted: 4" in lines
@@ -92,7 +92,7 @@ def test_warehouse_stats_with_no_load_run_fails_by_type_name(
     steps = Steps(
         database=lambda: None,
         warehouse=stats,
-        dbt=lambda: DbtCounts(0, 0, 0, 0, 0, 0, 0),
+        dbt=lambda: DbtCounts(0, 0, 0, 0, 0, 0, 0, 0),
         pytest=lambda: PytestCounts(0, 0),
     )
 

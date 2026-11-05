@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from typing import Any
 import psycopg
 from psycopg import sql
 
-from gcwrapped.config import env_file_path, get_database_settings
+from gcwrapped.config import env_file_path
 from gcwrapped.db import database_name, database_url
 from gcwrapped.runs import RunSummary, latest_run
 
@@ -44,6 +45,43 @@ STEP_DATABASE = "database"
 STEP_WAREHOUSE = "warehouse"
 STEP_DBT = "dbt"
 STEP_PYTEST = "pytest"
+STEP_RENDER = "render"
+
+# Placeholder profile values for `dbt parse`, which never connects. Real settings are not passed.
+DBT_PARSE_ENV = {
+    "GCW_DB_NAME": "gcw_parse_only",
+    "POSTGRES_USER": "parse_only",
+    "POSTGRES_PASSWORD": "parse_only",
+    "POSTGRES_HOST": "localhost",
+    "POSTGRES_PORT": "5432",
+}
+
+# One fullmatch regex per output label, in output order. run() checks every rendered line against
+# these before printing anything, so the leak guarantee holds on values the tests never saw.
+LINE_SHAPES = (
+    r"target database: (gcw_dev|gcw_real|gcw_ci)",
+    r"warehouse raw messages: \d+",
+    r"warehouse modeled messages: \d+",
+    r"warehouse threads: \d+",
+    r"warehouse distinct senders: \d+",
+    r"latest load id: \d+",
+    r"latest load status: (succeeded|failed)",
+    r"latest load rows parsed: \d+",
+    r"latest load rows inserted: \d+",
+    r"latest load seconds: \d+\.\d{2}",
+    r"dbt models: \d+",
+    r"dbt data tests: \d+",
+    r"dbt generic tests: \d+",
+    r"dbt singular tests: \d+",
+    r"dbt unit tests: \d+",
+    r"dbt sources: \d+",
+    r"dbt seeds: \d+",
+    r"dbt hooks: \d+",
+    r"dbt buildable nodes: \d+",
+    r"pytest unit tests collected: \d+",
+    r"pytest non-unit tests collected: \d+",
+    r"metrics: ok",
+)
 
 
 class MetricsError(Exception):
@@ -58,6 +96,10 @@ class NoLoadRunError(MetricsError):
     """raw.load_runs has no finished run to report."""
 
 
+class ShapeError(MetricsError):
+    """A rendered line did not match its allowed shape, or the line count was wrong."""
+
+
 class PytestCountError(MetricsError):
     """pytest's collection summary line was not found."""
 
@@ -68,7 +110,7 @@ class WarehouseStats:
     raw_messages: int
     modeled_messages: int
     threads: int
-    participants: int
+    distinct_senders: int
     load_id: int
     load_status: str
     rows_parsed: int
@@ -85,12 +127,21 @@ class DbtCounts:
     unit_tests: int
     sources: int
     seeds: int
+    hooks: int  # on-run-start/on-run-end hooks: manifest "operation" nodes, which dbt build runs
+
+    @property
+    def buildable(self) -> int:
+        """What `dbt build` executes and reports in PASS=: models, seeds, tests, unit tests, hooks.
+
+        The project has no snapshots; one added later must be counted here too.
+        """
+        return self.models + self.seeds + self.data_tests + self.unit_tests + self.hooks
 
 
 @dataclass(frozen=True)
 class PytestCounts:
     unit: int
-    integration: int
+    non_unit: int
 
 
 @dataclass(frozen=True)
@@ -127,9 +178,9 @@ def warehouse_stats(
 ) -> WarehouseStats:
     """Counts from the raw messages table, the dbt messages model and the latest load run.
 
-    `modeled_messages` is (schema, table); the default is the dbt fct_messages mart. Participants
-    are distinct sender names across the model and threads are distinct thread IDs; both are
-    counted inside the database and only the numbers come back.
+    `modeled_messages` is (schema, table); the default is the dbt fct_messages mart.
+    Distinct senders are distinct sender names across the model and threads are distinct thread
+    IDs; both are counted inside the database and only the numbers come back.
     """
     name = database_name(url)
     if name not in ALLOWED_DATABASES:
@@ -154,6 +205,7 @@ def _stats(
     # A run still open has no duration; a run with no counts cannot be reported as numbers.
     if (
         run is None
+        or run.status not in ("succeeded", "failed")
         or run.elapsed_seconds is None
         or run.rows_parsed is None
         or run.rows_inserted is None
@@ -164,7 +216,7 @@ def _stats(
         raw_messages=raw_messages,
         modeled_messages=modeled_row[0],
         threads=modeled_row[1],
-        participants=modeled_row[2],
+        distinct_senders=modeled_row[2],
         load_id=run.load_id,
         load_status=run.status,
         rows_parsed=run.rows_parsed,
@@ -200,39 +252,36 @@ def count_manifest(manifest: Mapping[str, Any]) -> DbtCounts:
         unit_tests=sum(1 for u in manifest.get("unit_tests", {}).values() if ours(u)),
         sources=sum(1 for s in manifest.get("sources", {}).values() if ours(s)),
         seeds=len(of_type("seed")),
+        hooks=len(of_type("operation")),
     )
 
 
 def dbt_counts(project_dir: Path = DBT_DIR) -> DbtCounts:
-    """Run `dbt parse` with the repo's usual invocation, then count target/manifest.json.
+    """Run `dbt parse` with placeholder credentials, then count the manifest it wrote.
 
-    Settings come from ENV_FILE (not from whatever the shell exported) and are handed to dbt as its
-    profile's environment variables. dbt output is captured, never shown. Packages are installed
-    first only if missing; both only write dbt's own gitignored directories.
+    dbt never connects to parse, so ENV_FILE's database settings are not passed. Target and log
+    directories are a temporary directory, so nothing is written under the repo except installed
+    packages (dbt/dbt_packages, gitignored package code). dbt output is captured, never shown.
     """
-    db = get_database_settings()
-    env = {
-        **os.environ,
-        "GCW_DB_NAME": db.gcw_db_name,
-        "POSTGRES_USER": db.postgres_user,
-        "POSTGRES_PASSWORD": db.postgres_password.get_secret_value(),
-        "POSTGRES_HOST": db.postgres_host,
-        "POSTGRES_PORT": str(db.postgres_port),
-    }
+    env = {**os.environ, **DBT_PARSE_ENV}
     dbt = str(Path(sys.executable).parent / "dbt")
-    common = ["--project-dir", str(project_dir), "--profiles-dir", str(project_dir)]
-    commands = [["parse", *common]]
-    if not (project_dir / "dbt_packages").is_dir():
-        commands.insert(0, ["deps", *common])
-    for command in commands:
-        subprocess.run(
-            [dbt, *command],
-            check=True,
-            capture_output=True,
-            env=env,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
-    manifest = json.loads((project_dir / "target" / "manifest.json").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as tmp:
+        base = ["--project-dir", str(project_dir), "--profiles-dir", str(project_dir)]
+        logs = ["--log-path", str(Path(tmp) / "logs")]
+        # `dbt deps` rejects --target-path (it builds no target), so each command gets only the
+        # options it accepts.
+        commands = [["parse", *base, "--target-path", str(Path(tmp) / "target"), *logs]]
+        if not (project_dir / "dbt_packages").is_dir():
+            commands.insert(0, ["deps", *base, *logs])
+        for command in commands:
+            subprocess.run(
+                [dbt, *command],
+                check=True,
+                capture_output=True,
+                env=env,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        manifest = json.loads((Path(tmp) / "target" / "manifest.json").read_text(encoding="utf-8"))
     return count_manifest(manifest)
 
 
@@ -264,7 +313,7 @@ def pytest_counts() -> PytestCounts:
     """Tests `make test` selects, and every other test (deselected by marker or ignored)."""
     unit = _collect(*UNIT_PYTEST_ARGS)
     total = _collect()
-    return PytestCounts(unit=unit, integration=total - unit)
+    return PytestCounts(unit=unit, non_unit=total - unit)
 
 
 # --- Output --------------------------------------------------------------------------------------
@@ -284,7 +333,7 @@ def render(w: WarehouseStats, d: DbtCounts, p: PytestCounts) -> list[str]:
         f"warehouse raw messages: {w.raw_messages}",
         f"warehouse modeled messages: {w.modeled_messages}",
         f"warehouse threads: {w.threads}",
-        f"warehouse participants: {w.participants}",
+        f"warehouse distinct senders: {w.distinct_senders}",
         f"latest load id: {w.load_id}",
         f"latest load status: {w.load_status}",
         f"latest load rows parsed: {w.rows_parsed}",
@@ -297,14 +346,28 @@ def render(w: WarehouseStats, d: DbtCounts, p: PytestCounts) -> list[str]:
         f"dbt unit tests: {d.unit_tests}",
         f"dbt sources: {d.sources}",
         f"dbt seeds: {d.seeds}",
+        f"dbt hooks: {d.hooks}",
+        f"dbt buildable nodes: {d.buildable}",
         f"pytest unit tests collected: {p.unit}",
-        f"pytest integration tests collected: {p.integration}",
+        f"pytest non-unit tests collected: {p.non_unit}",
         "metrics: ok",
     ]
 
 
+def check_shapes(lines: list[str]) -> None:
+    """Raise ShapeError unless there is one line per pattern, in order, each fully matching."""
+    if len(lines) != len(LINE_SHAPES):
+        raise ShapeError
+    for line, shape in zip(lines, LINE_SHAPES, strict=True):
+        if re.fullmatch(shape, line) is None:
+            raise ShapeError
+
+
 def run(steps: Steps = DEFAULT_STEPS) -> int:
-    """Run every step, then print the report. On any failure print one line and exit non-zero."""
+    """Run every step, render and shape-check the report, then print it.
+
+    On any failure print one line (step and exception type only) and exit non-zero.
+    """
     step = STEP_DATABASE
     try:
         steps.database()
@@ -314,9 +377,12 @@ def run(steps: Steps = DEFAULT_STEPS) -> int:
         dbt = steps.dbt()
         step = STEP_PYTEST
         collected = steps.pytest()
+        step = STEP_RENDER
+        lines = render(warehouse, dbt, collected)
+        check_shapes(lines)
     except Exception as exc:  # type name only: messages from drivers and subprocesses can echo data
         print(f"metrics: failed at {step} ({type(exc).__name__})")
         return 1
-    for line in render(warehouse, dbt, collected):
+    for line in lines:
         print(line)
     return 0

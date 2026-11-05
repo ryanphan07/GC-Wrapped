@@ -1,45 +1,20 @@
-Last session: 2026-11-05 — make metrics (aggregate report) + PR 23 follow-ups
-Brief completed: yes locally (make lint test: 254 passed; make test-integration: 22 passed); CI result to be confirmed on the PR.
+Last session: 2026-11-05 — fix real-ingest-synthetic failure on PR 25 (make metrics step)
+Brief completed: yes locally (make lint test: 261 passed; make test-integration passed); CI result confirmed on PR 25 (see Commits).
 Done:
-- `gcw metrics` / `make metrics` (src/gcwrapped/metrics.py): fixed-label report from the warehouse named by ENV_FILE, dbt manifest (after dbt parse) and pytest --collect-only. Prints nothing until every step succeeds; failure prints "metrics: failed at <step> (<ExceptionType>)", exit 1. Starts only the db service, leaves it running.
-- Tests: tests/test_metrics.py (line shapes, error path with SENTINELTEXT, manifest counting, Makefile selection pin), tests/test_metrics_integration.py (SENTINELNAME/SENTINELTEXT seeded, counts asserted).
-- CI: new "make metrics" step in real-ingest-synthetic after run 2 (asserts ok, gcw_ci, raw messages >= 1, no sentinel).
-- PR 23 follow-ups in tests/test_cli_errors.py: real migrate/last-run/ingest by subprocess with POSTGRES_PORT=SENTINELVALUE (no patching) and an import-every-module test with a missing ENV_FILE. Both passed with no source change.
-- CLAUDE.md, METRICS.md (3 rows), decisions.md (2 entries) updated.
+- Root cause: CI log said "metrics: failed at dbt (CalledProcessError)". With no dbt/dbt_packages (CI starts clean), dbt_counts() runs `dbt deps`, which accepts --log-path but NOT --target-path (checked with `dbt deps --help`; `dbt parse --help` lists both). deps exited with a usage error.
+- Fix (src/gcwrapped/metrics.py): deps gets --project-dir, --profiles-dir, --log-path only; parse keeps --target-path and --log-path in the TemporaryDirectory.
+- tests/test_metrics.py: new deps-before-parse test (fake subprocess.run, per-command option sets, no SENTINEL); buildable test now uses distinct per-field values and asserts 110111.
+- ci.yml metrics step: asserts "dbt buildable nodes: N" equals the dbt build "TOTAL=" from run 1 (out1.txt prints it), fixed-reason failure message.
 Deviations from the brief (what + why):
-- No source fixes were needed for tasks 6/7: no command printed str(exc) or the input value, and no module loads settings at import.
-- dbt packages: `dbt parse` needs dbt_utils, so metrics runs `dbt deps` first when dbt/dbt_packages is missing. It writes dbt/dbt_packages (gitignored) besides target/, and needs network the first time.
-- `make metrics` runs `uv run --group dbt --group dashboard` (dbt for parse; dashboard group so the ignored dashboard test file collects). In CI this installs both groups.
-- "dbt parse" is invoked via the dbt binary next to the Python interpreter with profile env vars taken from ENV_FILE settings, not the shell.
-- Integration count = all collected tests minus make test's selection, so the dashboard warehouse tests are included.
-- Integration test stands in for analytics.fct_messages with a throwaway schema (metrics_probe) so a real dbt mart in gcw_dev is untouched.
-- Latest run still 'running' or without counts fails the warehouse step (NoLoadRunError) so the status line is only succeeded|failed.
-- METRICS.md "dbt project and test suite" row cites 251e9f9 (the code commit); docs were committed after it.
+- None. Hypothesis confirmed; deps still redirects its logs via --log-path, so no dbt/logs deviation.
 In progress / broken: nothing known.
-Next up: Ryan runs make metrics on real data; then Session C2 (shared parse loop).
+Open issues:
+- make test-integration empties gcw_dev (integration tests share the dev database); candidate: a separate gcw_test database. After it, make e2e is needed before make metrics.
+Next up: Ryan's real-data make metrics run; then Session C2 (shared parse loop).
 Open questions for planning:
-- "participants" is count(distinct sender_name) across fct_messages, per the brief. The same display name in two threads counts once; dim_members counts per (thread, name). Say if you want the per-thread figure.
-- real-ingest-synthetic run 3 (failure path) takes about 323 s of pipeline time, probably Airflow task retries; not investigated.
-Measured this session (exact value + source), make metrics, default .env, 2026-11-05 (dev, synthetic):
-target database: gcw_dev
-warehouse raw messages: 170
-warehouse modeled messages: 170
-warehouse threads: 3
-warehouse participants: 7
-latest load id: 1
-latest load status: succeeded
-latest load rows parsed: 170
-latest load rows inserted: 170
-latest load seconds: 0.04
-dbt models: 9
-dbt data tests: 111
-dbt generic tests: 109
-dbt singular tests: 2
-dbt unit tests: 4
-dbt sources: 2
-dbt seeds: 0
-pytest unit tests collected: 254
-pytest integration tests collected: 40
-metrics: ok
-Commits: 251e9f9 — feat: make metrics aggregate report, CLI error-output tests (docs commit follows on the branch)
+- real-ingest-synthetic run 3 takes ~323 s (likely Airflow retries on the failure path): parked, not Phase 1 work.
+Measured this session (exact value + source):
+- Local make metrics, default .env (gcw_dev), with and without dbt/dbt_packages: "metrics: ok"; ls dbt shows no target/ or logs/.
+- make lint test: 261 passed, 22 deselected.
+Commits: pending (see git log after push)
 Phase 1 checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] real-data run [x] metrics [x]

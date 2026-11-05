@@ -333,3 +333,27 @@ Decision: dbt model and test counts are read by resource type from target/manife
 Alternative: parse the PASS=/TOTAL= summary that dbt build prints.
 Why: the build summary is one total across models, tests, seeds and sources. The manifest splits them and needs no database.
 Tradeoff: it counts what is defined, not what ran. dbt build in CI and in real-ingest shows they run.
+
+## 2026-11-05 — make metrics enforces its output shapes at runtime
+Decision: the allowed line patterns live in metrics.py, and every rendered line must fully match its pattern before anything is printed. A mismatch prints "metrics: failed at render (ShapeError)". Tests import the same patterns.
+Alternative: keep the patterns only in tests, which then prove the property only on synthetic values.
+Why: the leak guarantee has to hold on the real database, where values come from data the tests never saw (for example, an unexpected load status).
+Tradeoff: a new metric needs a pattern in the source, and an unexpected value fails the whole report instead of printing it.
+
+## 2026-11-05 — dbt parse in make metrics runs without real credentials
+Decision: the dbt step passes placeholder profile values and writes dbt's target and log directories to a temporary directory.
+Alternative: hand dbt the ENV_FILE's database settings and let it write dbt/target and dbt/logs in the repo.
+Why: dbt parse never connects, so real credentials add risk and no value (least privilege), and a real-data run should leave nothing in the repo tree Claude Code reads.
+Tradeoff: no partial-parse reuse between runs, so every parse is a full parse (a few seconds slower).
+
+## 2026-11-05 — "distinct senders" instead of "participants"
+Decision: the metric stays count(distinct sender_name) across fct_messages and is labeled "warehouse distinct senders".
+Alternative: per-(thread, name) memberships as in dim_members, or keep the label "participants".
+Why: across threads, distinct display names are the closer proxy for people. "Participants" implied everyone in the chat, including people who never sent a message.
+Tradeoff: two people with the same display name count once, and one person whose display name differs between threads counts twice.
+
+## 2026-11-05 — make metrics counts dbt hooks so its total reconciles with dbt build
+Decision: add "dbt hooks" (manifest operation nodes) and "dbt buildable nodes" (models + seeds + data tests + unit tests + hooks) to the report.
+Alternative: leave the 124 vs PASS=125 gap unexplained, or add a hard-coded offset.
+Why: the on-run-end grant in dbt_project.yml is an operation node; dbt build runs it and counts it in PASS/TOTAL. The gap was this one hook, not a project change.
+Tradeoff: a new buildable resource type (e.g. a snapshot) must be added to the sum by hand.
