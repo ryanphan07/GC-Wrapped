@@ -157,7 +157,7 @@ jobs:
           docker volume ls --format '{{.Name}}'
           docker volume ls --format '{{.Name}}' | grep -qx 'gc-wrapped-ci_pgdata'
           # No volume under the pinned default project name may exist.
-          ! docker volume ls --format '{{.Name}}' | grep -q '^gc-wrapped_'
+          if docker volume ls --format '{{.Name}}' | grep -q '^gc-wrapped_'; then echo "volume under the pinned default project name exists"; exit 1; fi
       - name: Dashboard is healthy and the marts are populated
         run: |
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8501/_stcore/health)" = 200
@@ -232,7 +232,7 @@ jobs:
           grep -qx "== step: e2e ==" "$RUNNER_TEMP/out1.txt"
           grep -qx "target database: gcw_ci" "$RUNNER_TEMP/out1.txt"
           grep -qE "^rows inserted: [1-9][0-9]*$" "$RUNNER_TEMP/out1.txt"
-          ! grep -qi sentinel "$RUNNER_TEMP/out1.txt"
+          if grep -qi sentinel "$RUNNER_TEMP/out1.txt"; then echo "sentinel string on terminal output"; exit 1; fi
       - name: make real-ingest (second run inserts nothing)
         run: |
           make real-ingest ENV_FILE="$ENV_FILE" 2>&1 | tee "$RUNNER_TEMP/out2.txt"
@@ -240,7 +240,7 @@ jobs:
           grep -qx "real-ingest: ok" "$RUNNER_TEMP/out2.txt"
           grep -qx "rows inserted: 0" "$RUNNER_TEMP/out2.txt"
           test "$(grep '^rows inserted:' "$RUNNER_TEMP/out2.txt" | sort -u)" = "rows inserted: 0"
-          ! grep -qi sentinel "$RUNNER_TEMP/out2.txt"
+          if grep -qi sentinel "$RUNNER_TEMP/out2.txt"; then echo "sentinel string on terminal output"; exit 1; fi
       - name: make real-ingest (third run, an allowlisted thread with a malformed message file)
         run: |
           BAD="$LANDING/export_sentinel/your_instagram_activity/messages/inbox/SENTINELNAME_99999999999999"
@@ -252,8 +252,8 @@ jobs:
           set -e
           test "$code" -ne 0
           grep -q "^real-ingest: failed at " "$RUNNER_TEMP/out3.txt"
-          ! grep -qx "real-ingest: ok" "$RUNNER_TEMP/out3.txt"
-          ! grep -qi sentinel "$RUNNER_TEMP/out3.txt"
+          if grep -qx "real-ingest: ok" "$RUNNER_TEMP/out3.txt"; then echo "unexpected real-ingest: ok"; exit 1; fi
+          if grep -qi sentinel "$RUNNER_TEMP/out3.txt"; then echo "sentinel string on terminal output"; exit 1; fi
       - name: Private log (synthetic data only) on failure
         if: failure()
         uses: actions/upload-artifact@v4

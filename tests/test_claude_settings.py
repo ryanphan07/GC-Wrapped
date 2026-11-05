@@ -25,6 +25,8 @@ REQUIRED_DENY = [
     "Bash(*gc-wrapped-real*)",
     "Bash(*real.env*)",
     "Bash(*make real-ingest*)",
+    "Bash(*gcw real-ingest*)",
+    "Bash(*gcwrapped.real_ingest*)",
     "Bash(*5433*)",
     "Bash(*8502*)",
 ]

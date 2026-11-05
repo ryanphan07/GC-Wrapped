@@ -57,6 +57,9 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 - Ingestion is idempotent: re-loading the same file inserts 0 rows (dedup key design is in decisions.md).
 - Small diffs. Prefer boring, widely used libraries; justify any new dependency in decisions.md.
 
+## Workflow rules
+- Commit only after `make lint test` exits 0, chained with `&&`; never chain a commit after tests with `;`.
+
 ## Working with Ryan
 - He must be able to explain every line in an interview. After each change, briefly explain the why and the tradeoffs.
 - Claude Code implements all code, including privacy-critical functions. If a design question is not answered by the brief, stop and ask Ryan; do not guess or scaffold. Ryan reviews every diff closely enough to explain each line, so end each session with a short explanation of the key design choices.
