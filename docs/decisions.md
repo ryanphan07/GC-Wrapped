@@ -218,3 +218,12 @@ Decision: The Makefile does `-include $(ENV_FILE)` (default .env) and every comp
 Alternative: Keep `-include .env` and rely on --env-file alone.
 Why: Compose gives shell variables precedence over --env-file (verified), and `export` puts .env values in the shell. A run with ENV_FILE=<other> would have silently used the dev passwords and database name from .env.
 Tradeoff: ENV_FILE is parsed by make, so values must be plain KEY=value (no quotes or spaces), as in .env.example.
+
+## 2026-11-04 — Real-data guardrails: gitignore real.env, deny Read/Edit/Write, single private root
+Decision: real.env is gitignored and denied to Claude Code for Read/Edit/Write/Bash. All real
+data and private scripts live under ~/gcw-private (landing/, local/, archive/), which is
+denied to Claude Code across all tools.
+Alternative: Bash-only deny patterns and per-folder rules (the previous state).
+Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able
+to open it. One private root means one set of deny rules covers everything real.
+Tradeoff: the landing path now lives under a fixed convention instead of being arbitrary.
