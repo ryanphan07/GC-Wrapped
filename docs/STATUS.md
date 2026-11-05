@@ -24,5 +24,5 @@ Measured this session (exact value + source, terminal output of this session):
 - make test: 194 passed, 19 deselected. make test-integration: 19 passed.
 - make e2e x2, default .env: both exit 0; rows parsed 170, rows inserted 0 both runs (dev DB already held these keys).
 - real-ingest x2 on temp stack, fresh DB: run 1 rows inserted 170, dbt PASS=125 WARN=0 ERROR=0 TOTAL=125, 251.68 s; run 2 rows inserted 0, 89.02 s. Both "real-ingest: ok".
-Commits: ecdc16a (base, main) — Reconcile parser, key and generator (#19); branch commit hash recorded below
+Commits: f9cbbb9 — feat: consent allowlist, check-landing counts, guarded real-ingest (on branch feat/consent-allowlist-real-ingest; base ecdc16a)
 Phase 1 checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] (verified twice on rebuilt dev DB) consent gate [x] real-ingest [x] (real-data run pending, Ryan)
