@@ -227,3 +227,8 @@ Alternative: Bash-only deny patterns and per-folder rules (the previous state).
 Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able
 to open it. One private root means one set of deny rules covers everything real.
 Tradeoff: the landing path now lives under a fixed convention instead of being arbitrary.
+## 2026-11-04 — Real-data guardrails: gitignore real.env, deny Read/Edit/Write, single private root
+Decision: real.env lives at ~/gcw-private/real.env (outside the repo); `real.env` in .gitignore is a backstop. All real data and private scripts live under ~/gcw-private, denied to Claude Code across Read/Edit/Write/Bash.
+Alternative: Bash-only deny patterns and an in-repo real.env (the previous state).
+Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able to open it. One private root means one set of deny rules covers everything real.
+Tradeoff: the private root is a fixed convention that must be documented for anyone cloning the repo.
