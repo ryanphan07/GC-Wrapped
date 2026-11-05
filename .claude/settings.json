@@ -9,7 +9,11 @@
       "Bash(*gcw-private*)",
       "Bash(*gcw_real*)",
       "Bash(*gc-wrapped-real*)",
-      "Bash(*real.env*)"
+      "Bash(*real.env*)",
+      "Read(./real.env)",
+      "Edit(./real.env)",
+      "Read(/home/ryanp/gcw-landing/**)",
+      "Edit(/home/ryanp/gcw-landing/**)"
     ]
   }
 }
