@@ -106,6 +106,11 @@ def thread_id(thread_dir: Path) -> str:
     return match.group(1)
 
 
+def source_file_label(tid: str, message_file: Path) -> str:
+    """PII-free lineage label "<thread_id>/<message_N.json>": no export root, no folder name."""
+    return f"{tid}/{message_file.name}"
+
+
 def attachment_uris(raw: dict[str, Any]) -> list[str]:
     """URIs of every attachment on a raw message (photos, videos, audio), in file order."""
     uris: list[str] = []

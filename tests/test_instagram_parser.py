@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from gcwrapped.parsers.instagram import (
     parse_export,
     parse_message,
 )
+from synthetic import sentinel
 from synthetic.instagram import RENAMED_IN_B, THREADS, generate_pair, to_mojibake
 
 IDENTICAL_TEXT = "same message 👍"
@@ -226,8 +228,28 @@ def test_export_contents(exports: tuple[Path, Path]) -> None:
     assert any(m.content is None for m in msgs)
     assert any("☕" in (m.content or "") or "😂" in (m.content or "") for m in msgs)
     assert any(m.thread_title == "Weekend Crew ☕" for m in msgs)
-    assert all(m.source_file.startswith(fmt.MESSAGES_DIR.as_posix()) for m in msgs)
-    assert all("\\" not in m.source_file for m in msgs)
+    assert all(re.fullmatch(r"\d+/message_\d+\.json", m.source_file) for m in msgs)
+
+
+def test_source_file_identical_for_renamed_folder(tmp_path: Path) -> None:
+    _, b = generate_pair(tmp_path)
+    before = sorted(m.source_file for m in parse_export([b]))
+    folder = next(d for d in (b / fmt.MESSAGES_DIR).iterdir() if d.name != d.name.split("_")[-1])
+    folder.rename(folder.with_name("totally_different_name_" + fmt.thread_id(folder)))
+    after = sorted(m.source_file for m in parse_export([b]))
+    assert before == after
+
+
+def test_sentinel_source_file_has_no_name(tmp_path: Path) -> None:
+    sentinel.build(tmp_path)
+    for d in fmt.find_thread_dirs(tmp_path):  # drop the deliberately unparseable folder shape
+        try:
+            fmt.thread_id(d)
+        except ValueError:
+            shutil.rmtree(d)
+    msgs = list(parse_export([tmp_path]))
+    assert msgs
+    assert all("SENTINELNAME" not in m.source_file for m in msgs)
 
 
 def test_parser_protocol_adapter(exports: tuple[Path, Path]) -> None:

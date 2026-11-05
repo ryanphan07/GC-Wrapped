@@ -194,7 +194,7 @@ def _parse_root(root: Path) -> Iterator[ParsedMessage]:
             data = _read_json(path)
             title = data.get(fmt.KEY_THREAD_TITLE)
             thread_title = clean_text(title) if isinstance(title, str) else None
-            source_file = path.relative_to(root).as_posix()
+            source_file = fmt.source_file_label(tid, path)
             for raw in data[fmt.KEY_MESSAGES]:
                 if not isinstance(raw, dict):
                     raise ParseError(f"{fmt.KEY_MESSAGES} entry is not an object")

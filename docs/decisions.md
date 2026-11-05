@@ -260,3 +260,9 @@ Decision: the parser maps sender_name, timestamp_ms, content, title, photos/vide
 Alternative: load every field into raw.
 Why: these fields either carry extra PII (joinable_mode.link is a live group invite link, profile_share_name is a person's name, thread_path embeds the folder name) or aren't used by any Phase 1 model. Adding a nullable raw column later is a small migration, and the daily full re-ingest backfills it.
 Tradeoff: this departs from "parser is faithful". Raw holds less than the export.
+
+## 2026-11-04 — raw.source_file stores thread_id/file name, not the export path
+Decision: source_file = "<thread_id>/<message_N.json>".
+Alternative: the path relative to the export root (previous behavior), or dropping the column.
+Why: the export path contains the name-bearing thread folder, so every row, log line and failing dbt test would carry a display name. Identifier and lineage fields spread further than content columns, so they must be PII-free. Keeping the column preserves row-to-file lineage for debugging.
+Tradeoff: locating the file on disk takes a lookup by digit suffix (one glob) instead of a direct path.

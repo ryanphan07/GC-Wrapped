@@ -1,5 +1,5 @@
 Last session: 2026-11-04 — Reconcile parser and generator to the real Instagram format
-Brief completed: partial. `make lint test` passes (131 tests). NOT verified: `make e2e` on a rebuilt dev DB and its second-run row counts, and `make test-integration` (Docker daemon was not running in this session).
+Brief completed: yes. `make lint test` passes (133 tests); `make test-integration` 18 passed on a freshly rebuilt dev DB; `make e2e` run twice on fresh synthetic landing: raw.messages = 170 after run 1 (170 inserted) and 170 after run 2 (0 inserted).
 Done:
 - docs/formats/instagram-schema.md committed unmodified (sha256 1de5bf2d...b20 verified before and after).
 - docs/formats/reconciliation.md: assumption vs. real vs. code table, mapped vs. ignored fields, inbox-only note (closes the old open question about siblings of inbox).
@@ -15,10 +15,11 @@ Deviations from the brief (what + why):
 - generate_pair default (max_per_file = 10000) gives single-file threads like the real export; tests pass max_per_file=30 for multi-file coverage. `make synth` fixtures therefore no longer have multi-file threads.
 - Added a third synthetic thread (bare-digit folder) so both real folder shapes exist.
 In progress / broken:
-- Not run: make e2e, make test-integration, make test-warehouse (Docker down). Dev DB must be rebuilt (keys changed).
+- make test-warehouse not run. `make e2e` with the default landing fails (`ingest failed (ValueError at row 0)`): ./data/landing holds export folders from the old generator (not inspected, per privacy rules) that no longer match thread_id(). Regenerate it (`uv run python tests/synthetic/instagram.py --out data/landing` after clearing it) to fix. Verified e2e used `make e2e GCW_LANDING_HOST_DIR=<fresh synthetic dir>`.
+- CI coverage: ci.yml `integration` job runs make test-integration (+ dbt build, test-warehouse); `e2e` job runs make e2e twice and asserts `rows inserted: 0` on the second.
 Next up: Ryan runs parse-check, then Session B (allowlist, real-ingest, metrics)
 Open questions for planning:
-- raw.source_file stores the relative path including the name-bearing thread folder (e.g. .../inbox/<name>_<digits>/message_1.json) on every row. That reintroduces the PII the thread_id decision avoids. Not changed (out of scope: no new raw columns, no brief guidance). Options: store only message_N.json, or the thread_id plus file name.
+- (resolved) raw.source_file is now "<thread_id>/<message_N.json>"; see decisions.md 2026-11-04.
 - parse-check as written exits 1 on any error; confirm that is wanted.
 Measured this session (exact value + source): none on real data. Test count 131 passed, 18 deselected (make test).
 Commits: 44605cf — docs: replace provisional Instagram spec with the real format report; 686ac49 — feat: reconcile parser, key and generator to the real Instagram format
