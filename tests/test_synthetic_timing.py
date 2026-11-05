@@ -11,8 +11,8 @@ MULTI_HOUR_MS = 3 * 60 * 60_000
 
 
 def history(seed: int = 1234) -> list[dict[str, object]]:
-    thread, _title, participants, count = THREADS[0]
-    return list(build_conversation(random.Random(seed), thread, participants, count))
+    _folder, _title, participants, count = THREADS[0]
+    return list(build_conversation(random.Random(seed), participants, count))
 
 
 def gaps(msgs: list[dict[str, object]]) -> list[int]:

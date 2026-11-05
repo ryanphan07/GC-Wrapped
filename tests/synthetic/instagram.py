@@ -2,9 +2,12 @@
 
 Usage: uv run python tests/synthetic/instagram.py [--out DIR] [--seed N]
 
-Writes two overlapping exports of the same threads (`export_a`, `export_b`) with different file
-chunking. Layout and key names come from gcwrapped.parsers.instagram_format, so the generator and
-the parser can't drift apart.
+Writes two overlapping exports of the same threads (`export_a`, `export_b`) in the real format
+(docs/formats/instagram-schema.md): <name>_<digits> and bare <digits> thread folders, newest-first
+message files chunked at fmt.MAX_MESSAGES_PER_FILE, mojibake text, extensionless photos, external
+video URLs, and every real key the parser deliberately ignores. Export b uses different chunking
+and a different export root, renames one thread folder (same digits) and gives external URLs a
+different query string. Layout and key names come from gcwrapped.parsers.instagram_format.
 """
 
 import argparse
@@ -32,16 +35,27 @@ _LULL_CHANCE = 0.1
 _LULL_MIN_MS, _LULL_MAX_MS = 10 * _MINUTE_MS, 45 * _MINUTE_MS
 _SAME_SENDER_CHANCE = 0.4
 
-# (folder name, title, participants, message count)
+# (folder name, title, participants, message count). Digit runs are 15-17 long, as in the real
+# export; the third folder is bare digits.
 THREADS: list[tuple[str, str, list[str], int]] = [
     (
-        "weekendcrew_a1b2c3",
+        "weekendcrew_1784563920183746",
         "Weekend Crew ☕",
-        ["José Núñez", "Zoë Müller", "Sam Lee", "Priya"],
+        ["José Núñez", "Zoë Müller", "Sam Lee", "Priya", "Nguyễn Thị Hương"],
         100,
     ),
-    ("sam_d4e5f6", "Sam Lee", ["Ana Ruiz", "Sam Lee"], 40),
+    ("sam_293847561029384", "Sam Lee", ["Ana Ruiz", "Sam Lee"], 40),
+    ("48271936502817364", "Priya Raman", ["Ana Ruiz", "Priya Raman"], 30),
 ]
+
+# Folder renames applied in export b: the name part changes, the digits (the thread_id) do not.
+RENAMED_IN_B = {THREADS[1][0]: "samantha_293847561029384"}
+
+# Placeholders in the in-memory history, filled in when an export is written, because a real
+# export embeds the thread folder in every URI and CDN URLs carry per-export query strings.
+_FOLDER = "@@FOLDER@@"
+_QUERY = "@@QUERY@@"
+_QUERY_BY_EXPORT = {"a": "?oh=aaaa1111&oe=65A1B2C3", "b": "?oh=bbbb2222&oe=66D4E5F6"}
 
 _TEXTS = [
     "see you at 7",
@@ -54,6 +68,8 @@ _TEXTS = [
     "naïve question: who's driving?",
     "🔥🔥🔥",
     "lol",
+    "xin chào bạn ơi, hôm nay Hương đến muộn nhé",
+    "Nguyễn nói tối nay ăn phở ở Đà Nẵng 🍜",
 ]
 _EMOJIS = ["❤️", "😂", "👍", "😮"]
 _IDENTICAL_TEXT = "same message 👍"
@@ -64,17 +80,42 @@ def to_mojibake(s: str) -> str:
     return s.encode("utf-8").decode(fmt.MOJIBAKE_CODEC)
 
 
-def _uri(thread: str, kind: str, n: int, ext: str) -> str:
-    return f"{fmt.MESSAGES_DIR.as_posix()}/{thread}/{kind}/{kind}_{n}{ext}"
+def _export_uri(kind: str, name: str) -> str:
+    return f"{fmt.MESSAGES_DIR.as_posix()}/{_FOLDER}/{kind}/{name}"
 
 
-def build_conversation(
-    rng: random.Random, thread: str, participants: list[str], count: int
-) -> list[Message]:
+def _attachment(kind: str, name: str) -> Message:
+    return {fmt.KEY_URI: _export_uri(kind, name)}
+
+
+def _creation_timestamp(
+    rng: random.Random, ts: int, *, always: bool = False, never: bool = False
+) -> Message:
+    """Real attachments sometimes lack creation_timestamp."""
+    if never or (not always and rng.random() > 0.9):
+        return {}
+    return {fmt.KEY_CREATION_TIMESTAMP: ts // 1000 - rng.randint(0, 3600)}
+
+
+def _reaction(rng: random.Random, actor: str, ts: int) -> Message:
+    """Real reactions carry a timestamp only about one time in ten."""
+    reaction: Message = {fmt.KEY_REACTION_EMOJI: rng.choice(_EMOJIS), fmt.KEY_REACTION_ACTOR: actor}
+    if rng.random() < 0.1:
+        reaction[fmt.KEY_REACTION_TIMESTAMP] = ts + rng.randint(1_000, 600_000)
+    return reaction
+
+
+def _external_video_uri(i: int) -> str:
+    return f"https://scontent.cdninstagram.com/v/t66.30100-16/syn{i:04d}_n.mp4{_QUERY}"
+
+
+def build_conversation(rng: random.Random, participants: list[str], count: int) -> list[Message]:
     """A thread's full history, oldest first, as clean (un-mojibaked) message dicts.
 
-    Always contains: photos, shares, reactions, a message with no content key, a message with
-    empty content, and two fully identical messages (same ms, sender, content) mid-history.
+    Always contains: photos (some extensionless, some without creation_timestamp), shares (one
+    without a link, one profile share), an export video, an external video, audio, a call,
+    reactions (some with timestamps), a message with no content key, a message with empty
+    content, and two fully identical messages (same ms, sender, content) mid-history.
     """
     messages: list[Message] = []
     ts = _BASE_MS
@@ -96,37 +137,55 @@ def build_conversation(
             sender = rng.choice(participants)
         prev_sender = sender
         msg: Message = {fmt.KEY_SENDER: sender, fmt.KEY_TIMESTAMP_MS: ts}
-        kind = rng.choices(["text", "photo", "share", "empty", "nocontent"], [10, 2, 2, 1, 1])[0]
-        if i == 3:
-            kind = "photo"
-        elif i == 4:
-            kind = "share"
-        elif i == 5:
-            kind = "empty"
-        elif i == 6:
-            kind = "nocontent"
+        kinds = ["text", "photo", "share", "empty", "nocontent", "video", "audio", "call"]
+        kind = rng.choices(kinds, [10, 2, 2, 1, 1, 1, 1, 1])[0]
+        forced = {3: "photo", 4: "share", 5: "empty", 6: "nocontent", 7: "video"}
+        forced |= {8: "extvideo", 9: "audio", 10: "call", 11: "sharenolink", 12: "profileshare"}
+        forced[count // 2 + 3] = "extvideo"  # inside both exports, so their keys must match
+        kind = forced.get(i, kind)
+        # Real exports carry this flag on all but a handful of messages.
+        msg[fmt.KEY_IS_GEOBLOCKED] = False
+        if rng.random() < 0.95:
+            msg[fmt.KEY_IS_UNSENT_IMAGE] = False
         if kind == "text":
             msg[fmt.KEY_CONTENT] = rng.choice(_TEXTS)
         elif kind == "photo":
-            n = rng.randint(1, 3)
+            n = 2 if i == 3 else rng.randint(1, 3)
             msg[fmt.KEY_PHOTOS] = [
-                {fmt.KEY_URI: _uri(thread, "photos", i * 10 + j, ".jpg")} for j in range(n)
+                _attachment("photos", f"syn{i:04d}_{j}{rng.choice(['.jpg', '.png', '.webp', ''])}")
+                | _creation_timestamp(
+                    rng, ts, always=(i == 3 and j == 0), never=(i == 3 and j == 1)
+                )
+                for j in range(n)
             ]
-        elif kind == "share":
+        elif kind == "video":
+            msg[fmt.KEY_VIDEOS] = [_attachment("videos", f"syn{i:04d}_0.mp4")]
+        elif kind == "extvideo":
+            msg[fmt.KEY_VIDEOS] = [{fmt.KEY_URI: _external_video_uri(i)}]
+        elif kind == "audio":
+            msg[fmt.KEY_AUDIO] = [
+                _attachment("audio", f"syn{i:04d}_0.mp4") | _creation_timestamp(rng, ts)
+            ]
+        elif kind == "call":
+            msg[fmt.KEY_CONTENT] = "call ended"
+            msg[fmt.KEY_CALL_DURATION] = rng.randint(5, 3600)
+        elif kind in ("share", "sharenolink", "profileshare"):
             msg[fmt.KEY_CONTENT] = "look at this"
-            msg[fmt.KEY_SHARE] = {
-                fmt.KEY_SHARE_LINK: f"https://www.instagram.com/p/SYN{i:04d}/",
-                fmt.KEY_SHARE_TEXT: rng.choice(_TEXTS),
-            }
+            share: dict[str, Any] = {fmt.KEY_SHARE_TEXT: rng.choice(_TEXTS)}
+            if kind != "sharenolink":
+                share[fmt.KEY_SHARE_LINK] = f"https://www.instagram.com/p/SYN{i:04d}/"
+            if kind == "profileshare":
+                share[fmt.KEY_SHARE_PROFILE_NAME] = "Zoë Núñez"
+                share[fmt.KEY_SHARE_PROFILE_USERNAME] = "zoe_nunez_syn"
+            elif rng.random() < 0.9:
+                share[fmt.KEY_SHARE_OWNER] = rng.choice(participants)
+            msg[fmt.KEY_SHARE] = share
         elif kind == "empty":
             msg[fmt.KEY_CONTENT] = ""
         # "nocontent": no content key at all (e.g. an unsent message)
         if rng.random() < 0.25:
             reactors = rng.sample(participants, k=rng.randint(1, len(participants)))
-            msg[fmt.KEY_REACTIONS] = [
-                {fmt.KEY_REACTION_EMOJI: rng.choice(_EMOJIS), fmt.KEY_REACTION_ACTOR: r}
-                for r in reactors
-            ]
+            msg[fmt.KEY_REACTIONS] = [_reaction(rng, r, ts) for r in reactors]
         messages.append(msg)
 
     mid = count // 2
@@ -142,67 +201,83 @@ def build_conversation(
     return messages
 
 
-def _encode_message(msg: Message) -> Message:
-    """Apply mojibake to every text field a real export would corrupt."""
-    out = dict(msg)
-    out[fmt.KEY_SENDER] = to_mojibake(msg[fmt.KEY_SENDER])
-    if fmt.KEY_CONTENT in msg:
-        out[fmt.KEY_CONTENT] = to_mojibake(msg[fmt.KEY_CONTENT])
-    if fmt.KEY_SHARE in msg:
-        share = dict(msg[fmt.KEY_SHARE])
-        share[fmt.KEY_SHARE_TEXT] = to_mojibake(share[fmt.KEY_SHARE_TEXT])
-        out[fmt.KEY_SHARE] = share
-    if fmt.KEY_REACTIONS in msg:
-        out[fmt.KEY_REACTIONS] = [
-            {
-                fmt.KEY_REACTION_EMOJI: to_mojibake(r[fmt.KEY_REACTION_EMOJI]),
-                fmt.KEY_REACTION_ACTOR: to_mojibake(r[fmt.KEY_REACTION_ACTOR]),
-            }
-            for r in msg[fmt.KEY_REACTIONS]
-        ]
-    return out
+def _mojibake_values(node: Any) -> Any:
+    """Apply mojibake to every string value, as Meta does to every string in an export."""
+    if isinstance(node, str):
+        return to_mojibake(node)
+    if isinstance(node, list):
+        return [_mojibake_values(x) for x in node]
+    if isinstance(node, dict):
+        return {k: _mojibake_values(v) for k, v in node.items()}
+    return node
+
+
+def _materialize(msg: Message, folder: str, query: str) -> Message:
+    """Fill the URI placeholders for one export, then mojibake the text."""
+    filled = json.loads(json.dumps(msg).replace(_FOLDER, folder).replace(_QUERY, query))
+    encoded: Message = _mojibake_values(filled)
+    return encoded
 
 
 def write_thread(
     root: Path,
-    thread: str,
+    folder: str,
     title: str,
     participants: list[str],
     messages: list[Message],
     chunk_size: int,
+    query: str,
 ) -> list[Path]:
     """Write messages (oldest first in, newest first on disk) as message_N.json chunks."""
-    thread_dir = root / fmt.MESSAGES_DIR / thread
+    thread_dir = root / fmt.MESSAGES_DIR / folder
     thread_dir.mkdir(parents=True, exist_ok=True)
-    newest_first = [_encode_message(m) for m in reversed(messages)]
+    newest_first = [_materialize(m, folder, query) for m in reversed(messages)]
+    group = len(participants) > 2
     paths: list[Path] = []
     for n, start in enumerate(range(0, len(newest_first), chunk_size), start=1):
-        doc = {
+        doc: dict[str, Any] = {
             fmt.KEY_PARTICIPANTS: [
                 {fmt.KEY_PARTICIPANT_NAME: to_mojibake(p)} for p in participants
             ],
             fmt.KEY_MESSAGES: newest_first[start : start + chunk_size],
             fmt.KEY_THREAD_TITLE: to_mojibake(title),
-            fmt.KEY_THREAD_PATH: f"inbox/{thread}",
+            fmt.KEY_IS_STILL_PARTICIPANT: True,
+            fmt.KEY_THREAD_PATH: f"inbox/{folder}",
+            fmt.KEY_MAGIC_WORDS: [],
         }
+        if group:  # group chats carry an image and an invite link
+            doc[fmt.KEY_IMAGE] = {
+                fmt.KEY_URI: _export_uri("photos", "group_image.jpg").replace(_FOLDER, folder),
+                fmt.KEY_CREATION_TIMESTAMP: 1_700_000_000,
+            }
+            doc[fmt.KEY_JOINABLE_MODE] = {"link": "https://ig.me/j/SYNTHETICINVITE/", "mode": 1}
         path = thread_dir / f"message_{n}.json"
         path.write_text(json.dumps(doc), encoding="utf-8")  # ASCII-escaped, like Meta's output
         paths.append(path)
     return paths
 
 
-def generate_pair(out_dir: Path, seed: int = 1234) -> tuple[Path, Path]:
+def generate_pair(
+    out_dir: Path, seed: int = 1234, max_per_file: int = fmt.MAX_MESSAGES_PER_FILE
+) -> tuple[Path, Path]:
     """Write two overlapping exports of the same threads, chunked differently.
 
-    export_a holds the first ~3/4 of each history in chunks of 30; export_b holds everything
-    after the first ~1/3 in chunks of 17. The middle (including the identical pair) is in both.
+    export_a holds the first ~3/4 of each history, chunked at `max_per_file`; export_b holds
+    everything after the first ~1/3, chunked at ~17/30 of that, with one thread folder renamed and
+    external URLs carrying a different query string. The middle (including each identical pair) is
+    in both. Pass a small `max_per_file` to get multi-file threads.
     """
     rng = random.Random(seed)
     root_a, root_b = out_dir / "export_a", out_dir / "export_b"
-    for thread, title, participants, count in THREADS:
-        history = build_conversation(rng, thread, participants, count)
-        write_thread(root_a, thread, title, participants, history[: count * 3 // 4], 30)
-        write_thread(root_b, thread, title, participants, history[count // 3 :], 17)
+    chunk_a, chunk_b = max_per_file, max(1, max_per_file * 17 // 30)
+    for folder, title, participants, count in THREADS:
+        history = build_conversation(rng, participants, count)
+        query_a, query_b = _QUERY_BY_EXPORT["a"], _QUERY_BY_EXPORT["b"]
+        write_thread(
+            root_a, folder, title, participants, history[: count * 3 // 4], chunk_a, query_a
+        )
+        folder_b = RENAMED_IN_B.get(folder, folder)
+        write_thread(root_b, folder_b, title, participants, history[count // 3 :], chunk_b, query_b)
     return root_a, root_b
 
 

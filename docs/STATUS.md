@@ -1,21 +1,26 @@
-Last session: 2026-11-04 — Privacy-safe export shape inspector
-Brief completed: yes. mask_uri and assert_no_leak are implemented; the sentinel-leak, URI-masking and mask_uri tests pass (no xfail).
+Last session: 2026-11-04 — Reconcile parser and generator to the real Instagram format
+Brief completed: yes. `make lint test` passes (133 tests); `make test-integration` 18 passed on a freshly rebuilt dev DB; `make e2e` run twice on fresh synthetic landing: raw.messages = 170 after run 1 (170 inserted) and 170 after run 2 (0 inserted).
 Done:
-- scripts/inspect_export.py rewritten (same tool, not a second one) as an aggregates-only report: MESSAGES_DIR present?; entries next to inbox (name only if ^[a-z_]+(\.json)?$, else <x>); folder shapes <name>_<digits> / <digits> / other; histograms of digit-run length, message files per thread, timestamp digit length, message order; total messages; key frequencies as "N of M"; mojibake count (latin-1 lead+continuation byte); masked attachment URI shapes per attachment key; duplicate basenames per thread. No per-thread listings.
-- tests/synthetic/sentinel.py (+ `make synth-sentinel` -> tests/fixtures/sentinel, gitignored): SENTINELNAME/SENTINELTEXT in names, folders, content, share, reactions, URIs; hex-free numeric folders; known counts in EXPECTED.
-- tests/test_inspect_export.py: asserts folder shapes, digit histogram, files/thread, message and timestamp counts, mojibake, order, duplicate basenames, key presence against EXPECTED.
-- `make inspect EXPORT_DIR=<path>` (errors clearly if unset). decisions.md entry appended verbatim.
+- docs/formats/instagram-schema.md committed unmodified (sha256 1de5bf2d...b20 verified before and after).
+- docs/formats/reconciliation.md: assumption vs. real vs. code table, mapped vs. ignored fields, inbox-only note (closes the old open question about siblings of inbox).
+- instagram_format.py: real constants, thread_id() = trailing digits (raises ValueError without the folder name), key_basename(), thread_folder_shape(), unmapped-key names, `sticker` removed, banner removed.
+- instagram.py: message_key hashes attachment basenames (export URIs only); _Identity uses the same inputs; media_count counts external URIs too.
+- Generator: <name>_<15-17 digits> and bare-digit folders, extensionless photos, external video URLs (query differs per export), newest-first chunking (max_per_file overridable), Vietnamese/emoji mojibake, every unmapped key, optional fields missing on some, export b renames one folder and chunks differently.
+- `make parse-check EXPORT_DIR=<path>` (`gcw parse-check`): counts and exception class names only; new module parse_check.py, production parse path untouched. Sentinel leak test passes.
+- Tests added for thread_id, rename/root/query/shuffle key stability, external media_count, unmapped keys, overlap union.
+- decisions.md: three entries appended verbatim; two duplicate guardrails entries merged.
 Deviations from the brief (what + why):
-- Order histogram has a 4th bucket "indeterminate" (file with <2 distinct timestamps) because oldest/newest is undefined there.
-- Dropped the old per-path string-empty / mojibake / int-digit columns and the directory layout (they leaked structure or were per-thread); key table is now types, "N of M", array length.
-- Duplicate basenames = extra DISTINCT URIs in one thread sharing a basename.
-- Raw URIs are held in memory only, masked at render time, so aggregate tests don't depend on mask_uri.
-- Workflow change: Claude Code now implements all code (no write-it-yourself scaffolds); mask_uri (last segment always uses the filename rule, other segments allowlisted) and assert_no_leak are done and the needs_ryan markers are removed. See decisions.md.
-In progress / broken: nothing.
-Next up:
-1. Ryan runs `make inspect` on the real export (below), reviews, commits to docs/formats/instagram-schema.md via PR.
-2. Reconciliation session (not started).
-Open questions for planning: whether the real "inbox" listing needs more than 'inbox' next to it.
-Measured this session (exact value + source): none on real data. Fixture counts come from tests/synthetic/sentinel.py EXPECTED; see PR #18 report.
-Commits: (hash after PR creation)
-Phase 1 checklist: parser [~] (provisional format) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] (synthetic only) inspector [~] real-format reconciliation [ ]
+- sentinel.build() takes `malformed=False`; the parse-check test passes True. Adding the bad message to the shared fixture would have changed the inspector's EXPECTED counts.
+- parse-check also counts folders that fail thread_id() (ValueError) and unreadable files (ParseError) as errors, and exits 1 if any error occurs. The brief only specified per-message errors.
+- generate_pair default (max_per_file = 10000) gives single-file threads like the real export; tests pass max_per_file=30 for multi-file coverage. `make synth` fixtures therefore no longer have multi-file threads.
+- Added a third synthetic thread (bare-digit folder) so both real folder shapes exist.
+In progress / broken:
+- make test-warehouse not run. `make e2e` with the default landing fails (`ingest failed (ValueError at row 0)`): ./data/landing holds export folders from the old generator (not inspected, per privacy rules) that no longer match thread_id(). Regenerate it (`uv run python tests/synthetic/instagram.py --out data/landing` after clearing it) to fix. Verified e2e used `make e2e GCW_LANDING_HOST_DIR=<fresh synthetic dir>`.
+- CI coverage: ci.yml `integration` job runs make test-integration (+ dbt build, test-warehouse); `e2e` job runs make e2e twice and asserts `rows inserted: 0` on the second.
+Next up: Ryan runs parse-check, then Session B (allowlist, real-ingest, metrics)
+Open questions for planning:
+- (resolved) raw.source_file is now "<thread_id>/<message_N.json>"; see decisions.md 2026-11-04.
+- parse-check as written exits 1 on any error; confirm that is wanted.
+Measured this session (exact value + source): none on real data. Test count 131 passed, 18 deselected (make test).
+Commits: fc5853e — fix: PII-free raw.source_file; 44605cf — docs: replace provisional Instagram spec with the real format report; 686ac49 — feat: reconcile parser, key and generator to the real Instagram format
+Phase 1 checklist: parser [x] (real format, pending parse-check on the full export) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [~] (needs re-verification on rebuilt dev DB) inspector [x] real-format reconciliation [x]

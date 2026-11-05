@@ -21,7 +21,7 @@ def _msg(**overrides: object) -> ParsedMessage:
         "media_count": 2,
         "share_url": "https://example.com/x",
         "reactions": [Reaction(actor="A", emoji="👍")],
-        "source_file": "messages/inbox/t1/message_1.json",
+        "source_file": "t1/message_1.json",
     }
     fields.update(overrides)
     return ParsedMessage.model_validate(fields)
@@ -57,7 +57,7 @@ def test_message_to_row_matches_column_order() -> None:
     assert by_name["media_count"] == 2
     assert by_name["share_url"] == "https://example.com/x"
     assert json.loads(str(by_name["reactions"])) == [{"actor": "A", "emoji": "👍"}]
-    assert by_name["source_file"] == "messages/inbox/t1/message_1.json"
+    assert by_name["source_file"] == "t1/message_1.json"
 
 
 def test_message_to_row_passes_nulls_through() -> None:

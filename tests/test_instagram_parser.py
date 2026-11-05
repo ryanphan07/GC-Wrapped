@@ -1,4 +1,7 @@
 import json
+import random
+import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,14 +17,15 @@ from gcwrapped.parsers.instagram import (
     parse_export,
     parse_message,
 )
-from synthetic.instagram import THREADS, generate_pair, to_mojibake
+from synthetic import sentinel
+from synthetic.instagram import RENAMED_IN_B, THREADS, generate_pair, to_mojibake
 
 IDENTICAL_TEXT = "same message 👍"
 
 
 @pytest.fixture
 def exports(tmp_path: Path) -> tuple[Path, Path]:
-    return generate_pair(tmp_path)
+    return generate_pair(tmp_path, max_per_file=30)  # small chunks: several files per thread
 
 
 def keys(*roots: Path) -> list[str]:
@@ -48,7 +52,9 @@ def test_already_clean_strings_pass_through(clean: str) -> None:
 
 
 def test_mojibake_is_fixed_before_hashing() -> None:
-    kwargs = dict(thread_id="t", timestamp_ms=1, attachment_uris=[], share_url=None, occurrence=0)
+    kwargs = dict(
+        thread_id="t", timestamp_ms=1, attachment_basenames=[], share_url=None, occurrence=0
+    )
     raw = {fmt.KEY_SENDER: to_mojibake("José"), fmt.KEY_TIMESTAMP_MS: 1}
     msg = parse_message(raw, thread_id="t", thread_title=None, source_file="f")
     assert msg.sender_name == "José"
@@ -222,8 +228,28 @@ def test_export_contents(exports: tuple[Path, Path]) -> None:
     assert any(m.content is None for m in msgs)
     assert any("☕" in (m.content or "") or "😂" in (m.content or "") for m in msgs)
     assert any(m.thread_title == "Weekend Crew ☕" for m in msgs)
-    assert all(m.source_file.startswith(fmt.MESSAGES_DIR.as_posix()) for m in msgs)
-    assert all("\\" not in m.source_file for m in msgs)
+    assert all(re.fullmatch(r"\d+/message_\d+\.json", m.source_file) for m in msgs)
+
+
+def test_source_file_identical_for_renamed_folder(tmp_path: Path) -> None:
+    _, b = generate_pair(tmp_path)
+    before = sorted(m.source_file for m in parse_export([b]))
+    folder = next(d for d in (b / fmt.MESSAGES_DIR).iterdir() if d.name != d.name.split("_")[-1])
+    folder.rename(folder.with_name("totally_different_name_" + fmt.thread_id(folder)))
+    after = sorted(m.source_file for m in parse_export([b]))
+    assert before == after
+
+
+def test_sentinel_source_file_has_no_name(tmp_path: Path) -> None:
+    sentinel.build(tmp_path)
+    for d in fmt.find_thread_dirs(tmp_path):  # drop the deliberately unparseable folder shape
+        try:
+            fmt.thread_id(d)
+        except ValueError:
+            shutil.rmtree(d)
+    msgs = list(parse_export([tmp_path]))
+    assert msgs
+    assert all("SENTINELNAME" not in m.source_file for m in msgs)
 
 
 def test_parser_protocol_adapter(exports: tuple[Path, Path]) -> None:
@@ -314,3 +340,353 @@ def test_nul_bytes_are_stripped_from_the_thread_title(tmp_path: Path) -> None:
     [msg] = parse_export([tmp_path])
 
     assert msg.thread_title == "Crew"
+
+
+# --- thread_id ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("folder", "expected"),
+    [
+        ("weekendcrew_1784563920183746", "1784563920183746"),
+        ("48271936502817364", "48271936502817364"),
+        ("abc12_3456", "3456"),  # digits inside the name are not the id
+        ("two_words_and_more_123456789012345", "123456789012345"),
+        ("_77", "77"),
+    ],
+)
+def test_thread_id_is_the_trailing_digit_run(folder: str, expected: str) -> None:
+    assert fmt.thread_id(Path("inbox") / folder) == expected
+
+
+@pytest.mark.parametrize("folder", ["SENTINELFOLDER", "abc12", "name_12x", "name_", "12_ab", ""])
+def test_thread_id_rejects_other_shapes_without_naming_the_folder(folder: str) -> None:
+    with pytest.raises(ValueError, match=r"<name>_<digits> or <digits>") as exc:
+        fmt.thread_id(Path("inbox") / folder)
+    if folder:
+        assert folder not in str(exc.value)
+
+
+def test_synthetic_folders_match_the_real_shapes() -> None:
+    shapes = {"name_digits": 0, "digits": 0}
+    for folder, *_ in THREADS:
+        digits = fmt.thread_id(Path(folder))
+        assert 15 <= len(digits) <= 17
+        assert folder == digits or folder.endswith(f"_{digits}")
+        shapes["digits" if folder == digits else "name_digits"] += 1
+    assert all(shapes.values())  # both shapes are present
+
+
+# --- attachment identity --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        ("your_instagram_activity/messages/inbox/a_1/photos/img_1.jpg", "img_1.jpg"),
+        ("your_instagram_activity/messages/inbox/a_1/photos/extensionless", "extensionless"),
+        ("https://cdn.example/v/clip.mp4?oh=1&oe=2", None),
+        ("other_root/photos/x.jpg", None),
+    ],
+)
+def test_key_basename(uri: str, expected: str | None) -> None:
+    assert fmt.key_basename(uri) == expected
+
+
+def _msg_with_videos(*uris: str) -> dict[str, object]:
+    return {
+        fmt.KEY_SENDER: "a",
+        fmt.KEY_TIMESTAMP_MS: 1,
+        fmt.KEY_VIDEOS: [{fmt.KEY_URI: u} for u in uris],
+    }
+
+
+def test_external_attachments_count_toward_media_count_but_not_the_key() -> None:
+    inside = "your_instagram_activity/messages/inbox/t_1/videos/v.mp4"
+    outside = "https://cdn.example/v/clip.mp4?oh=abc"
+    both = parse_message(
+        _msg_with_videos(inside, outside), thread_id="t", thread_title=None, source_file="f"
+    )
+    only_inside = parse_message(
+        _msg_with_videos(inside), thread_id="t", thread_title=None, source_file="f"
+    )
+    only_outside = parse_message(
+        _msg_with_videos(outside), thread_id="t", thread_title=None, source_file="f"
+    )
+    assert (both.media_count, only_inside.media_count, only_outside.media_count) == (2, 1, 1)
+    assert both.message_key == only_inside.message_key
+    assert only_outside.message_key != only_inside.message_key
+
+
+def test_identical_messages_differing_only_in_external_attachment_keep_both_rows(
+    tmp_path: Path,
+) -> None:
+    thread = tmp_path / fmt.MESSAGES_DIR / "t_1"
+    thread.mkdir(parents=True)
+    msgs = [_msg_with_videos(f"https://cdn.example/{n}.mp4") for n in ("x", "y")]
+    doc = {fmt.KEY_MESSAGES: msgs, fmt.KEY_THREAD_TITLE: "t"}
+    (thread / "message_1.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    assert len(keys(tmp_path)) == len(set(keys(tmp_path))) == 2
+
+
+# --- keys survive renames, new roots, query strings and reordering --------------------------
+
+
+def clone(
+    src: Path,
+    dst: Path,
+    *,
+    rename: dict[str, str] | None = None,
+    replace: dict[str, str] | None = None,
+    shuffle_seed: int | None = None,
+) -> Path:
+    """Copy an export, renaming thread folders (and the folder text in files) and/or rewriting
+    text. With `shuffle_seed`, shuffles the messages in every file."""
+    shutil.copytree(src, dst)
+    for old, new in (rename or {}).items():
+        (dst / fmt.MESSAGES_DIR / old).rename(dst / fmt.MESSAGES_DIR / new)
+    swaps = {**(rename or {}), **(replace or {})}
+    for path in dst.rglob("*.json"):
+        text = path.read_text(encoding="utf-8")
+        for old, new in swaps.items():
+            text = text.replace(old, new)
+        if shuffle_seed is not None:
+            doc = json.loads(text)
+            random.Random(shuffle_seed).shuffle(doc[fmt.KEY_MESSAGES])
+            text = json.dumps(doc)
+        path.write_text(text, encoding="utf-8")
+    return dst
+
+
+def test_renamed_thread_folder_gives_identical_keys(
+    exports: tuple[Path, Path], tmp_path: Path
+) -> None:
+    old = THREADS[0][0]
+    new = "renamedcrew_" + fmt.thread_id(Path(old))
+    renamed = clone(exports[0], tmp_path / "renamed", rename={old: new})
+    assert (renamed / fmt.MESSAGES_DIR / new).is_dir()
+
+    assert sorted(keys(renamed)) == sorted(keys(exports[0]))  # folder order changes with names
+    assert {m.thread_id for m in parse_export([renamed])} == {
+        m.thread_id for m in parse_export([exports[0]])
+    }
+
+
+def test_different_export_root_gives_identical_keys(
+    exports: tuple[Path, Path], tmp_path: Path
+) -> None:
+    moved = clone(exports[0], tmp_path / "instagram-someone-2030-01-01-xyz")
+    assert keys(moved) == keys(exports[0])
+
+
+def test_external_uri_with_different_query_string_gives_identical_keys(
+    exports: tuple[Path, Path], tmp_path: Path
+) -> None:
+    text = "".join(p.read_text(encoding="utf-8") for p in exports[0].rglob("*.json"))
+    assert "oh=aaaa1111" in text  # the export really has external URLs to rewrite
+    changed = clone(exports[0], tmp_path / "q", replace={"oh=aaaa1111": "oh=different"})
+    assert "oh=aaaa1111" not in "".join(
+        p.read_text(encoding="utf-8") for p in changed.rglob("*.json")
+    )
+    assert keys(changed) == keys(exports[0])
+
+
+def test_shuffled_message_order_gives_identical_keys(
+    exports: tuple[Path, Path], tmp_path: Path
+) -> None:
+    shuffled = clone(exports[0], tmp_path / "shuffled", shuffle_seed=5)
+    assert [m.sent_at for m in parse_export([shuffled])] != [
+        m.sent_at for m in parse_export([exports[0]])
+    ]
+    assert sorted(keys(shuffled)) == sorted(keys(exports[0]))
+
+
+def test_overlapping_exports_differ_in_folder_name_and_external_query(
+    exports: tuple[Path, Path],
+) -> None:
+    a, b = exports
+    folders_a = {d.name for d in (a / fmt.MESSAGES_DIR).iterdir()}
+    folders_b = {d.name for d in (b / fmt.MESSAGES_DIR).iterdir()}
+    assert folders_a != folders_b
+    assert set(RENAMED_IN_B) <= folders_a
+    assert set(RENAMED_IN_B.values()) <= folders_b
+    assert {fmt.thread_id(Path(f)) for f in folders_a} == {
+        fmt.thread_id(Path(f)) for f in folders_b
+    }
+    text_b = "".join(p.read_text(encoding="utf-8") for p in b.rglob("*.json"))
+    assert "oh=bbbb2222" in text_b
+    assert "oh=aaaa1111" not in text_b
+
+
+# --- unmapped real keys ---------------------------------------------------------------------
+
+_UNMAPPED_TOP = (
+    fmt.KEY_IMAGE,
+    fmt.KEY_JOINABLE_MODE,
+    fmt.KEY_MAGIC_WORDS,
+    fmt.KEY_IS_STILL_PARTICIPANT,
+    fmt.KEY_THREAD_PATH,
+)
+_UNMAPPED_MESSAGE = (fmt.KEY_CALL_DURATION, fmt.KEY_IS_GEOBLOCKED, fmt.KEY_IS_UNSENT_IMAGE)
+_UNMAPPED_SHARE = (
+    fmt.KEY_SHARE_TEXT,
+    fmt.KEY_SHARE_OWNER,
+    fmt.KEY_SHARE_PROFILE_NAME,
+    fmt.KEY_SHARE_PROFILE_USERNAME,
+)
+
+
+def _strip_unmapped(doc: dict[str, object]) -> dict[str, object]:
+    out = {k: v for k, v in doc.items() if k not in _UNMAPPED_TOP}
+    messages = []
+    for m in doc[fmt.KEY_MESSAGES]:  # type: ignore[attr-defined]
+        m = {k: v for k, v in m.items() if k not in _UNMAPPED_MESSAGE}
+        if fmt.KEY_SHARE in m:
+            m[fmt.KEY_SHARE] = {
+                k: v for k, v in m[fmt.KEY_SHARE].items() if k not in _UNMAPPED_SHARE
+            }
+        for key in fmt.ATTACHMENT_KEYS:
+            if key in m:
+                m[key] = [
+                    {k: v for k, v in item.items() if k != fmt.KEY_CREATION_TIMESTAMP}
+                    for item in m[key]
+                ]
+        if fmt.KEY_REACTIONS in m:
+            m[fmt.KEY_REACTIONS] = [
+                {k: v for k, v in r.items() if k != fmt.KEY_REACTION_TIMESTAMP}
+                for r in m[fmt.KEY_REACTIONS]
+            ]
+        messages.append(m)
+    out[fmt.KEY_MESSAGES] = messages
+    return out
+
+
+def test_parser_ignores_every_unmapped_key(exports: tuple[Path, Path], tmp_path: Path) -> None:
+    stripped = tmp_path / "stripped"
+    shutil.copytree(exports[0], stripped)
+    for path in stripped.rglob("message_*.json"):
+        doc = _strip_unmapped(json.loads(path.read_text(encoding="utf-8")))
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert list(parse_export([stripped])) == list(parse_export([exports[0]]))
+
+
+def test_message_with_all_unmapped_keys_parses() -> None:
+    raw = {
+        fmt.KEY_SENDER: "a",
+        fmt.KEY_TIMESTAMP_MS: 1,
+        fmt.KEY_CALL_DURATION: 12,
+        fmt.KEY_IS_GEOBLOCKED: False,
+        fmt.KEY_IS_UNSENT_IMAGE: False,
+        fmt.KEY_SHARE: {
+            fmt.KEY_SHARE_LINK: "https://example.com/x",
+            fmt.KEY_SHARE_TEXT: "t",
+            fmt.KEY_SHARE_OWNER: "o",
+            fmt.KEY_SHARE_PROFILE_NAME: "n",
+            fmt.KEY_SHARE_PROFILE_USERNAME: "u",
+        },
+        fmt.KEY_PHOTOS: [{fmt.KEY_URI: "p/1.jpg", fmt.KEY_CREATION_TIMESTAMP: 5}],
+        fmt.KEY_REACTIONS: [
+            {
+                fmt.KEY_REACTION_EMOJI: "x",
+                fmt.KEY_REACTION_ACTOR: "b",
+                fmt.KEY_REACTION_TIMESTAMP: 9,
+            }
+        ],
+    }
+    msg = parse_message(raw, thread_id="t", thread_title=None, source_file="f")
+    assert msg.share_url == "https://example.com/x"
+    assert msg.media_count == 1
+    assert [(r.actor, r.emoji) for r in msg.reactions] == [("b", "x")]
+
+
+def test_generated_export_exercises_every_unmapped_and_optional_key(
+    exports: tuple[Path, Path],
+) -> None:
+    seen: set[str] = set()
+    missing: set[str] = set()
+    reactions_with_ts = reactions_without_ts = 0
+    for path in exports[0].rglob("message_*.json"):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        seen |= set(doc)
+        for m in doc[fmt.KEY_MESSAGES]:
+            seen |= set(m)
+            if fmt.KEY_CONTENT not in m:
+                missing.add(fmt.KEY_CONTENT)
+            if fmt.KEY_SHARE in m:
+                seen |= set(m[fmt.KEY_SHARE])
+                if fmt.KEY_SHARE_LINK not in m[fmt.KEY_SHARE]:
+                    missing.add(fmt.KEY_SHARE_LINK)
+            for key in fmt.ATTACHMENT_KEYS:
+                for item in m.get(key, []):
+                    if fmt.KEY_CREATION_TIMESTAMP in item:
+                        seen.add(fmt.KEY_CREATION_TIMESTAMP)
+                    else:
+                        missing.add(fmt.KEY_CREATION_TIMESTAMP)
+            for r in m.get(fmt.KEY_REACTIONS, []):
+                if fmt.KEY_REACTION_TIMESTAMP in r:
+                    reactions_with_ts += 1
+                else:
+                    reactions_without_ts += 1
+    assert {*_UNMAPPED_TOP, *_UNMAPPED_MESSAGE, *_UNMAPPED_SHARE} <= seen
+    assert fmt.KEY_CREATION_TIMESTAMP in seen
+    assert missing == {fmt.KEY_CONTENT, fmt.KEY_SHARE_LINK, fmt.KEY_CREATION_TIMESTAMP}
+    assert reactions_with_ts > 0
+    assert reactions_without_ts > reactions_with_ts  # timestamps are the minority, as in reality
+
+
+def test_generated_export_has_real_attachment_shapes(exports: tuple[Path, Path]) -> None:
+    uris: list[str] = []
+    for path in exports[0].rglob("message_*.json"):
+        for m in json.loads(path.read_text(encoding="utf-8"))[fmt.KEY_MESSAGES]:
+            uris += fmt.attachment_uris(m)
+    external = [u for u in uris if not u.startswith(fmt.EXPORT_URI_PREFIX)]
+    inside = [u for u in uris if u.startswith(fmt.EXPORT_URI_PREFIX)]
+    assert external
+    assert all(u.startswith("https://") for u in external)
+    assert any("." not in u.rsplit("/", 1)[-1] for u in inside)  # an extensionless photo
+    assert any("/photos/" in u for u in inside)
+    assert any("/videos/" in u for u in inside)
+    assert any("/audio/" in u for u in inside)
+
+
+def test_generated_text_includes_vietnamese_and_emoji_mojibake(exports: tuple[Path, Path]) -> None:
+    contents = [m.content or "" for m in parse_export([exports[0]])]
+    assert any("Nguyễn" in c or "chào" in c for c in contents)
+    assert any("😂" in c for c in contents)
+    assert any(m.sender_name == "Nguyễn Thị Hương" for m in parse_export([exports[0]]))
+
+
+def test_files_are_newest_first_and_chunked(exports: tuple[Path, Path], tmp_path: Path) -> None:
+    for folder in (exports[0] / fmt.MESSAGES_DIR).iterdir():
+        files = fmt.message_files(folder)
+        counts = []
+        newest_seen = None
+        for f in files:
+            ts = [
+                m[fmt.KEY_TIMESTAMP_MS] for m in json.loads(f.read_text("utf-8"))[fmt.KEY_MESSAGES]
+            ]
+            assert ts == sorted(ts, reverse=True)
+            if newest_seen is not None:
+                assert ts[0] <= newest_seen  # later files hold older messages
+            newest_seen = ts[-1]
+            counts.append(len(ts))
+        assert all(c == 30 for c in counts[:-1])
+    default_a, _ = generate_pair(tmp_path / "default")
+    assert all(len(fmt.message_files(d)) == 1 for d in (default_a / fmt.MESSAGES_DIR).iterdir())
+
+
+def test_external_video_in_the_overlap_has_the_same_key_in_both_exports(
+    exports: tuple[Path, Path],
+) -> None:
+    a, b = exports
+    external_ts: set[int] = set()
+    for path in b.rglob("message_*.json"):
+        for m in json.loads(path.read_text(encoding="utf-8"))[fmt.KEY_MESSAGES]:
+            if any(not u.startswith(fmt.EXPORT_URI_PREFIX) for u in fmt.attachment_uris(m)):
+                external_ts.add(m[fmt.KEY_TIMESTAMP_MS])
+    shared = {
+        m.message_key for m in parse_export([a]) if int(m.sent_at.timestamp() * 1000) in external_ts
+    } & set(keys(b))
+    assert shared  # a message with an external URI whose query string differs, same key in both

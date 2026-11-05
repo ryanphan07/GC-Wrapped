@@ -62,7 +62,7 @@ def message_key(
     timestamp_ms: int,
     sender_name: str,
     content: str | None,
-    attachment_uris: Iterable[str],
+    attachment_basenames: Iterable[str],
     share_url: str | None,
     occurrence: int,
 ) -> str:
@@ -70,6 +70,8 @@ def message_key(
 
     Reactions are excluded on purpose: they can change between exports.
 
+    Attachments enter the key as the sorted basenames of export URIs only (`fmt.key_basename`);
+    external URIs are excluded (see decisions.md, "Attachment identity is the URI basename").
     `sender_name` and `content` must already be cleaned with `clean_text`. `occurrence` is the
     0-based index among messages identical on every other field, which keeps two genuinely
     identical messages distinct while staying the same across re-exports.
@@ -81,7 +83,7 @@ def message_key(
             timestamp_ms,
             sender_name,
             content or "",
-            sorted(attachment_uris),
+            sorted(attachment_basenames),
             share_url or "",
             occurrence,
         ],
@@ -97,12 +99,18 @@ class _Identity:
     timestamp_ms: int
     sender_name: str
     content: str | None
-    attachment_uris: tuple[str, ...]
+    attachment_basenames: tuple[str, ...]
     share_url: str | None
 
 
 def _clean_optional(s: str | None) -> str | None:
     return clean_text(s) if s is not None else None
+
+
+def _attachment_basenames(raw: dict[str, Any]) -> tuple[str, ...]:
+    """Sorted key basenames of a message's export attachments; external URIs are skipped."""
+    names = (fmt.key_basename(clean_text(u)) for u in fmt.attachment_uris(raw))
+    return tuple(sorted(n for n in names if n is not None))
 
 
 def _identity(raw: dict[str, Any]) -> _Identity:
@@ -117,7 +125,7 @@ def _identity(raw: dict[str, Any]) -> _Identity:
         timestamp_ms=timestamp_ms,
         sender_name=clean_text(sender),
         content=clean_text(content) if isinstance(content, str) else None,
-        attachment_uris=tuple(sorted(clean_text(u) for u in fmt.attachment_uris(raw))),
+        attachment_basenames=_attachment_basenames(raw),
         share_url=_clean_optional(fmt.share_link(raw)),
     )
 
@@ -150,7 +158,7 @@ def parse_message(
             timestamp_ms=ident.timestamp_ms,
             sender_name=ident.sender_name,
             content=ident.content,
-            attachment_uris=ident.attachment_uris,
+            attachment_basenames=ident.attachment_basenames,
             share_url=ident.share_url,
             occurrence=occurrence,
         ),
@@ -160,7 +168,7 @@ def parse_message(
         sender_name=ident.sender_name,
         sent_at=_EPOCH + timedelta(milliseconds=ident.timestamp_ms),
         content=ident.content,
-        media_count=len(ident.attachment_uris),
+        media_count=len(fmt.attachment_uris(raw)),
         share_url=ident.share_url,
         reactions=_reactions(raw),
         source_file=source_file,
@@ -186,7 +194,7 @@ def _parse_root(root: Path) -> Iterator[ParsedMessage]:
             data = _read_json(path)
             title = data.get(fmt.KEY_THREAD_TITLE)
             thread_title = clean_text(title) if isinstance(title, str) else None
-            source_file = path.relative_to(root).as_posix()
+            source_file = fmt.source_file_label(tid, path)
             for raw in data[fmt.KEY_MESSAGES]:
                 if not isinstance(raw, dict):
                     raise ParseError(f"{fmt.KEY_MESSAGES} entry is not an object")

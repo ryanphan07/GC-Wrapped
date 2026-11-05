@@ -220,15 +220,7 @@ Why: Compose gives shell variables precedence over --env-file (verified), and `e
 Tradeoff: ENV_FILE is parsed by make, so values must be plain KEY=value (no quotes or spaces), as in .env.example.
 
 ## 2026-11-04 — Real-data guardrails: gitignore real.env, deny Read/Edit/Write, single private root
-Decision: real.env is gitignored and denied to Claude Code for Read/Edit/Write/Bash. All real
-data and private scripts live under ~/gcw-private (landing/, local/, archive/), which is
-denied to Claude Code across all tools.
-Alternative: Bash-only deny patterns and per-folder rules (the previous state).
-Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able
-to open it. One private root means one set of deny rules covers everything real.
-Tradeoff: the landing path now lives under a fixed convention instead of being arbitrary.
-## 2026-11-04 — Real-data guardrails: gitignore real.env, deny Read/Edit/Write, single private root
-Decision: real.env lives at ~/gcw-private/real.env (outside the repo); `real.env` in .gitignore is a backstop. All real data and private scripts live under ~/gcw-private, denied to Claude Code across Read/Edit/Write/Bash.
+Decision: real.env lives at ~/gcw-private/real.env (outside the repo); `real.env` in .gitignore is a backstop. All real data and private scripts live under ~/gcw-private (landing/, local/, archive/), denied to Claude Code across Read/Edit/Write/Bash.
 Alternative: Bash-only deny patterns and an in-repo real.env (the previous state).
 Why: real.env was not gitignored (only .env was), and Bash-only rules left the Read tool able to open it. One private root means one set of deny rules covers everything real.
 Tradeoff: the private root is a fixed convention that must be documented for anyone cloning the repo.
@@ -250,3 +242,27 @@ Decision: Claude Code implements all code, including privacy-critical functions;
 Alternative: Scaffold-only "write it yourself" functions (tests + signatures, NotImplementedError) for Ryan to implement.
 Why: Hand implementation was the bottleneck during recruiting; design choices and close diff review carry the interview value.
 Tradeoff: Less hands-on implementation practice; Ryan must review every diff closely enough to explain each line.
+
+## 2026-11-04 — thread_id is the folder's trailing numeric ID
+Decision: thread_id = the digit run that is either the whole folder name or follows its last underscore (<name>_<digits> or <digits>). Any other folder name raises, and the error never includes the folder name.
+Alternative: the full folder name.
+Why: the real export has 416 <name>_<digits> and 6 bare <digits> folders (15-17 digits). The name part embeds a participant's display name, which would put PII in every row and log line. It also changes when a chat is renamed, which would re-key the whole thread and break dedup across exports.
+Tradeoff: a future export with a different folder scheme fails loudly instead of degrading silently.
+
+## 2026-11-04 — Attachment identity is the URI basename; external URIs are not hashed
+Decision: message_key hashes the sorted basenames of attachment URIs under your_instagram_activity/. URIs outside it (5 videos in the real export) count toward media_count but are not hashed. This supersedes the attachment-URI part of "2026-11-02 — Message dedup key".
+Alternative: full URIs (the 2026-11-02 rule), or hashing external URIs too.
+Why: full URIs embed the name-bearing thread folder and the export layout, so a rename changes every key. Basenames are unique within threads in the real export (0 duplicates). External URIs don't point at export files and may carry per-export query parameters, so hashing them risks unstable keys.
+Tradeoff: two messages that differ only in an external attachment share an identity. The occurrence index still keeps both rows.
+
+## 2026-11-04 — Real-format fields not mapped in Phase 1
+Decision: the parser maps sender_name, timestamp_ms, content, title, photos/videos/audio_files (count plus basename for the key), share.link, and reactions (actor, reaction). It ignores call_duration, share.share_text, share.original_content_owner, share.profile_share_name/username, joinable_mode, image, magic_words, thread_path, is_still_participant, is_geoblocked_for_viewer, is_unsent_image_by_messenger_kid_parent, reaction timestamps and attachment creation_timestamp.
+Alternative: load every field into raw.
+Why: these fields either carry extra PII (joinable_mode.link is a live group invite link, profile_share_name is a person's name, thread_path embeds the folder name) or aren't used by any Phase 1 model. Adding a nullable raw column later is a small migration, and the daily full re-ingest backfills it.
+Tradeoff: this departs from "parser is faithful". Raw holds less than the export.
+
+## 2026-11-04 — raw.source_file stores thread_id/file name, not the export path
+Decision: source_file = "<thread_id>/<message_N.json>".
+Alternative: the path relative to the export root (previous behavior), or dropping the column.
+Why: the export path contains the name-bearing thread folder, so every row, log line and failing dbt test would carry a display name. Identifier and lineage fields spread further than content columns, so they must be PII-free. Keeping the column preserves row-to-file lineage for debugging.
+Tradeoff: locating the file on disk takes a lookup by digit suffix (one glob) instead of a direct path.

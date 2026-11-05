@@ -31,7 +31,7 @@ class ParsedMessage(BaseModel):
     media_count: int
     share_url: str | None
     reactions: list[Reaction]
-    source_file: str  # POSIX path relative to the export root
+    source_file: str  # "<thread_id>/<message_N.json>"; PII-free
 
     def __str__(self) -> str:
         # Never let a stray print/log of a message leak its text.

@@ -14,6 +14,7 @@ from gcwrapped.landing import find_export_roots
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.log import setup_logging
 from gcwrapped.migrate import MigrationError, migrate
+from gcwrapped.parse_check import check_export, render
 from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import ParseError, ParseStats, parse_export
 from gcwrapped.runs import latest_run
@@ -55,7 +56,26 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help="export root(s); several roots are unioned and deduplicated",
     )
+    pcheck = sub.add_parser(
+        "parse-check", help="parse a whole export, count errors per class, print counts only"
+    )
+    pcheck.add_argument("path", type=Path, metavar="EXPORT_DIR", help="one export root")
     return parser
+
+
+def _parse_check(path: Path) -> int:
+    """Counts and exception class names only. Exit 1 if any error or no threads were found."""
+    try:
+        report = check_export(path)
+    except Exception as exc:  # unexpected failure: class name only, no path, no message
+        print(f"error: parse-check failed ({type(exc).__name__})")
+        return 1
+    if not report.threads:
+        print(_NO_THREADS)
+        return 1
+    for line in render(report):
+        print(line)
+    return 1 if report.errors else 0
 
 
 def _parse(paths: Sequence[Path]) -> int:
@@ -172,6 +192,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup_logging()
     if args.command == "parse":
         return _parse(args.paths)
+    if args.command == "parse-check":
+        return _parse_check(args.path)
     if args.command == "ingest":
         if bool(args.paths) == (args.landing is not None):
             build_parser().error("give export path(s) or --landing DIR, not both or neither")
