@@ -27,6 +27,7 @@ NOT in Phase 1: LLM calls, embeddings, analysis of image/video content, React fr
 - Never read or reference `~/gcw-private`, any `real.env`, or the `gc-wrapped-real` compose project. Never run make real-ingest or any command with a non-.env ENV_FILE; real-ingest is verified only by the real-ingest-synthetic CI job. Tests that exercise the refusal path through subprocess are fine. Host-side settings load only the file named by ENV_FILE.
 - Only connect to the `gcw_dev` database (synthetic data). Never run psql, dbt, or scripts against `gcw_real`.
 - Ryan runs real-data commands in his own terminal and reports aggregate numbers. Never ask him to paste real messages, names, or output containing them.
+- Unhandled CLI errors print `gcw: failed: <ExceptionTypeName>` only. `GCW_TRACEBACK=1` re-raises for the full traceback: dev only; never set on real-data runs.
 - Logs and error messages never include message bodies, sender names, phone numbers, or emails. Log counts, IDs, durations, file hashes.
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.

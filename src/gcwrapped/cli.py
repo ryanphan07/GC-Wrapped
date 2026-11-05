@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -28,6 +29,8 @@ from gcwrapped.parsers.instagram import (
 from gcwrapped.runs import latest_run
 
 logger = logging.getLogger(__name__)
+
+TRACEBACK_VAR = "GCW_TRACEBACK"
 
 _NO_THREADS = "error: no message threads found under the given path(s)"
 _NO_ALLOWLISTED_THREADS = (
@@ -235,7 +238,7 @@ def _ingest(paths: Sequence[Path]) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run(argv: Sequence[str] | None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging()
     if args.command == "parse":
@@ -261,6 +264,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "migrate":
         return _migrate()
     return 2  # unreachable while subcommands are required
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point. An unhandled Exception prints its type name only, then exits 1.
+
+    Settings load before any command's own error handling, and pydantic or logging errors echo the
+    raw input value, so str(exc) and tracebacks must never reach the terminal. SystemExit and
+    KeyboardInterrupt are not Exceptions and pass through. GCW_TRACEBACK=1 re-raises instead; it is
+    read from os.environ because Settings may be what failed. Dev only, synthetic data only.
+    """
+    try:
+        return _run(argv)
+    except Exception as exc:
+        if os.environ.get(TRACEBACK_VAR) == "1":
+            raise
+        print(f"gcw: failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
