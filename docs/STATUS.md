@@ -22,5 +22,5 @@ Open questions for planning:
 - (resolved) raw.source_file is now "<thread_id>/<message_N.json>"; see decisions.md 2026-11-04.
 - parse-check as written exits 1 on any error; confirm that is wanted.
 Measured this session (exact value + source): none on real data. Test count 131 passed, 18 deselected (make test).
-Commits: 44605cf — docs: replace provisional Instagram spec with the real format report; 686ac49 — feat: reconcile parser, key and generator to the real Instagram format
+Commits: fc5853e — fix: PII-free raw.source_file; 44605cf — docs: replace provisional Instagram spec with the real format report; 686ac49 — feat: reconcile parser, key and generator to the real Instagram format
 Phase 1 checklist: parser [x] (real format, pending parse-check on the full export) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [~] (needs re-verification on rebuilt dev DB) inspector [x] real-format reconciliation [x]
