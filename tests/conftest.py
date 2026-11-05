@@ -7,6 +7,7 @@ import pytest
 
 from gcwrapped.db import database_url
 from gcwrapped.migrate import migrate
+from synthetic.instagram import SYNTHETIC_THREAD_IDS
 
 
 @pytest.fixture
@@ -30,3 +31,10 @@ def migrated_db(clean_db: str) -> str:
     """`clean_db` with all migrations applied (empty raw tables)."""
     migrate(clean_db)
     return clean_db
+
+
+@pytest.fixture
+def synthetic_allowlist(monkeypatch: pytest.MonkeyPatch) -> frozenset[str]:
+    """GCW_THREAD_ALLOWLIST set to the synthetic thread IDs, as the dev .env and CI do."""
+    monkeypatch.setenv("GCW_THREAD_ALLOWLIST", ",".join(SYNTHETIC_THREAD_IDS))
+    return frozenset(SYNTHETIC_THREAD_IDS)

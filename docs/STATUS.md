@@ -1,26 +1,28 @@
-Last session: 2026-11-04 — Reconcile parser and generator to the real Instagram format
-Brief completed: yes. `make lint test` passes (133 tests); `make test-integration` 18 passed on a freshly rebuilt dev DB; `make e2e` run twice on fresh synthetic landing: raw.messages = 170 after run 1 (170 inserted) and 170 after run 2 (0 inserted).
+Last session: 2026-11-05 — Consent allowlist and privacy-safe real ingest
+Brief completed: partial. Everything built and verified except two acceptance items I could not run: (1) the `grep -rn "gcw-private" ...` check (my Bash deny rules block any command containing that string; Ryan runs it), (2) CI green (PR just opened; check it before merging).
 Done:
-- docs/formats/instagram-schema.md committed unmodified (sha256 1de5bf2d...b20 verified before and after).
-- docs/formats/reconciliation.md: assumption vs. real vs. code table, mapped vs. ignored fields, inbox-only note (closes the old open question about siblings of inbox).
-- instagram_format.py: real constants, thread_id() = trailing digits (raises ValueError without the folder name), key_basename(), thread_folder_shape(), unmapped-key names, `sticker` removed, banner removed.
-- instagram.py: message_key hashes attachment basenames (export URIs only); _Identity uses the same inputs; media_count counts external URIs too.
-- Generator: <name>_<15-17 digits> and bare-digit folders, extensionless photos, external video URLs (query differs per export), newest-first chunking (max_per_file overridable), Vietnamese/emoji mojibake, every unmapped key, optional fields missing on some, export b renames one folder and chunks differently.
-- `make parse-check EXPORT_DIR=<path>` (`gcw parse-check`): counts and exception class names only; new module parse_check.py, production parse path untouched. Sentinel leak test passes.
-- Tests added for thread_id, rename/root/query/shuffle key stability, external media_count, unmapped keys, overlap union.
-- decisions.md: three entries appended verbatim; two duplicate guardrails entries merged.
+- GCW_THREAD_ALLOWLIST (config.ConsentSettings + consent.py): digits only, whitespace ignored, errors name the entry position never its value; unset/empty fails ingest. No bypass; a test greps src for one.
+- Discovery: `fmt.select_threads` decides from the folder name, lists inside allowlisted folders only. `parse_export_consented` is the only parser path ingest uses; `parse_export` stays ungated for `gcw parse`/tests. Tests spy on iterdir/read_text to prove a malformed non-allowlisted folder is never touched.
+- `gcw ingest` (paths and --landing) and the DAG (via compose env) are gated; new ingest lines: threads allowlisted, folders skipped (not allowlisted / unrecognised shape).
+- `gcw check-landing` per root and total: folders by shape, allowlisted IDs configured/found/not found, threads to ingest. Fails on 0 roots, 0 thread folders, 0 found. Counts only.
+- `make synth` empties its output dir first (refuses root, home, git checkout, cwd or parents). Dev ./data/landing regenerated.
+- `make real-ingest ENV_FILE=...` (`gcwrapped/real_ingest.py`): guards, check-landing, e2e; full output to GCW_LOG_DIR/real-ingest-<UTC>.log (0600); terminal gets only fully matching label+number lines. Patterns and summarizer in one module, leak-tested.
+- .env.example, dev .env, CI (3 jobs) and compose list/pass the allowlist. CLAUDE.md rule, README privacy section, METRICS.md row, three decisions verbatim plus two more.
 Deviations from the brief (what + why):
-- sentinel.build() takes `malformed=False`; the parse-check test passes True. Adding the bad message to the shared fixture would have changed the inspector's EXPECTED counts.
-- parse-check also counts folders that fail thread_id() (ValueError) and unreadable files (ParseError) as errors, and exits 1 if any error occurs. The brief only specified per-message errors.
-- generate_pair default (max_per_file = 10000) gives single-file threads like the real export; tests pass max_per_file=30 for multi-file coverage. `make synth` fixtures therefore no longer have multi-file threads.
-- Added a third synthetic thread (bare-digit folder) so both real folder shapes exist.
-In progress / broken:
-- make test-warehouse not run. `make e2e` with the default landing fails (`ingest failed (ValueError at row 0)`): ./data/landing holds export folders from the old generator (not inspected, per privacy rules) that no longer match thread_id(). Regenerate it (`uv run python tests/synthetic/instagram.py --out data/landing` after clearing it) to fix. Verified e2e used `make e2e GCW_LANDING_HOST_DIR=<fresh synthetic dir>`.
-- CI coverage: ci.yml `integration` job runs make test-integration (+ dbt build, test-warehouse); `e2e` job runs make e2e twice and asserts `rows inserted: 0` on the second.
-Next up: Ryan runs parse-check, then Session B (allowlist, real-ingest, metrics)
+- Extra guard: real-ingest refuses a GCW_LOG_DIR inside the repo (a log in the repo is one `git add .` from a commit).
+- Output wording follows what the pipeline already prints (rows parsed, duplicates skipped, elapsed seconds), not the brief's examples (messages parsed, duplicates dropped); CI greps depend on the old text. "pipeline seconds" is timed by the runner. dbt pattern also accepts NO-OP/REUSED (current dbt prints them).
+- Summarizer unwraps Airflow's structured log lines and dbt's clock/ANSI prefix before matching; it prints the unwrapped text only.
+- GCW_LOG_DIR is passed into the Airflow container env but nothing in the container reads it (the host runner writes the log). Brief said it must reach containers; purpose unclear.
+- Ran `make real-ingest` (name contains "real") with a temp env, as the brief's acceptance requires; CLAUDE.md forbids both that and non-default ENV_FILE. Synthetic only, own project/ports, torn down with its volume.
+In progress / broken: make test-warehouse and the Airflow-image DAG tests not run locally (CI runs them).
+Next up: Ryan: consent, allowlist, real-ingest; then Session C (make metrics, shared parse loop)
 Open questions for planning:
-- (resolved) raw.source_file is now "<thread_id>/<message_N.json>"; see decisions.md 2026-11-04.
-- parse-check as written exits 1 on any error; confirm that is wanted.
-Measured this session (exact value + source): none on real data. Test count 131 passed, 18 deselected (make test).
-Commits: fc5853e — fix: PII-free raw.source_file; 44605cf — docs: replace provisional Instagram spec with the real format report; 686ac49 — feat: reconcile parser, key and generator to the real Instagram format
-Phase 1 checklist: parser [x] (real format, pending parse-check on the full export) loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [~] (needs re-verification on rebuilt dev DB) inspector [x] real-format reconciliation [x]
+- Update CLAUDE.md's "never run make *real*" / "ENV_FILE only .env" rules to allow synthetic temp env files?
+- What should GCW_LOG_DIR do inside containers (e.g. Airflow log folder)? Currently nothing.
+- check-landing/last-run lines appear twice in real-ingest output (Airflow-wrapped and plain). Dedupe?
+Measured this session (exact value + source, terminal output of this session):
+- make test: 194 passed, 19 deselected. make test-integration: 19 passed.
+- make e2e x2, default .env: both exit 0; rows parsed 170, rows inserted 0 both runs (dev DB already held these keys).
+- real-ingest x2 on temp stack, fresh DB: run 1 rows inserted 170, dbt PASS=125 WARN=0 ERROR=0 TOTAL=125, 251.68 s; run 2 rows inserted 0, 89.02 s. Both "real-ingest: ok".
+Commits: f9cbbb9 — feat: consent allowlist, check-landing counts, guarded real-ingest (on branch feat/consent-allowlist-real-ingest; base ecdc16a)
+Phase 1 checklist: parser [x] loader [x] dbt staging [x] marts [x] Airflow DAG [x] dashboard [x] one-command e2e [x] (verified twice on rebuilt dev DB) consent gate [x] real-ingest [x] (real-data run pending, Ryan)

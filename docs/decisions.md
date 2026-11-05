@@ -266,3 +266,34 @@ Decision: source_file = "<thread_id>/<message_N.json>".
 Alternative: the path relative to the export root (previous behavior), or dropping the column.
 Why: the export path contains the name-bearing thread folder, so every row, log line and failing dbt test would carry a display name. Identifier and lineage fields spread further than content columns, so they must be PII-free. Keeping the column preserves row-to-file lineage for debugging.
 Tradeoff: locating the file on disk takes a lookup by digit suffix (one glob) instead of a direct path.
+
+## 2026-11-05 — Consent allowlist: deny by default, no bypass switch
+Decision: ingestion loads only threads whose numeric thread_id is listed in GCW_THREAD_ALLOWLIST (comma-separated digits). Threads are filtered at discovery, before any file in them is opened. Folders that don't match a thread-ID shape are skipped and counted, never parsed. A missing or empty allowlist makes ingest fail. There is no bypass flag: dev .env, .env.example and CI list the synthetic thread IDs explicitly.
+Alternative: a GCW_SYNTHETIC=1 switch that disables the allowlist in dev, or filtering after parsing.
+Why: consent is per chat, so it must be enforced in code at the earliest point. A bypass switch is one misconfigured variable away from ingesting every chat. Listing the synthetic IDs keeps a single code path in dev, CI and real. Filtering before reading means non-consented messages are never parsed into memory.
+Tradeoff: adding a synthetic thread means updating the env files too. A mistyped real ID allowlists nothing, so check-landing reports allowlisted IDs that weren't found and fails when none match.
+
+## 2026-11-05 — Format-survey tools read every thread; only ingestion is consent-gated
+Decision: make inspect and make parse-check read the whole local export but print aggregates only and store nothing. Anything that loads data (gcw ingest, the Airflow DAG, make e2e, make real-ingest) requires the allowlist.
+Alternative: gate the survey tools by the allowlist too.
+Why: the format has to be validated on as much real data as possible. The full-inbox survey found 6 bare-digit folders and 5 external attachment URIs that a single chat might not contain. Counts that never leave Ryan's machine and are never stored don't put anyone's messages into the dataset.
+Tradeoff: non-consented chats are read locally, in memory, for counts. This is disclosed in the README privacy section.
+
+## 2026-11-05 — real-ingest prints allowlisted summary lines only; full logs stay private
+Decision: make real-ingest ENV_FILE=<path> checks guards, runs check-landing and the e2e pipeline against that env's stack, writes the full output to GCW_LOG_DIR (set in the env file, outside the repo), and prints only lines that fully match a fixed set of patterns made of fixed labels and numbers.
+Alternative: print the normal pipeline output, or strip known names with a denylist.
+Why: Airflow logs, dbt output and Python tracebacks can echo row values, and a denylist can't know every name. Allowlisting output shapes is safe by construction and is leak-tested with sentinels.
+Tradeoff: debugging a failed real run means opening the private log locally. The log is never pasted.
+
+## 2026-11-05 — Gated and ungated parsing are separate functions
+Decision: `parse_export_consented(roots, allowlist, stats)` is the only parser entry point ingestion uses; `parse_export` stays ungated for `gcw parse` and tests. Both share one dedupe and per-thread parse loop. Thread discovery for ingestion is `select_threads`, which decides from the folder name alone and lists inside allowlisted folders only. `find_export_roots` now only checks that an inbox folder exists, so it no longer lists thread folders.
+Alternative: one `parse_export` with an optional `allowlist=None` argument, or a required keyword.
+Why: an optional argument makes "ungated" the default and one forgotten argument a silent bypass. A required keyword would have touched about 60 test call sites with `allowlist=None` noise. Two names make the gated path greppable (the only caller is `_ingest`) and a unit test proves a skipped folder is never listed or read.
+Tradeoff: the ungated function still exists, so a future ingest path could call it; the survey-tools decision above and review are the backstop.
+
+## 2026-11-05 — real-ingest guards go beyond the brief in one place; make synth clears safely
+Decision: real-ingest also refuses a GCW_LOG_DIR inside the repo. `make synth` empties its output directory but refuses a filesystem root, the home directory, a git checkout, or the working directory or a parent of it.
+Alternative: only the guards listed in the brief; `rm -rf` of whatever --out names.
+Why: the log holds raw pipeline output, and a log file inside the repo is one `git add .` from being committed. `--out` is a path typed on a command line, and recursive deletion of it should not be able to hit a project or home directory.
+Tradeoff: a log directory must live elsewhere; `--out` must be a dedicated scratch folder.
+

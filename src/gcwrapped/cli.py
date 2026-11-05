@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,19 +10,30 @@ from pathlib import Path
 import psycopg
 from pydantic import ValidationError
 
+from gcwrapped import real_ingest
+from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
-from gcwrapped.landing import find_export_roots
+from gcwrapped.landing import check_landing, find_export_roots
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.log import setup_logging
 from gcwrapped.migrate import MigrationError, migrate
 from gcwrapped.parse_check import check_export, render
 from gcwrapped.parsers import instagram_format as fmt
-from gcwrapped.parsers.instagram import ParseError, ParseStats, parse_export
+from gcwrapped.parsers.instagram import (
+    ParseError,
+    ParseStats,
+    parse_export,
+    parse_export_consented,
+)
 from gcwrapped.runs import latest_run
 
 logger = logging.getLogger(__name__)
 
 _NO_THREADS = "error: no message threads found under the given path(s)"
+_NO_ALLOWLISTED_THREADS = (
+    "error: no allowlisted message threads found under the given path(s) "
+    "(see GCW_THREAD_ALLOWLIST; `gcw check-landing` shows what matches)"
+)
 _NO_ROOTS = "error: no export roots found in the landing directory (one subfolder per export)"
 _NO_DB_CONFIG = (
     "error: database not configured (set GCW_DB_NAME, POSTGRES_USER, POSTGRES_PASSWORD; "
@@ -46,7 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="ingest every export root (subfolder) under DIR instead of listing paths",
     )
-    check = sub.add_parser("check-landing", help="count export roots in a landing directory")
+    check = sub.add_parser(
+        "check-landing",
+        help="consent check of a landing directory: counts of thread folders and allowlisted IDs",
+    )
     check.add_argument("landing", type=Path, metavar="DIR")
     sub.add_parser("last-run", help="print counts from the latest raw.load_runs row")
     parse = sub.add_parser("parse", help="parse export(s) and print counts (no DB needed)")
@@ -60,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
         "parse-check", help="parse a whole export, count errors per class, print counts only"
     )
     pcheck.add_argument("path", type=Path, metavar="EXPORT_DIR", help="one export root")
+    real = sub.add_parser(
+        "real-ingest",
+        help="guarded pipeline run for a real-data env file; prints allowlisted lines only",
+    )
+    real.add_argument(
+        "--env-file", default="", metavar="PATH", help="the env file (empty means not set)"
+    )
     return parser
 
 
@@ -121,12 +143,28 @@ def _migrate() -> int:
 
 
 def _check_landing(landing: Path) -> int:
-    """Print the export root count; fail if there are none. Never prints folder names."""
-    roots = find_export_roots(landing)
-    if not roots:
+    """Consent check: counts only, never folder names, IDs or paths inside the landing dir.
+
+    Fails if there are no export roots, no thread folders, or none of the allowlisted IDs found.
+    An empty allowlist is reported as 0 configured (and so fails), not as an error.
+    """
+    try:
+        allowlist = load_allowlist()
+    except AllowlistError as exc:
+        print(f"error: {exc}")
+        return 1
+    report = check_landing(landing, allowlist)
+    if not report.roots:
         print(_NO_ROOTS)
         return 1
-    print(f"export roots: {len(roots)}")
+    for line in report.lines():
+        print(line)
+    if report.thread_folders == 0:
+        print("error: no thread folders found in the landing directory")
+        return 1
+    if not report.found:
+        print("error: none of the allowlisted IDs were found (check GCW_THREAD_ALLOWLIST)")
+        return 1
     return 0
 
 
@@ -156,9 +194,14 @@ def _last_run() -> int:
 
 
 def _ingest(paths: Sequence[Path]) -> int:
-    """Parse and load. Prints counts only. Errors name the exception type, never its text."""
-    if not any(fmt.find_thread_dirs(path) for path in paths):
-        print(_NO_THREADS)  # checked first so a wrong path leaves no run row behind
+    """Parse and load allowlisted threads. Counts only. Errors name the exception type only."""
+    try:
+        allowlist = require_allowlist()  # deny by default: no allowlist, no ingest
+    except AllowlistError as exc:
+        print(f"error: {exc}")
+        return 1
+    if not any(fmt.select_threads(path, allowlist).threads for path in paths):
+        print(_NO_ALLOWLISTED_THREADS)  # checked first so a wrong path leaves no run row behind
         return 1
     try:
         url = database_url()
@@ -169,7 +212,9 @@ def _ingest(paths: Sequence[Path]) -> int:
     stats = ParseStats()
     start = time.perf_counter()
     try:
-        result = load_messages(url, parse_export(paths, stats), roots_count=len(paths))
+        result = load_messages(
+            url, parse_export_consented(paths, allowlist, stats), roots_count=len(paths)
+        )
     except LoadError as exc:  # class name, row index, field name only
         print(f"error: ingest failed ({exc.summary})")
         return 1
@@ -180,6 +225,9 @@ def _ingest(paths: Sequence[Path]) -> int:
         print(f"error: ingest failed ({type(exc).__name__})")
         return 1
     elapsed = time.perf_counter() - start
+    print(f"threads allowlisted: {len(stats.thread_ids)}")
+    print(f"folders skipped (not allowlisted): {stats.folders_not_allowlisted}")
+    print(f"folders skipped (unrecognised shape): {stats.folders_other_shape}")
     print(f"rows parsed: {result.rows_parsed}")
     print(f"rows inserted: {result.rows_inserted}")
     print(f"duplicates skipped: {result.duplicates_skipped}")
@@ -206,8 +254,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _ingest(args.paths)
     if args.command == "check-landing":
         return _check_landing(args.landing)
+    if args.command == "real-ingest":
+        return real_ingest.run(args.env_file)
     if args.command == "last-run":
         return _last_run()
     if args.command == "migrate":
         return _migrate()
     return 2  # unreachable while subcommands are required
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
 
+class ConsentSettings(BaseSettings):
+    """The consent allowlist as written, parsed by `gcwrapped.consent`.
+
+    Kept as a plain string on purpose: a pydantic validator error would echo the raw value, and a
+    mistyped entry could be a person's name.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    gcw_thread_allowlist: str = ""
+
+
 class DatabaseSettings(BaseSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
 

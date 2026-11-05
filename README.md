@@ -93,15 +93,20 @@ Real data gets its **own compose project**: its own containers, its own Postgres
 - `GCW_DB_NAME=gcw_real`
 - its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`, different from `.env`
 - `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export (mounted read-only into the Airflow container as `GCW_LANDING_DIR`)
-- `POSTGRES_HOST_PORT` and `DASHBOARD_PORT` if the dev stack may be running at the same time (defaults 5432 and 8501)
+- `POSTGRES_HOST_PORT` and `DASHBOARD_PORT`, different from the dev stack's (5432 and 8501); `make real-ingest` requires this
+- `GCW_THREAD_ALLOWLIST`: the numeric thread IDs you have consent to ingest (ingest fails without it)
+- `GCW_LOG_DIR`: an existing directory outside the repo for the private full log (`make real-ingest` only)
 
 Run these in your own terminal, never through a coding assistant:
 
 ```
-make e2e ENV_FILE=<ENV_FILE>
+make check-landing ENV_FILE=<ENV_FILE>   # counts only: folders by shape, allowlisted IDs found
+make real-ingest ENV_FILE=<ENV_FILE>     # guards, check-landing, e2e; allowlisted summary lines only
 # ...look at the dashboard, then stop the real stack:
 make down ENV_FILE=<ENV_FILE>
 ```
+
+`make real-ingest` refuses to start unless the env file is not `.env`/`.env.example`, names its own compose project and ports, has a valid non-empty allowlist, and has an existing `GCW_LOG_DIR` outside the repo. `make e2e ENV_FILE=<ENV_FILE>` still works for the pipeline alone, with the same allowlist requirement but without the guards or the filtered output.
 
 The real stack is started only for a run and stopped afterward. A fresh volume runs the reader-role init script itself, so no manual step is needed. Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
 
@@ -110,6 +115,9 @@ The real stack is started only for a run and stopped afterward. A fresh volume r
 Real chat data is sensitive, and the AI coding assistant used on this repo is a third-party API. The rules:
 
 - **Consent.** Only chats whose members have agreed to be analysed go through the pipeline. Anything shown to someone other than the repo owner needs the same agreement.
+- **Consent allowlist.** Ingestion is deny by default. It loads only threads whose numeric thread ID is listed in `GCW_THREAD_ALLOWLIST`, and fails if the list is unset or empty. Threads are picked by folder name before any file inside is opened, so a chat that is not on the list is never read into memory. There is no bypass switch: dev, CI and real env files all list their IDs. `make check-landing` shows, as counts only, how many folders match.
+- **Survey tools read every thread.** `make inspect` and `make parse-check` read the whole local export to validate the format, print aggregates only and store nothing. They are not gated by the allowlist, so non-consented chats are read locally, in memory, for counts. Anything that loads data is gated.
+- **Private real-run logs.** `make real-ingest ENV_FILE=<path>` writes the full pipeline output to `GCW_LOG_DIR` (outside the repo, mode 0600) and prints only lines that fully match a fixed set of label-and-number patterns. The log is never pasted anywhere.
 - **Redaction plan.** Phase 1 makes no LLM or other external calls. Before any later phase sends text to a model, names, phone numbers and emails get redacted first; that step is planned, not built.
 - **Text never leaves staging.** Message text exists only in `raw` and the staging models. The marts the dashboard reads carry counts and timestamps, no content.
 - **Reader role.** The dashboard connects as `gcw_reader`, a read-only Postgres role with `SELECT` on mart tables only. CI asserts permission-denied on `raw` and staging.

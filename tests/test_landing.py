@@ -35,24 +35,7 @@ def test_find_export_roots_empty_or_missing_dir(tmp_path: Path) -> None:
     assert find_export_roots(tmp_path / "missing") == []
 
 
-def test_check_landing_prints_count_only(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    generate_pair(tmp_path)
-
-    assert main(["check-landing", str(tmp_path)]) == 0
-
-    assert capsys.readouterr().out.strip() == "export roots: 2"
-
-
-def test_check_landing_fails_clearly_when_empty(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert main(["check-landing", str(tmp_path)]) == 1
-
-    assert "no export roots" in capsys.readouterr().out
-
-
+@pytest.mark.usefixtures("synthetic_allowlist")
 def test_ingest_landing_with_no_roots_fails_before_touching_the_db(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -12,6 +12,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,9 @@ class ParseStats:
     thread_ids: set[str] = field(default_factory=set)
     messages: int = 0
     duplicates_dropped: int = 0
+    # Consent-gated parsing only (parse_export_consented): folders skipped without being opened.
+    folders_not_allowlisted: int = 0
+    folders_other_shape: int = 0
 
 
 def fix_mojibake(s: str) -> str:
@@ -185,9 +189,9 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def _parse_root(root: Path) -> Iterator[ParsedMessage]:
-    """Parse one export root. Occurrence counters are per thread, across all its files."""
-    for thread_dir in fmt.find_thread_dirs(root):
+def _parse_threads(thread_dirs: Iterable[Path]) -> Iterator[ParsedMessage]:
+    """Parse thread folders. Occurrence counters are per thread, across all its files."""
+    for thread_dir in thread_dirs:
         tid = fmt.thread_id(thread_dir)
         seen: Counter[_Identity] = Counter()
         for path in fmt.message_files(thread_dir):
@@ -210,8 +214,24 @@ def _parse_root(root: Path) -> Iterator[ParsedMessage]:
                 )
 
 
+def _dedupe(
+    messages: Iterable[ParsedMessage], yielded: set[str], stats: ParseStats
+) -> Iterator[ParsedMessage]:
+    """Drop messages whose key was already yielded in this run, counting them in `stats`."""
+    for msg in messages:
+        stats.thread_ids.add(msg.thread_id)
+        if msg.message_key in yielded:
+            stats.duplicates_dropped += 1
+            continue
+        yielded.add(msg.message_key)
+        stats.messages += 1
+        yield msg
+
+
 def parse_export(roots: Iterable[Path], stats: ParseStats | None = None) -> Iterator[ParsedMessage]:
-    """Yield deduplicated messages from one or more export roots.
+    """Yield deduplicated messages from every thread of one or more export roots.
+
+    NOT consent-gated: for `gcw parse` and tests. Ingestion must use `parse_export_consented`.
 
     Roots are separate exports (possibly overlapping). A message whose key was already yielded in
     this run is dropped and counted in `stats.duplicates_dropped`. Within a single root keys are
@@ -220,14 +240,25 @@ def parse_export(roots: Iterable[Path], stats: ParseStats | None = None) -> Iter
     stats = stats if stats is not None else ParseStats()
     yielded: set[str] = set()
     for root in roots:
-        for msg in _parse_root(root):
-            stats.thread_ids.add(msg.thread_id)
-            if msg.message_key in yielded:
-                stats.duplicates_dropped += 1
-                continue
-            yielded.add(msg.message_key)
-            stats.messages += 1
-            yield msg
+        yield from _dedupe(_parse_threads(fmt.find_thread_dirs(root)), yielded, stats)
+
+
+def parse_export_consented(
+    roots: Iterable[Path], allowlist: AbstractSet[str], stats: ParseStats | None = None
+) -> Iterator[ParsedMessage]:
+    """Like `parse_export`, but only for threads whose numeric ID is in `allowlist`.
+
+    Selection happens by folder name before anything inside a folder is opened, so a
+    non-consented thread (or a malformed one) is never read. Skipped folders are counted in
+    `stats`. With an empty allowlist nothing is parsed.
+    """
+    stats = stats if stats is not None else ParseStats()
+    yielded: set[str] = set()
+    for root in roots:
+        selection = fmt.select_threads(root, allowlist)
+        stats.folders_not_allowlisted += selection.not_allowlisted
+        stats.folders_other_shape += selection.other_shape
+        yield from _dedupe(_parse_threads(selection.threads), yielded, stats)
 
 
 class InstagramParser:

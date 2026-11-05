@@ -7,6 +7,9 @@ so a format change is a change to this file only.
 
 import posixpath
 import re
+from collections import Counter
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +72,65 @@ _THREAD_FOLDER_RE = re.compile(r"(?:^|_)(\d+)$")
 
 
 def find_thread_dirs(root: Path) -> list[Path]:
-    """Thread folders under the export root that contain at least one message file, sorted."""
+    """Every thread folder under the export root with at least one message file, sorted.
+
+    NOT consent-gated: it lists inside every folder. Only the format-survey tools (inspect,
+    parse-check, `gcw parse`) may use it. Anything that loads data uses `select_threads`.
+    """
     inbox = root / MESSAGES_DIR
     if not inbox.is_dir():
         return []
     return sorted(d for d in inbox.iterdir() if d.is_dir() and message_files(d))
+
+
+@dataclass(frozen=True)
+class ThreadSelection:
+    """Result of consent-gated discovery in one export root. Counts and IDs only, never names."""
+
+    # Allowlisted thread folders that hold at least one message file, sorted by path.
+    threads: list[Path] = field(default_factory=list)
+    # Every folder directly under inbox, by shape ("<name>_<digits>", "<digits>", "other").
+    shapes: Counter[str] = field(default_factory=Counter)
+    # Folders with a thread-ID shape whose ID is not on the allowlist (never listed or opened).
+    not_allowlisted: int = 0
+    # Allowlisted IDs that have a folder in this root, whether or not it holds message files.
+    allowlisted_found: frozenset[str] = frozenset()
+
+    @property
+    def other_shape(self) -> int:
+        return self.shapes["other"]
+
+
+def select_threads(root: Path, allowlist: AbstractSet[str]) -> ThreadSelection:
+    """Consent-gated discovery: the only way ingestion finds threads (decisions.md, 2026-11-05).
+
+    Decides from the folder NAME alone. A folder is looked inside (to find message_N.json) only
+    if its numeric ID is on `allowlist`; folders of any other shape or ID are counted and never
+    listed, opened or parsed. An empty allowlist therefore selects nothing.
+    """
+    inbox = root / MESSAGES_DIR
+    if not inbox.is_dir():
+        return ThreadSelection()
+    shapes: Counter[str] = Counter()
+    not_allowlisted = 0
+    found: set[str] = set()
+    threads: list[Path] = []
+    for folder in sorted(inbox.iterdir()):
+        if not folder.is_dir():
+            continue
+        match = _THREAD_FOLDER_RE.search(folder.name)
+        if match is None:
+            shapes["other"] += 1
+            continue
+        tid = match.group(1)
+        shapes["<digits>" if tid == folder.name else "<name>_<digits>"] += 1
+        if tid not in allowlist:
+            not_allowlisted += 1
+            continue
+        found.add(tid)
+        if message_files(folder):
+            threads.append(folder)
+    return ThreadSelection(threads, shapes, not_allowlisted, frozenset(found))
 
 
 def message_files(thread_dir: Path) -> list[Path]:
