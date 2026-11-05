@@ -1,12 +1,14 @@
 """`gcw metrics` output shapes, error path and counting helpers. Synthetic values only."""
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from gcwrapped import metrics
 from gcwrapped.metrics import (
+    LINE_SHAPES,
     DbtCounts,
     PytestCounts,
     Steps,
@@ -14,37 +16,14 @@ from gcwrapped.metrics import (
     count_manifest,
     parse_collected,
 )
-
-# One regex per label, in output order. A line that fully matches none of these fails the test.
-LINE_SHAPES = [
-    r"target database: (gcw_dev|gcw_real|gcw_ci)",
-    r"warehouse raw messages: \d+",
-    r"warehouse modeled messages: \d+",
-    r"warehouse threads: \d+",
-    r"warehouse participants: \d+",
-    r"latest load id: \d+",
-    r"latest load status: (succeeded|failed)",
-    r"latest load rows parsed: \d+",
-    r"latest load rows inserted: \d+",
-    r"latest load seconds: \d+\.\d{2}",
-    r"dbt models: \d+",
-    r"dbt data tests: \d+",
-    r"dbt generic tests: \d+",
-    r"dbt singular tests: \d+",
-    r"dbt unit tests: \d+",
-    r"dbt sources: \d+",
-    r"dbt seeds: \d+",
-    r"pytest unit tests collected: \d+",
-    r"pytest integration tests collected: \d+",
-    r"metrics: ok",
-]
+from gcwrapped.runs import RunSummary
 
 WAREHOUSE = WarehouseStats(
     database="gcw_dev",
     raw_messages=10,
     modeled_messages=9,
     threads=3,
-    participants=4,
+    distinct_senders=4,
     load_id=7,
     load_status="succeeded",
     rows_parsed=10,
@@ -59,8 +38,9 @@ DBT = DbtCounts(
     unit_tests=4,
     sources=2,
     seeds=0,
+    hooks=1,
 )
-PYTEST = PytestCounts(unit=228, integration=40)
+PYTEST = PytestCounts(unit=228, non_unit=40)
 
 
 def _steps(**overrides: object) -> Steps:
@@ -90,10 +70,10 @@ def test_values_are_rendered_from_the_counts(capsys: pytest.CaptureFixture[str])
     metrics.run(_steps())
 
     out = capsys.readouterr().out
-    assert "warehouse participants: 4\n" in out
+    assert "warehouse distinct senders: 4\n" in out
     assert "latest load seconds: 1.20\n" in out
     assert "dbt singular tests: 2\n" in out
-    assert "pytest integration tests collected: 40\n" in out
+    assert "pytest non-unit tests collected: 40\n" in out
 
 
 @pytest.mark.parametrize("step", ["database", "warehouse", "dbt", "pytest"])
@@ -155,6 +135,8 @@ def test_count_manifest_splits_by_resource_type_and_ignores_packages() -> None:
             "t3": node("test"),
             "t4": node("test", package="dbt_utils", test_metadata={"name": "x"}),
             "s1": node("seed"),
+            "h1": node("operation"),
+            "h2": node("operation", package="dbt_utils"),
         },
         "unit_tests": {"u1": node("unit_test"), "u2": node("unit_test", package="other")},
         "sources": {"src1": node("source"), "src2": node("source")},
@@ -168,7 +150,12 @@ def test_count_manifest_splits_by_resource_type_and_ignores_packages() -> None:
         unit_tests=1,
         sources=2,
         seeds=1,
+        hooks=1,
     )
+
+
+def test_buildable_nodes_is_what_dbt_build_reports() -> None:
+    assert DBT.buildable == 125  # 9 models + 111 data tests + 4 unit tests + 1 hook
 
 
 def test_count_manifest_without_unit_tests_is_zero() -> None:
@@ -199,3 +186,82 @@ def test_makefile_test_target_uses_the_selection_metrics_counts() -> None:
     assert f'-m "{marker}"' in makefile
     assert ignore.removeprefix("--ignore=") in makefile
     assert "IGNORE_WAREHOUSE = " + ignore in makefile
+
+
+def test_unexpected_load_status_never_reaches_the_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bad = WarehouseStats(**{**WAREHOUSE.__dict__, "load_status": "SENTINELTEXT"})
+
+    assert metrics.run(_steps(warehouse=lambda: bad)) == 1
+
+    out = capsys.readouterr().out
+    assert out == "metrics: failed at render (ShapeError)\n"
+    assert "sentinel" not in out.lower()
+
+
+def test_stats_reject_a_status_other_than_succeeded_or_failed() -> None:
+    run = RunSummary(
+        load_id=1,
+        status="SENTINELTEXT",
+        rows_parsed=1,
+        rows_inserted=1,
+        elapsed_seconds=0.1,
+    )
+    with pytest.raises(metrics.NoLoadRunError):
+        metrics._stats("gcw_dev", 1, (1, 1, 1), run)
+
+
+def test_wrong_line_count_or_order_fails_with_shape_error() -> None:
+    good = metrics.render(WAREHOUSE, DBT, PYTEST)
+    metrics.check_shapes(good)
+
+    with pytest.raises(metrics.ShapeError):
+        metrics.check_shapes(good[:-1])
+    with pytest.raises(metrics.ShapeError):
+        metrics.check_shapes([good[1], good[0], *good[2:]])
+
+
+def test_wrong_render_fails_the_run_with_shape_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(metrics, "render", lambda w, d, p: ["target database: gcw_dev"])
+
+    assert metrics.run(_steps()) == 1
+    assert capsys.readouterr().out == "metrics: failed at render (ShapeError)\n"
+
+
+def test_dbt_step_uses_no_env_file_values_and_writes_outside_the_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / "sentinel.env"
+    env_file.write_text("POSTGRES_PASSWORD=SENTINELPASSWORD\nGCW_DB_NAME=SENTINELDB\n")
+    monkeypatch.setenv("ENV_FILE", str(env_file))
+    project = tmp_path / "dbt"
+    (project / "dbt_packages").mkdir(parents=True)
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        calls.append((argv, env))
+        target = Path(argv[argv.index("--target-path") + 1])
+        target.mkdir(parents=True)
+        (target / "manifest.json").write_text('{"nodes": {}}')
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert metrics.dbt_counts(project).models == 0
+
+    assert calls
+    repo = Path(__file__).resolve().parents[1]
+    for argv, env in calls:
+        assert not any("SENTINEL" in a for a in argv)
+        assert not any("SENTINEL" in v for v in env.values())
+        for flag in ("--target-path", "--log-path"):
+            path = Path(argv[argv.index(flag) + 1]).resolve()
+            assert not path.is_relative_to(repo)
+            assert not path.is_relative_to(project)
+    assert not (project / "target").exists()
+    assert not (project / "logs").exists()
