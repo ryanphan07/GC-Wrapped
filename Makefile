@@ -13,7 +13,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check
 
 up:
 	mkdir -p data/landing data/archive
@@ -91,3 +91,9 @@ inspect:
 # Sentinel export for the inspector's leak test: tests/fixtures/sentinel (gitignored).
 synth-sentinel:
 	uv run python tests/synthetic/sentinel.py --out tests/fixtures/sentinel
+
+# Parse a whole export with no database; prints counts and exception class names only.
+# Real exports: Ryan runs this himself, e.g. make parse-check EXPORT_DIR="$EXPORT"
+parse-check:
+	@test -n "$(EXPORT_DIR)" || { echo "error: set EXPORT_DIR to the export root (make parse-check EXPORT_DIR=<path>)"; exit 1; }
+	@uv run gcw parse-check "$(EXPORT_DIR)"

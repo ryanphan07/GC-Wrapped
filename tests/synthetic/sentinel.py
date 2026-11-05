@@ -68,7 +68,11 @@ def _write(path: Path, messages: list[dict[str, Any]], thread: str) -> None:
     path.write_text(json.dumps(body), encoding="utf-8")
 
 
-def build(root: Path) -> None:
+def build(root: Path, *, malformed: bool = False) -> None:
+    """Write the sentinel export. `malformed` adds one bad message (parse-check's leak test).
+
+    It is off by default so the inspector's EXPECTED counts stay exact.
+    """
     inbox = root / INBOX
     # Thread A: three files. newest-first, oldest-first, mixed. Mojibake, share, reactions,
     # attachments with a duplicate basename (same name in photos/ and videos/ of one thread).
@@ -128,6 +132,10 @@ def build(root: Path) -> None:
         THREAD_B,
     )
     # Threads C, D, E: one file each, single message or equal timestamps (order indeterminate).
+    if malformed:
+        # A bad timestamp whose value is a sentinel: any echo of the value is a leak.
+        bad = [{"sender_name": "SENTINELNAME bad", "timestamp_ms": "SENTINELTEXT not an int"}]
+        _write(inbox / THREAD_B / "message_3.json", bad, THREAD_B)
     _write(inbox / THREAD_C / "message_1.json", [_msg(T0, content="SENTINELTEXT")], THREAD_C)
     _write(
         inbox / THREAD_D / "message_1.json",

@@ -7,7 +7,7 @@ from gcwrapped.cli import main
 from gcwrapped.config import get_settings
 from gcwrapped.parsers import instagram_format as fmt
 from gcwrapped.parsers.instagram import parse_export
-from synthetic.instagram import generate_pair
+from synthetic.instagram import THREADS, generate_pair
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def test_parse_prints_summary_without_db_env(
     assert main(["parse", str(a)]) == 0
 
     out = capsys.readouterr().out
-    assert "threads: 2" in out
+    assert f"threads: {len(THREADS)}" in out
     assert "messages: " in out
     assert "duplicates dropped: 0" in out
     assert "elapsed seconds: " in out
@@ -96,7 +96,7 @@ def test_parse_output_has_no_synthetic_content(
 def test_parse_error_message_has_no_values(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    thread = tmp_path / fmt.MESSAGES_DIR / "t"
+    thread = tmp_path / fmt.MESSAGES_DIR / "t_1"
     thread.mkdir(parents=True)
     bad = {fmt.KEY_MESSAGES: [{fmt.KEY_SENDER: "SENTINEL_SENDER_7q"}]}
     (thread / "message_1.json").write_text(json.dumps(bad), encoding="utf-8")
