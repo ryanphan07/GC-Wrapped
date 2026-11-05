@@ -3,17 +3,16 @@
     "deny": [
       "Read(./data/**)",
       "Edit(./data/**)",
+      "Read(./real.env)",
+      "Edit(./real.env)",
+      "Write(./real.env)",
       "Read(~/gcw-private/**)",
       "Edit(~/gcw-private/**)",
       "Write(~/gcw-private/**)",
       "Bash(*gcw-private*)",
       "Bash(*gcw_real*)",
       "Bash(*gc-wrapped-real*)",
-      "Bash(*real.env*)",
-      "Read(./real.env)",
-      "Edit(./real.env)",
-      "Read(/home/ryanp/gcw-landing/**)",
-      "Edit(/home/ryanp/gcw-landing/**)"
+      "Bash(*real.env*)"
     ]
   }
 }
