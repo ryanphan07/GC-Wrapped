@@ -142,7 +142,7 @@ def test_cli_ingest_prints_counts_only(
     assert main(["ingest", str(a), str(b)]) == 0
 
     out = capsys.readouterr().out
-    assert "target database: gcw_dev" in out
+    assert "target database: gcw_test" in out
     assert f"rows parsed: {len(union)}" in out
     assert f"rows inserted: {len(union) - n_a}" in out
     assert f"duplicates skipped: {n_a}" in out

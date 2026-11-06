@@ -29,7 +29,7 @@ from gcwrapped.config import env_file_path
 from gcwrapped.db import database_name, database_url
 from gcwrapped.runs import RunSummary, latest_run
 
-ALLOWED_DATABASES = frozenset({"gcw_dev", "gcw_real", "gcw_ci"})
+ALLOWED_DATABASES = frozenset({"gcw_dev", "gcw_real", "gcw_ci", "gcw_test"})
 DBT_PROJECT_NAME = "gcwrapped"
 DBT_DIR = Path("dbt")
 # The selection `make test` uses (a test pins the Makefile to this). The complement is derived as
@@ -56,10 +56,32 @@ DBT_PARSE_ENV = {
     "POSTGRES_PORT": "5432",
 }
 
+# Process variables the dbt subprocess may inherit, each copied only when set (D67). An allowlist,
+# not an override list: a new secret in the parent environment (an API key, any real.env key)
+# never reaches dbt. Never add POSTGRES_*, GCW_*, DATABASE_URL, DASHBOARD_DATABASE_URL, ENV_FILE or
+# any *_KEY / *_TOKEN / *_SECRET / *_PASSWORD name. If dbt needs another variable, add it here.
+DBT_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+# dbt reads DBT_<FLAG> from the environment; this is --no-send-anonymous-usage-stats.
+DBT_TELEMETRY_ENV = {"DBT_SEND_ANONYMOUS_USAGE_STATS": "false"}
+
 # One fullmatch regex per output label, in output order. run() checks every rendered line against
 # these before printing anything, so the leak guarantee holds on values the tests never saw.
 LINE_SHAPES = (
-    r"target database: (gcw_dev|gcw_real|gcw_ci)",
+    r"target database: (gcw_dev|gcw_real|gcw_ci|gcw_test)",
     r"warehouse raw messages: \d+",
     r"warehouse modeled messages: \d+",
     r"warehouse threads: \d+",
@@ -259,11 +281,17 @@ def count_manifest(manifest: Mapping[str, Any]) -> DbtCounts:
 def dbt_counts(project_dir: Path = DBT_DIR) -> DbtCounts:
     """Run `dbt parse` with placeholder credentials, then count the manifest it wrote.
 
-    dbt never connects to parse, so ENV_FILE's database settings are not passed. Target and log
+    dbt never connects to parse, so ENV_FILE's database settings are not passed. The subprocess
+    environment is only DBT_ENV_ALLOWLIST (when set), the placeholder profile values and
+    telemetry off, never the rest of os.environ (D67). Target and log
     directories are a temporary directory, so nothing is written under the repo except installed
     packages (dbt/dbt_packages, gitignored package code). dbt output is captured, never shown.
     """
-    env = {**os.environ, **DBT_PARSE_ENV}
+    env = {
+        **{name: os.environ[name] for name in DBT_ENV_ALLOWLIST if name in os.environ},
+        **DBT_PARSE_ENV,
+        **DBT_TELEMETRY_ENV,
+    }
     dbt = str(Path(sys.executable).parent / "dbt")
     with tempfile.TemporaryDirectory() as tmp:
         base = ["--project-dir", str(project_dir), "--profiles-dir", str(project_dir)]

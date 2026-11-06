@@ -37,7 +37,7 @@ def test_cli_migrate_is_idempotent(clean_db: str, capsys: pytest.CaptureFixture[
     assert main(["migrate"]) == 0
     second = capsys.readouterr().out
 
-    assert "target database: gcw_dev" in first
+    assert "target database: gcw_test" in first
     assert "applied: 001_raw_schema" in first
     assert "migrations applied: 1" in first
     assert "migrations applied: 0" in second
