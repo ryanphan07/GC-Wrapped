@@ -369,3 +369,15 @@ Decision: Add a stop-and-ask trigger for briefs that conflict with recorded deci
 Alternative: Keep the rules as merged in PR 26.
 Why: PR 26 removed the old "say so if the brief conflicts with STATUS/decisions or expands scope" and "open items stay until resolved" rules without replacing them; "never merge unless green" read as permission to merge; and D34 accepts explicit database URLs, which the guard did not inspect, so a URL could point the suite at the real stack's port.
 Tradeoff: One more stop trigger may end a session the brief intended as a deliberate change, so briefs that supersede a decision or expand scope must now say so explicitly.
+
+## D67 — 2026-11-05 — dbt subprocess in make metrics gets an allowlisted environment
+Decision: dbt deps and dbt parse in make metrics get only a named allowlist of process variables (PATH, HOME, locale, temp-dir and CA-certificate variables, each only when set), the placeholder profile values, and DBT_SEND_ANONYMOUS_USAGE_STATS=false. Extends D62 ("dbt parse in make metrics runs without real credentials").
+Alternative: inherit os.environ and override only the five profile variables (the PR 25 behavior).
+Why: when make runs with the real env file, the environment can hold real settings and future API keys, and parsing needs none of them. An allowlist stays safe when new secrets are added; an override list does not. Turning telemetry off removes a network call from real-data runs.
+Tradeoff: a variable dbt really needs must be added to the list by hand. Until it is, the dbt step fails (fails closed) instead of leaking.
+
+## D68 — 2026-11-05 — pytest writes go to a dedicated gcw_test database
+Decision: every test that migrates, writes to or truncates a database uses gcw_test, on the same dev Postgres container (and the CI service container). gcw_test is created if missing and migrated at session start. Only make synth and make e2e write to gcw_dev.
+Alternative: keep sharing gcw_dev and re-run make e2e after tests; wrap each test in a rolled-back transaction; start a throwaway container per session (testcontainers).
+Why: tests emptied the dev warehouse that make metrics and the dashboard read. A second database on the existing container is the smallest change and works the same locally and in CI. Rollback can't cover code that commits on its own (loader, migrations). A container per session adds a dependency and startup time.
+Tradeoff: one more database to keep migrated. The session fixture handles that, at the cost of a few seconds per integration run.

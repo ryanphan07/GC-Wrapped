@@ -70,7 +70,7 @@ def test_metrics_counts_are_correct_and_leak_nothing(
 
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert "target database: gcw_dev" in lines
+    assert "target database: gcw_test" in lines
     assert "warehouse raw messages: 5" in lines
     assert "warehouse modeled messages: 4" in lines
     assert "warehouse threads: 2" in lines

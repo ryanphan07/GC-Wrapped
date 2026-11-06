@@ -315,3 +315,46 @@ def test_dbt_deps_runs_before_parse_with_only_the_options_each_accepts(
         "--log-path",
     }
     assert not any("SENTINEL" in a for argv in calls for a in argv)
+
+
+def test_dbt_subprocess_env_is_allowlisted_for_deps_and_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POSTGRES_PASSWORD", "SENTINELPASSWORD")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:SENTINELURL@localhost/x")
+    monkeypatch.setenv("GCW_SENTINEL_API_KEY", "SENTINELKEY")
+    monkeypatch.setenv("OTHER_VAR", "SENTINELOTHER")
+    project = tmp_path / "dbt"
+    project.mkdir()  # no dbt_packages directory, so both deps and parse run
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        calls.append((argv[1], env))
+        if "--target-path" in argv:
+            target = Path(argv[argv.index("--target-path") + 1])
+            target.mkdir(parents=True)
+            (target / "manifest.json").write_text('{"nodes": {}}')
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    metrics.dbt_counts(project)
+
+    assert [name for name, _ in calls] == ["deps", "parse"]
+    permitted = (
+        set(metrics.DBT_ENV_ALLOWLIST) | set(metrics.DBT_PARSE_ENV) | set(metrics.DBT_TELEMETRY_ENV)
+    )
+    for _, env in calls:
+        assert set(env) <= permitted
+        assert not any("SENTINEL" in v for v in env.values())
+        assert env["DBT_SEND_ANONYMOUS_USAGE_STATS"] == "false"
+        assert env["POSTGRES_PASSWORD"] == "parse_only"
+
+
+def test_allowlist_names_no_secret_shaped_variable() -> None:
+    forbidden = re.compile(
+        r"^(POSTGRES_|GCW_|DATABASE_URL|DASHBOARD_DATABASE_URL|ENV_FILE)|(_KEY|_TOKEN|_SECRET|_PASSWORD)$"
+    )
+    assert not [n for n in metrics.DBT_ENV_ALLOWLIST if forbidden.search(n)]

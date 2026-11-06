@@ -54,8 +54,8 @@ jobs:
           PGPASSWORD: ci-password
       - run: make test-integration
       - run: make dbt-debug
-      # End to end on synthetic data: the integration tests leave gcw_dev in an arbitrary state,
-      # so reset it, then migrate -> ingest -> dbt build (models + tests).
+      # End to end on synthetic data (integration tests write only to gcw_test; the reset keeps this step
+      # independent of earlier state), then migrate -> ingest -> dbt build (models + tests).
       - name: Reset gcw_dev
         run: >
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1
