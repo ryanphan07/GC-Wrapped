@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 1 (pipeline). Parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e` are in. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 2 (enrichment + evals) has started. Phase 1 is done: parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e`. The per-sender consent ledger is in. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 
@@ -120,7 +120,8 @@ Real chat data is sensitive, and the AI coding assistant used on this repo is a 
 - **Consent allowlist.** Ingestion is deny by default. It loads only threads whose numeric thread ID is listed in `GCW_THREAD_ALLOWLIST`, and fails if the list is unset or empty. Threads are picked by folder name before any file inside is opened, so a chat that is not on the list is never read into memory. There is no bypass switch: dev, CI and real env files all list their IDs. `make check-landing` shows, as counts only, how many folders match.
 - **Survey tools read every thread.** `make inspect` and `make parse-check` read the whole local export to validate the format, print aggregates only and store nothing. They are not gated by the allowlist, so non-consented chats are read locally, in memory, for counts. Anything that loads data is gated.
 - **Private real-run logs.** `make real-ingest ENV_FILE=<path>` writes the full pipeline output to `GCW_LOG_DIR` (outside the repo, mode 0600) and prints only lines that fully match a fixed set of label-and-number patterns. The log is never pasted anywhere.
-- **Redaction plan.** Phase 1 makes no LLM or other external calls. Before any later phase sends text to a model, names, phone numbers and emails get redacted first; that step is planned, not built.
+- **Two gates, both deny by default.** The thread allowlist above gates *ingestion*. A second, per-sender consent ledger gates *external processing*: whether anyone's text may ever be sent to a model or other outside service. It is a CSV outside the repo (`GCW_CONSENT_LEDGER`) with one row per (thread, sender display name) and a consent of `yes`, `no` or blank. A blank means no, and a sender missing from the ledger means no, so a missing answer never sends anyone's text. `make consent-template` creates or extends the ledger from the warehouse (new rows start blank; existing answers are never changed or deleted). `make consent-load` validates the whole file and loads it all-or-nothing into `raw.sender_consent`. One dbt model, `fct_message_eligibility`, is the single definition of which messages may leave the machine: only those whose sender is `yes` in that thread. Both targets print fixed labels and counts, never a name or the ledger path.
+- **Redaction comes before any API call.** No message text leaves the machine except through a redaction step (planned, decision D70; not built yet), and only for messages that pass the consent gate. Nothing in the pipeline calls an external API today.
 - **Text never leaves staging.** Message text exists only in `raw` and the staging models. The marts the dashboard reads carry counts and timestamps, no content.
 - **Reader role.** The dashboard connects as `gcw_reader`, a read-only Postgres role with `SELECT` on mart tables only. CI asserts permission-denied on `raw` and staging.
 - **Content-free logs and errors.** Logs, CLI output and stored error summaries carry counts, IDs, durations, file hashes and exception class names, never message text, sender names, phone numbers or emails. Sentinel tests enforce this.

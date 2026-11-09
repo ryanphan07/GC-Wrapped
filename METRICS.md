@@ -19,6 +19,8 @@ Every value must be an exact number with its source (`raw.load_runs`, dbt output
 
 raw.load_runs durations from 2026-11-05 runs (0.00 / 0.01 s) were wrong (bug fixed later); not recorded.
 
+Commit citations (D73): merges are squashes, so a PR-branch commit is cited as "<sha> (PR #n)" and rows measured on main cite the main SHA. Existing rows are not edited; 251e9f9 above is a PR #24 branch commit and 13b5d31 is a PR #29 branch commit.
+
 ## dbt
 
 | metric | value | date | how measured | commit |

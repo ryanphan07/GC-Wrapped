@@ -29,6 +29,8 @@ WAREHOUSE = WarehouseStats(
     rows_parsed=10,
     rows_inserted=10,
     load_seconds=1.2,
+    consent_senders_yes=2,
+    external_eligible_messages=6,
 )
 DBT = DbtCounts(
     models=9,
@@ -72,6 +74,8 @@ def test_values_are_rendered_from_the_counts(capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out
     assert "warehouse distinct senders: 4\n" in out
     assert "latest load seconds: 1.20\n" in out
+    assert "consent senders yes: 2\n" in out
+    assert "external-eligible messages: 6\n" in out
     assert "dbt singular tests: 2\n" in out
     assert "pytest non-unit tests collected: 40\n" in out
 
@@ -221,7 +225,7 @@ def test_stats_reject_a_status_other_than_succeeded_or_failed() -> None:
         elapsed_seconds=0.1,
     )
     with pytest.raises(metrics.NoLoadRunError):
-        metrics._stats("gcw_dev", 1, (1, 1, 1), run)
+        metrics._stats("gcw_dev", 1, (1, 1, 1), run, 0, 0)
 
 
 def test_wrong_line_count_or_order_fails_with_shape_error() -> None:
@@ -358,3 +362,13 @@ def test_allowlist_names_no_secret_shaped_variable() -> None:
         r"^(POSTGRES_|GCW_|DATABASE_URL|DASHBOARD_DATABASE_URL|ENV_FILE)|(_KEY|_TOKEN|_SECRET|_PASSWORD)$"
     )
     assert not [n for n in metrics.DBT_ENV_ALLOWLIST if forbidden.search(n)]
+
+
+def test_consent_lines_follow_the_load_lines_and_precede_dbt() -> None:
+    lines = metrics.render(WAREHOUSE, DBT, PYTEST)
+    start = lines.index("latest load seconds: 1.20")
+    assert lines[start + 1 : start + 3] == [
+        "consent senders yes: 2",
+        "external-eligible messages: 6",
+    ]
+    assert lines[start + 3].startswith("dbt models:")

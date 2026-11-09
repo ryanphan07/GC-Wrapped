@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load
 
 up:
 	mkdir -p data/landing data/archive
@@ -117,3 +117,13 @@ real-ingest:
 # Writes nothing tracked; dbt writes its gitignored dbt/target. Real-data runs are Ryan's.
 metrics:
 	@uv run --group dbt --group dashboard gcw metrics
+
+# Per-sender consent ledger (D69). GCW_CONSENT_LEDGER (CSV, outside the repo for real data) is
+# required. consent-template creates the ledger or adds the warehouse's missing senders with blank
+# consent; consent-load validates all of it, then loads raw.sender_consent in one transaction. Both
+# start only the db service and print fixed labels and numbers, never names. Real-data runs are Ryan's.
+consent-template:
+	@uv run gcw consent-template
+
+consent-load:
+	@uv run gcw consent-load

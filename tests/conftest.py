@@ -3,16 +3,17 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import psycopg
 import pytest
 from psycopg import sql
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict
 
 from gcwrapped.config import get_database_settings
 from gcwrapped.db import database_url
 from gcwrapped.migrate import migrate
-from isolation_guard import IsolationError, check_session
+from isolation_guard import IsolationError, check_database_url, check_session
 from synthetic.instagram import SYNTHETIC_THREAD_IDS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,30 @@ def _test_isolation_guard() -> None:
 TEST_DB_NAME = "gcw_test"
 
 
+def to_test_db_url(dev_url: str) -> str:
+    """The dev database URL with the database changed to gcw_test, as a postgresql:// URL.
+
+    `dev_url` may be a URL or a keyword DSN (config builds one when DATABASE_URL is empty), so it
+    is parsed with conninfo_to_dict and rebuilt. isolation_guard.check_database_url rejects
+    keyword DSNs (PR 28), and the guard ran only at session start, before this swap, so the result
+    is asserted to pass it here.
+    """
+    parts = {k: str(v) for k, v in conninfo_to_dict(dev_url).items() if v is not None}
+    userinfo = quote(parts.pop("user", ""), safe="")
+    password = parts.pop("password", None)
+    if password is not None:
+        userinfo += ":" + quote(password, safe="")
+    host = parts.pop("host", "")
+    port = parts.pop("port", "")
+    parts.pop("dbname", None)
+    netloc = (f"{userinfo}@" if userinfo else "") + host + (f":{port}" if port else "")
+    query = urlencode(parts)
+    url = f"postgresql://{netloc}/{TEST_DB_NAME}" + (f"?{query}" if query else "")
+    check_database_url("test_database_url", url)
+    assert conninfo_to_dict(url).get("dbname") == TEST_DB_NAME
+    return url
+
+
 @pytest.fixture(scope="session")
 def test_database_url() -> str:
     """URL of gcw_test on the dev Postgres, created if missing and migrated (D68).
@@ -42,7 +67,7 @@ def test_database_url() -> str:
     only the database name changes. CREATE DATABASE cannot run in a transaction, hence autocommit.
     """
     dev_url = database_url()
-    url = make_conninfo(dev_url, dbname=TEST_DB_NAME)
+    url = to_test_db_url(dev_url)
     with psycopg.connect(dev_url, autocommit=True) as conn:
         exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (TEST_DB_NAME,))
         if exists.fetchone() is None:

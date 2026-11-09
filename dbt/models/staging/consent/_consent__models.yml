@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_consent__sender_consent
+    description: >
+      The loaded consent ledger, one row per (thread_id, sender_name). `consent` is yes, no or
+      blank (undecided, treated as no). Empty when no ledger has been loaded.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [thread_id, sender_name]
+    columns:
+      - name: thread_id
+        data_tests: [not_null]
+      - name: sender_name
+        data_tests: [not_null]
+      - name: consent
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["yes", "no", ""]
+      - name: loaded_at
+        description: When the ledger row was loaded (UTC).

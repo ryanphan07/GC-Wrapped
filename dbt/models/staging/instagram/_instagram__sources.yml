@@ -62,3 +62,18 @@ sources:
                   arguments:
                     to: source('raw', 'load_runs')
                     field: load_id
+
+      - name: sender_consent
+        description: >
+          Per-sender consent for external processing (D69), loaded from the CSV ledger by
+          `gcw consent-load`. Empty until a ledger is loaded; blank consent means undecided.
+        columns:
+          - name: thread_id
+            data_tests:
+              - not_null
+          - name: sender_name
+            data_tests:
+              - not_null
+          - name: consent
+            data_tests:
+              - not_null

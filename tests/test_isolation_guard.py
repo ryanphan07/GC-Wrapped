@@ -214,3 +214,74 @@ def test_session_fixture_aborts_the_whole_run(tmp_path: Path) -> None:
     assert result.returncode == 3
     assert "test-isolation guard" in result.stdout + result.stderr
     assert " passed" not in result.stdout
+
+
+# --- GCW_CONSENT_LEDGER (D69): additive rules; nothing above changes ------------------------------
+
+
+def test_consent_ledger_inside_the_repo_passes(home: Path) -> None:
+    _check({**DEV, "GCW_CONSENT_LEDGER": "./tests/fixtures/synthetic_consent/senders.csv"}, home)
+    _check({**DEV, "GCW_CONSENT_LEDGER": str(REPO_ROOT / "tests" / "x.csv")}, home)
+    _check({**DEV, "GCW_CONSENT_LEDGER": ""}, home)
+    _check(DEV, home)  # unset
+
+
+def test_consent_ledger_under_the_private_dir_is_rejected(home: Path) -> None:
+    ledger = home / PRIVATE_DIR_NAME / "consent" / "senders.csv"
+    with pytest.raises(IsolationError, match="GCW_CONSENT_LEDGER"):
+        _check({**DEV, "GCW_CONSENT_LEDGER": str(ledger)}, home)
+
+
+def test_consent_ledger_outside_the_repo_is_rejected(home: Path, tmp_path: Path) -> None:
+    with pytest.raises(IsolationError, match="GCW_CONSENT_LEDGER resolves outside the repo"):
+        _check({**DEV, "GCW_CONSENT_LEDGER": str(tmp_path / "senders.csv")}, home)
+
+
+def test_consent_ledger_tilde_dotdot_and_symlink_cannot_hide_the_private_dir(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(home))
+    link = tmp_path / "innocent"
+    link.symlink_to(home / PRIVATE_DIR_NAME)
+    sneaky = home / "elsewhere" / ".." / PRIVATE_DIR_NAME / "s.csv"
+    for value in (f"~/{PRIVATE_DIR_NAME}/s.csv", str(sneaky), str(link / "s.csv")):
+        with pytest.raises(IsolationError):
+            _check({**DEV, "GCW_CONSENT_LEDGER": value}, home)
+
+
+def test_consent_ledger_symlink_from_the_repo_to_outside_is_rejected(
+    home: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = REPO_ROOT / "tests" / "fixtures" / "ledger-guard-test-link"
+    link.symlink_to(outside)
+    try:
+        with pytest.raises(IsolationError):
+            _check({**DEV, "GCW_CONSENT_LEDGER": str(link / "senders.csv")}, home)
+    finally:
+        link.unlink()
+
+
+def test_consent_ledger_from_env_file_and_environ(home: Path, tmp_path: Path) -> None:
+    env_file = tmp_path / "t.env"
+    env_file.write_text(f"GCW_CONSENT_LEDGER={tmp_path}/s.csv\n", encoding="utf-8")
+    environ = {"ENV_FILE": str(env_file)}
+    with pytest.raises(IsolationError):
+        check_session(environ, cwd=tmp_path, repo_root=REPO_ROOT, home=home)
+    environ["GCW_CONSENT_LEDGER"] = "./tests/fixtures/synthetic_consent/s.csv"  # environ wins
+    check_session(environ, cwd=tmp_path, repo_root=REPO_ROOT, home=home)
+
+
+def test_consent_ledger_error_message_never_contains_the_value(home: Path, tmp_path: Path) -> None:
+    for value in (
+        str(tmp_path / "SENTINELPATH.csv"),
+        str(home / PRIVATE_DIR_NAME / "SENTINELPATH"),
+    ):
+        with pytest.raises(IsolationError) as info:
+            _check({**DEV, "GCW_CONSENT_LEDGER": value}, home)
+        assert "SENTINELPATH" not in str(info.value)
+
+
+def test_the_ledger_variable_is_guarded() -> None:
+    assert "GCW_CONSENT_LEDGER" in isolation_guard.GUARDED_VARS

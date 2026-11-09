@@ -23,7 +23,7 @@ PRIVATE_DIR_NAME = "gcw-private"
 PORT_VARS = ("POSTGRES_PORT", "POSTGRES_HOST_PORT")
 URL_VARS = ("DATABASE_URL", "DASHBOARD_DATABASE_URL")
 # ENV_FILE is also a data path, but it resolves against the working directory (as config.py does).
-PATH_VARS = ("GCW_LANDING_HOST_DIR", "GCW_LANDING_DIR", "GCW_LOG_DIR")
+PATH_VARS = ("GCW_LANDING_HOST_DIR", "GCW_LANDING_DIR", "GCW_LOG_DIR", "GCW_CONSENT_LEDGER")
 GUARDED_VARS = (
     *PORT_VARS,
     *URL_VARS,
@@ -132,6 +132,13 @@ def check_isolation(config: Mapping[str, str], *, repo_root: Path, home: Path, c
     landing = _resolve(config.get("GCW_LANDING_HOST_DIR") or DEFAULT_LANDING_HOST_DIR, repo_root)
     if not _is_under(landing, Path(os.path.realpath(repo_root))):
         raise IsolationError("GCW_LANDING_HOST_DIR resolves outside the repo")
+
+    # The consent ledger (D69): a session may only be configured with a synthetic ledger in the
+    # repo. Unset is fine; the real ledger lives under the private root (rejected above) or at
+    # least outside the repo (rejected here).
+    ledger = config.get("GCW_CONSENT_LEDGER", "").strip()
+    if ledger and not _is_under(_resolve(ledger, repo_root), Path(os.path.realpath(repo_root))):
+        raise IsolationError("GCW_CONSENT_LEDGER resolves outside the repo")
 
 
 def check_session(

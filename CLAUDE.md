@@ -12,10 +12,9 @@ Context is cleared after every session. Anything not written into the repo is lo
 - main is protected: all changes go through a PR.
 
 ## Current phase
-Phase 1 — Pipeline: parse one platform's export → clean/dedupe → Postgres `raw` schema → dbt models (messages, member activity, reply times, threads, activity over time) with tests → Airflow landing-zone DAG → simple dashboard.
-Done when: a fresh export runs end to end with one command and all tests pass.
-Source platform: Instagram DMs (Meta "Download your information" export, JSON format). Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
-NOT in Phase 1: LLM calls, embeddings, analysis of image/video content, React frontend, deploy, a second platform.
+Phase 2 (Enrichment + evals): the eval score is reported automatically on every change. Checklist and next step: `docs/STATUS.md`; decisions D69-D73 in `docs/decisions.md`.
+Phase 1 (Pipeline) is complete: parse Instagram DMs (Meta "Download your information" export, JSON format) → clean/dedupe → Postgres `raw` schema → dbt models with tests → Airflow landing-zone DAG → Streamlit dashboard, run end to end with one command. Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
+Not yet in scope: embeddings, analysis of image/video content, React frontend, deploy, a second platform, a local LLM backend (Phase 3, D71).
 
 ## Privacy rules (hard requirements)
 - You are a third-party API. Real chat data must never enter your context.
@@ -28,7 +27,8 @@ NOT in Phase 1: LLM calls, embeddings, analysis of image/video content, React fr
 - Logs and error messages never include message bodies, sender names, phone numbers, or emails. Log counts, IDs, durations, file hashes.
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
-- No external API calls from pipeline code in Phase 1.
+- No external API calls from pipeline code yet (the first arrives in P2-3, behind redaction).
+- No message text leaves the machine except through the redaction module (D70), and only for messages external_ok under the consent ledger (D69). Claude Code never reads, creates or edits the real ledger.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 
 ## Stack
@@ -45,6 +45,7 @@ make lint                       # ruff + mypy
 make dbt-deps / make dbt-build  # against gcw_dev only
 make airflow-up / dashboard-up  # Airflow UI :8080 / Streamlit dashboard
 make e2e [ENV_FILE=...]         # one-command end to end
+make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
@@ -99,6 +100,7 @@ Done and Deviations cover this session only. Open issues and questions carry for
 
 ### Numbers and decisions
 - Measured numbers (test and model counts, runtimes, eval scores, latency, cost) appear only in METRICS.md and the current docs/STATUS.md. Other docs, including this file, link to METRICS.md instead of stating numbers.
+- Cite a PR-branch commit as <sha> (PR #n).
 - Every METRICS.md row has a date and commit SHA, plus model and dataset version for eval results. Add new rows; never edit or delete an existing row. Never round up or estimate.
 - docs/decisions.md is append-only. Each entry has an ID and date in its header ("## D<n> — <YYYY-MM-DD> — <title>"). To revise a decision, add a new entry that says "Supersedes D<n>"; never edit an old entry.
 
