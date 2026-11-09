@@ -16,6 +16,7 @@ Every value must be an exact number with its source (`raw.load_runs`, dbt output
 | Test suite | 194 unit + 19 integration = 213 passing | 2026-11-05 | make test, make test-integration | 309060e |
 | Real warehouse snapshot after metrics hardening (make metrics) | target database gcw_real; 33,997 raw messages, 33,997 modeled, 16 threads, 461 distinct senders; latest load (id 4) succeeded: 33,997 parsed, 30,777 inserted, 4.55 s; 9 dbt models, 111 data tests (109 generic, 2 singular), 4 dbt unit tests, 2 sources, 0 seeds, 1 hook, 125 buildable nodes; 261 unit + 40 non-unit pytest tests collected | 2026-11-05 | make metrics ENV_FILE=<real env>, run by Ryan, fixed-label output only; no dbt/target or dbt/logs created | 6b36f8f |
 | Dev warehouse and test suite (make metrics, synthetic) | target database gcw_dev; 170 raw messages, 170 modeled, 3 threads, 7 distinct senders; latest load (id 1) succeeded: 170 parsed, 170 inserted, 0.06 s; 9 dbt models, 111 data tests (109 generic, 2 singular), 4 dbt unit tests, 2 sources, 0 seeds, 1 hook, 125 buildable nodes; 317 unit + 40 non-unit pytest tests collected | 2026-11-05 | make metrics, default .env | 13b5d31 |
+| pytest tests collected | 406 unit + 55 non-unit | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
 
 raw.load_runs durations from 2026-11-05 runs (0.00 / 0.01 s) were wrong (bug fixed later); not recorded.
 
@@ -28,6 +29,10 @@ Commit citations (D73): merges are squashes, so a PR-branch commit is cited as "
 | dbt model count | 9 | 2026-11-03 | `dbt ls --resource-type model --quiet \| wc -l`; CI `dbt build` on main PASS=124 WARN=0 ERROR=0 | dab91cb |
 | dbt data test count (generic + singular) | 111 | 2026-11-03 | `dbt ls --resource-type test --quiet \| wc -l`; CI `dbt build` on main PASS=124 WARN=0 ERROR=0 | dab91cb |
 | dbt unit test count | 4 | 2026-11-03 | `dbt ls --resource-type unit_test --quiet \| wc -l`; CI `dbt build` on main PASS=124 WARN=0 ERROR=0 | dab91cb |
+| dbt model count | 11 | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
+| dbt data test count (generic + singular) | 125 (123 generic, 2 singular) | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
+| dbt unit test count | 6 | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
+| dbt buildable nodes | 143 | 2026-11-09 | make metrics (gcw_dev); make e2e dbt build PASS=143 TOTAL=143 | 468bca3 |
 
 ## Tagging eval
 

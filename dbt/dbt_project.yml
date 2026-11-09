@@ -16,7 +16,8 @@ vars:
   # A gap longer than this between consecutive messages in a thread starts a new session.
   session_gap_minutes: 60
 
-# staging and intermediate = views; marts = tables. No incremental models.
+# staging and intermediate = views; marts = tables, except fct_message_eligibility (a view, D75).
+# No incremental models.
 models:
   gcwrapped:
     # Staging and intermediate carry message text, so they live in their own schema that the
@@ -32,8 +33,18 @@ models:
       +schema: analytics
       # The dashboard's read-only role sees marts only (no message text). Staging and
       # intermediate get no grants. The role is created outside dbt (docker init / CI setup).
-      +grants:
-        select: ['gcw_reader']
+      # Grants are listed per model, not for the whole folder, because dbt merges a model-level
+      # grants config into the folder's instead of replacing it, so fct_message_eligibility (D75)
+      # could not opt out. A new mart gets no reader grant until it is added here (fails closed).
+      agg_activity_daily: &reader_grant
+        +grants:
+          select: ['gcw_reader']
+      agg_member_activity: *reader_grant
+      dim_members: *reader_grant
+      fct_messages: *reader_grant
+      fct_reactions: *reader_grant
+      fct_sessions: *reader_grant
+      # fct_message_eligibility: a view (set in the model), deliberately absent from this list.
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
 # analytics only; the reader is never granted anything on staging. Idempotent, safe every build.

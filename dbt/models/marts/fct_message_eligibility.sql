@@ -1,3 +1,8 @@
+{{ config(materialized='view') }}
+
+-- A view (D75), so external_ok always reflects the ledger currently loaded in raw.sender_consent:
+-- a revoked consent takes effect when consent-load commits, with no dbt build in between.
+-- gcw_reader gets no SELECT on it (see the grants list in dbt_project.yml).
 -- The one definition of which messages may leave the machine (D69). external_ok is true only when
 -- the message's sender is "yes" in the consent ledger for that thread. A blank, a "no", a sender
 -- missing from the ledger, and an empty ledger all give false. No message text is carried here.

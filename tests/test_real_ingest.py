@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gcwrapped import real_ingest
+from gcwrapped.docker import DockerUnavailableError
 from gcwrapped.real_ingest import (
     ALLOWED_LINE_PATTERNS,
     GuardError,
@@ -316,7 +317,12 @@ def _python_step(name: str, body: str) -> Step:
 
 def _run_with(tmp_path: Path, steps: list[Step]) -> tuple[int, list[str], str]:
     shown: list[str] = []
-    code = run(write_env(tmp_path), steps_for=lambda _plan: steps, show=shown.append)
+    code = run(
+        write_env(tmp_path),
+        steps_for=lambda _plan: steps,
+        show=shown.append,
+        preflight=lambda: None,
+    )
     (log,) = (tmp_path / "logs").iterdir()
     return code, shown, log.read_text(encoding="utf-8")
 
@@ -405,7 +411,12 @@ def test_every_step_gets_the_env_file_in_its_environment(tmp_path: Path) -> None
     body = "import os; print('rows parsed: ' + str(len(os.environ['ENV_FILE'])))"
     shown: list[str] = []
 
-    code = run(env_file, steps_for=lambda _p: [_python_step("e2e", body)], show=shown.append)
+    code = run(
+        env_file,
+        steps_for=lambda _p: [_python_step("e2e", body)],
+        show=shown.append,
+        preflight=lambda: None,
+    )
 
     assert code == 0
     assert f"rows parsed: {len(env_file)}" in shown
@@ -419,7 +430,12 @@ def test_the_runner_overrides_an_inherited_env_file(
     body = "import os; print('rows parsed: ' + str(int(os.environ['ENV_FILE'] != '.env')))"
     shown: list[str] = []
 
-    run(env_file, steps_for=lambda _p: [_python_step("e2e", body)], show=shown.append)
+    run(
+        env_file,
+        steps_for=lambda _p: [_python_step("e2e", body)],
+        show=shown.append,
+        preflight=lambda: None,
+    )
 
     assert "rows parsed: 1" in shown
 
@@ -430,3 +446,21 @@ def test_default_steps_have_the_documented_headers(tmp_path: Path) -> None:
     headers = [real_ingest.step_header(step) for step in real_ingest.build_steps(plan)]
 
     assert headers == ["== step: check-landing ==", "== step: e2e =="]
+
+
+def test_docker_down_prints_a_distinct_line_and_runs_no_step(tmp_path: Path) -> None:
+    def docker_down() -> None:
+        raise DockerUnavailableError
+
+    shown: list[str] = []
+
+    code = run(
+        write_env(tmp_path),
+        steps_for=lambda _plan: pytest.fail("no step may run without Docker"),
+        show=shown.append,
+        preflight=docker_down,
+    )
+
+    assert code == 1
+    assert shown == ["real-ingest: failed at docker (DockerUnavailableError)"]
+    assert list((tmp_path / "logs").iterdir()) == []  # no log was created either

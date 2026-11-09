@@ -24,7 +24,8 @@ import psycopg
 from gcwrapped.config import LedgerSettings
 from gcwrapped.consent import require_allowlist
 from gcwrapped.db import database_name, database_url
-from gcwrapped.metrics import ALLOWED_DATABASES, start_database
+from gcwrapped.docker import start_database
+from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.migrate import migrate
 
 HEADER = ("consent", "thread_id", "sender_name", "messages")

@@ -420,3 +420,9 @@ Decision: (1) The code is `src/gcwrapped/ledger.py`; `consent.py` already holds 
 Alternative: put consent code in consent.py; give reactors rows; fail `consent-load` until `gcw migrate` ran; leave sentinel rows out of the synthetic ledger.
 Why: (3) only senders' text can be sent, so only senders need a decision, and a shorter ledger is easier to maintain. (4) Ryan's first real run is consent-load, before any real-ingest has applied migration 002. (5) A sentinel row for a sender absent from the warehouse would fail validation (unknown_sender), and the acceptance run needs the load to pass.
 Tradeoff: `consent-load` can change the schema of the database it targets, but only by applying migrations the repo already ships. A person who only reacts in one thread has no row there; if they later send a message, the next template run adds them.
+
+## D75 — 2026-11-09 — fct_message_eligibility is a view
+Decision: fct_message_eligibility is materialized as a view over the staging models, so external_ok always reflects the currently loaded consent ledger. gcw_reader gets no SELECT on it.
+Alternative: keep the table and have the tagging job run `dbt build --select fct_message_eligibility` first; or keep the table and have tagging re-check raw.sender_consent at send time.
+Why: a revoked consent must take effect the moment the ledger is loaded, without relying on every caller to remember a rebuild. A view keeps one definition and is always current. A send-time re-check would be a second definition that can drift. The dashboard has no use for who declined.
+Tradeoff: the join runs on every query (trivial at tens of thousands of rows). Anything reading the view sees a ledger change immediately, so the tagging job (P2-3) must read eligibility at send time for each batch rather than once per run.
