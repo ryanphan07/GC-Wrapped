@@ -381,3 +381,42 @@ Decision: every test that migrates, writes to or truncates a database uses gcw_t
 Alternative: keep sharing gcw_dev and re-run make e2e after tests; wrap each test in a rolled-back transaction; start a throwaway container per session (testcontainers).
 Why: tests emptied the dev warehouse that make metrics and the dashboard read. A second database on the existing container is the smallest change and works the same locally and in CI. Rollback can't cover code that commits on its own (loader, migrations). A container per session adds a dependency and startup time.
 Tradeoff: one more database to keep migrated. The session fixture handles that, at the cost of a few seconds per integration run.
+
+## D69 — 2026-11-09 — Per-sender consent ledger gates external processing
+Decision: a CSV ledger outside the repo (GCW_CONSENT_LEDGER), one row per (thread_id, sender display name), consent yes, no or blank (blank means no). It is validated in full and loaded all-or-nothing into raw.sender_consent. One dbt model decides which messages may leave the machine: only messages whose sender is "yes" in that thread.
+- Context sent with a consented message replaces any non-consented neighbor with a placeholder and never sends its text.
+- A change from yes to no deletes that sender's stored tags on the next tagging run.
+- The thread allowlist still gates ingestion.
+Alternative: a per-thread external_ok flag, or thread-level consent for every allowlisted thread.
+Why: exports include people who left the chats and never saw the ask, and consent is each person's decision. Deny-by-default per sender means a missing answer never sends anyone's text.
+Tradeoff: Ryan maintains a ledger of a few hundred rows. A person with display names in several threads needs one row per thread. Tagged messages lose the text of non-consented neighbors as context.
+
+## D70 — 2026-11-09 — Redaction with Presidio plus a member-name recognizer (implemented in P2-2)
+Decision: before any external call, text goes through Presidio (spaCy NER, pinned model) with a custom recognizer for every sender display name and its name tokens, plus pattern recognizers for phone numbers, emails, URLs, @handles and street addresses. Matches become typed placeholders; people become per-thread <PERSON_n>, and sender labels are pseudonymized the same way. The placeholder mapping lives in memory only. City and place names are kept.
+Alternative: regex plus a member-name dictionary only; or a local LLM that rewrites names out.
+Why: a dictionary misses names of people who aren't senders. LLM rewriting is nondeterministic and hard to test. Presidio is widely used and deterministic with a pinned model.
+Tradeoff: name tokens that are also common words get over-redacted, and the spaCy model is a large dependency. Keeping city names keeps topic signal at some re-identification risk.
+
+## D71 — 2026-11-09 — Phase 2 tags with a hosted model behind a backend interface
+Decision: tagging uses a small hosted model (Claude Haiku class) through a backend interface. A local llama.cpp backend arrives in Phase 3 and is compared on the eval set under a win rule fixed before the run.
+Alternative: local only, or both backends in Phase 2.
+Why: the best tagging quality per hour of work, and the interface keeps local mode a drop-in.
+Tradeoff: per-call cost and an external dependency. Until local mode exists, only consented, redacted text can be tagged.
+
+## D72 — 2026-11-09 — Two eval sets: synthetic in CI, real hand-labeled in ~/gcw-private
+Decision: a committed synthetic labeled set runs in CI on every change. About 150 hand-labeled real messages, sampled only from consented senders, live in ~/gcw-private and are scored by a make target that prints aggregates only. Reports give accuracy and macro-F1 per tag with bootstrap 95% confidence intervals.
+Alternative: synthetic only, or real only.
+Why: CI needs an automatic regression signal; the headline number has to reflect real chats; real messages can't enter Git or CI.
+Tradeoff: two numbers to explain, and the CI score is not the resume number. CI needs an API key secret, but only synthetic text is ever sent.
+
+## D73 — 2026-11-09 — METRICS.md SHAs under squash merges
+Decision: a PR-branch commit is cited as "<sha> (PR #<n>)". Rows measured on main cite the main SHA.
+Alternative: switch gcw-merge to merge commits, or cite only squash SHAs (unknown until merge).
+Why: gcw-merge squashes and deletes branches, so branch SHAs aren't on main. GitHub keeps them through the PR.
+Tradeoff: one extra hop to find the commit. Existing rows are not edited; a note under the table maps 251e9f9 to PR #24 and 13b5d31 to PR #29.
+
+## D74 — 2026-11-09 — Ledger implementation choices that D69 leaves open (P2-1)
+Decision: (1) The code is `src/gcwrapped/ledger.py`; `consent.py` already holds the thread allowlist. (2) dbt names: source `raw.sender_consent`, staging view `stg_consent__sender_consent`, mart `fct_message_eligibility` (message_key, thread_id, sender_name, external_ok), in `analytics` like the other marts; it carries no text. (3) The template and the load's "sender in the warehouse" check read `analytics.dim_members` rows with message_count > 0, so reactors who never sent a message get no ledger row. (4) `consent-load` validates first, then applies pending migrations (what `gcw migrate` does), then replaces the table, so a database that predates migration 002 works on the first load. (5) The synthetic ledger is written by `make synth` (`--ledger`, default GCW_CONSENT_LEDGER, which must then be inside the repo; a path under ~/gcw-private is refused) to `tests/fixtures/synthetic_consent/` (gitignored). Two synthetic participants now carry SENTINELNAME display names so the ledger's sentinel senders exist in the dev warehouse.
+Alternative: put consent code in consent.py; give reactors rows; fail `consent-load` until `gcw migrate` ran; leave sentinel rows out of the synthetic ledger.
+Why: (3) only senders' text can be sent, so only senders need a decision, and a shorter ledger is easier to maintain. (4) Ryan's first real run is consent-load, before any real-ingest has applied migration 002. (5) A sentinel row for a sender absent from the warehouse would fail validation (unknown_sender), and the acceptance run needs the load to pass.
+Tradeoff: `consent-load` can change the schema of the database it targets, but only by applying migrations the repo already ships. A person who only reacts in one thread has no row there; if they later send a message, the next template run adds them.

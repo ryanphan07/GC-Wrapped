@@ -11,7 +11,7 @@ from pathlib import Path
 import psycopg
 from pydantic import ValidationError
 
-from gcwrapped import metrics, real_ingest
+from gcwrapped import ledger, metrics, real_ingest
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.landing import check_landing, find_export_roots
@@ -80,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
     pcheck.add_argument("path", type=Path, metavar="EXPORT_DIR", help="one export root")
     sub.add_parser(
         "metrics", help="aggregate counts report: warehouse, dbt and pytest (fixed labels only)"
+    )
+    sub.add_parser(
+        "consent-template",
+        help="create or extend the per-sender consent ledger from the warehouse (counts only)",
+    )
+    sub.add_parser(
+        "consent-load",
+        help="validate the whole consent ledger, then load it into raw.sender_consent",
     )
     real = sub.add_parser(
         "real-ingest",
@@ -264,6 +272,10 @@ def _run(argv: Sequence[str] | None) -> int:
         return real_ingest.run(args.env_file)
     if args.command == "metrics":
         return metrics.run()
+    if args.command == "consent-template":
+        return ledger.run_template()
+    if args.command == "consent-load":
+        return ledger.run_load()
     if args.command == "last-run":
         return _last_run()
     if args.command == "migrate":

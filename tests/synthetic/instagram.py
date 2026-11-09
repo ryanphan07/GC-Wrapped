@@ -14,6 +14,7 @@ different query string. Layout and key names come from gcwrapped.parsers.instagr
 
 import argparse
 import json
+import os
 import random
 import re
 import shutil
@@ -21,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from gcwrapped import ledger
 from gcwrapped.parsers import instagram_format as fmt
 
 Message = dict[str, Any]
@@ -39,13 +41,36 @@ _LULL_CHANCE = 0.1
 _LULL_MIN_MS, _LULL_MAX_MS = 10 * _MINUTE_MS, 45 * _MINUTE_MS
 _SAME_SENDER_CHANCE = 0.4
 
+# Two senders whose display names carry SENTINELNAME (a comma and an emoji in one, as real names
+# have), so the consent tests can assert no target ever prints a sender name. In the ledger from
+# `write_consent_ledger`, one is marked "no" and one is left blank.
+SENTINEL_NO = "SENTINELNAME Priya, 🎉"
+SENTINEL_BLANK = "SENTINELNAME Zoë Müller"
+
+# Consent by display name for the synthetic ledger: a mix of yes, no and blank.
+CONSENT_BY_SENDER = {
+    "José Núñez": "yes",
+    "Sam Lee": "yes",
+    "Ana Ruiz": "yes",
+    "Priya Raman": "yes",
+    "Nguyễn Thị Hương": "no",
+    SENTINEL_NO: "no",
+    SENTINEL_BLANK: "",
+}
+
 # (folder name, title, participants, message count). Digit runs are 15-17 long, as in the real
 # export; the third folder is bare digits.
 THREADS: list[tuple[str, str, list[str], int]] = [
     (
         "weekendcrew_1784563920183746",
         "Weekend Crew ☕",
-        ["José Núñez", "Zoë Müller", "Sam Lee", "Priya", "Nguyễn Thị Hương"],
+        [
+            "José Núñez",
+            SENTINEL_BLANK,
+            "Sam Lee",
+            SENTINEL_NO,
+            "Nguyễn Thị Hương",
+        ],
         100,
     ),
     ("sam_293847561029384", "Sam Lee", ["Ana Ruiz", "Sam Lee"], 40),
@@ -265,6 +290,39 @@ def write_thread(
     return paths
 
 
+def _histories(seed: int) -> list[list[Message]]:
+    """Each thread's full history, in THREADS order. One rng, so the order of calls matters."""
+    rng = random.Random(seed)
+    return [build_conversation(rng, participants, count) for _, _, participants, count in THREADS]
+
+
+def consent_ledger_rows(seed: int = 1234) -> list[ledger.LedgerRow]:
+    """Synthetic ledger rows: every sender who wrote in the part of a thread that both exports
+    contain (so the sender is in the warehouse whichever export was ingested), with the consent
+    from CONSENT_BY_SENDER and their message count over the full history."""
+    rows: list[ledger.LedgerRow] = []
+    for (_folder, _title, _participants, count), thread_id, history in zip(
+        THREADS, SYNTHETIC_THREAD_IDS, _histories(seed), strict=True
+    ):
+        in_both = {m[fmt.KEY_SENDER] for m in history[count // 3 : count * 3 // 4]}
+        totals = {name: 0 for name in in_both}
+        for message in history:
+            if message[fmt.KEY_SENDER] in totals:
+                totals[message[fmt.KEY_SENDER]] += 1
+        rows += [
+            ledger.LedgerRow(CONSENT_BY_SENDER[name], thread_id, name, str(total))
+            for name, total in totals.items()
+        ]
+    return sorted(rows, key=lambda r: (r.thread_id, -int(r.messages), r.sender_name))
+
+
+def write_consent_ledger(path: Path, seed: int = 1234) -> int:
+    """Write the synthetic ledger (mode 0600, atomically). Returns the row count."""
+    rows = consent_ledger_rows(seed)
+    ledger.write_ledger(path, rows)
+    return len(rows)
+
+
 def generate_pair(
     out_dir: Path, seed: int = 1234, max_per_file: int = fmt.MAX_MESSAGES_PER_FILE
 ) -> tuple[Path, Path]:
@@ -275,11 +333,11 @@ def generate_pair(
     external URLs carrying a different query string. The middle (including each identical pair) is
     in both. Pass a small `max_per_file` to get multi-file threads.
     """
-    rng = random.Random(seed)
     root_a, root_b = out_dir / "export_a", out_dir / "export_b"
     chunk_a, chunk_b = max_per_file, max(1, max_per_file * 17 // 30)
-    for folder, title, participants, count in THREADS:
-        history = build_conversation(rng, participants, count)
+    for (folder, title, participants, count), history in zip(
+        THREADS, _histories(seed), strict=True
+    ):
         query_a, query_b = _QUERY_BY_EXPORT["a"], _QUERY_BY_EXPORT["b"]
         write_thread(
             root_a, folder, title, participants, history[: count * 3 // 4], chunk_a, query_a
@@ -318,14 +376,44 @@ def clear_output_dir(out: Path, cwd: Path | None = None) -> None:
             child.unlink()
 
 
+def resolve_ledger_target(explicit: Path | None, from_env: str) -> Path | None:
+    """Where to write the synthetic ledger, or None to skip it.
+
+    This writes (overwrites) a file, so it must never be pointed at a real ledger: anything under
+    ~/gcw-private is refused, and a path that only came from the environment must be inside the
+    repo. An explicit --ledger may be anywhere else (CI writes it to a runner temp dir).
+    """
+    raw = explicit if explicit is not None else (Path(from_env) if from_env.strip() else None)
+    if raw is None:
+        return None
+    path = Path(os.path.realpath(os.path.expanduser(raw)))
+    private = Path(os.path.realpath(Path.home() / "gcw-private"))
+    if path == private or private in path.parents:
+        raise SystemExit("refusing to write the synthetic ledger under the private directory")
+    repo = Path(os.path.realpath(Path(__file__).resolve().parents[2]))
+    if explicit is None and repo not in path.parents:
+        raise SystemExit("refusing GCW_CONSENT_LEDGER outside the repo; pass --ledger explicitly")
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate synthetic Instagram DM exports")
     ap.add_argument("--out", type=Path, default=Path("tests/fixtures/synthetic"))
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument(
+        "--ledger",
+        type=Path,
+        help="also write the synthetic consent ledger here (default: $GCW_CONSENT_LEDGER, which "
+        "must then be inside the repo; skipped if neither is set)",
+    )
     args = ap.parse_args()
+    ledger_path = resolve_ledger_target(args.ledger, os.environ.get("GCW_CONSENT_LEDGER", ""))
     clear_output_dir(args.out)
     a, b = generate_pair(args.out, args.seed)
     print(f"wrote {a} and {b}")
+    if ledger_path is not None:
+        rows = write_consent_ledger(ledger_path, args.seed)
+        print(f"wrote synthetic consent ledger ({rows} rows)")
 
 
 if __name__ == "__main__":

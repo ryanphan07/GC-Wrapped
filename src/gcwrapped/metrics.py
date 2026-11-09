@@ -91,6 +91,8 @@ LINE_SHAPES = (
     r"latest load rows parsed: \d+",
     r"latest load rows inserted: \d+",
     r"latest load seconds: \d+\.\d{2}",
+    r"consent senders yes: \d+",
+    r"external-eligible messages: \d+",
     r"dbt models: \d+",
     r"dbt data tests: \d+",
     r"dbt generic tests: \d+",
@@ -138,6 +140,8 @@ class WarehouseStats:
     rows_parsed: int
     rows_inserted: int
     load_seconds: float
+    consent_senders_yes: int  # raw.sender_consent rows with consent = 'yes' (D69)
+    external_eligible_messages: int  # fct_message_eligibility rows with external_ok
 
 
 @dataclass(frozen=True)
@@ -196,11 +200,15 @@ def start_database() -> None:
 
 
 def warehouse_stats(
-    url: str, *, modeled_messages: tuple[str, str] = ("analytics", "fct_messages")
+    url: str,
+    *,
+    modeled_messages: tuple[str, str] = ("analytics", "fct_messages"),
+    eligibility: tuple[str, str] = ("analytics", "fct_message_eligibility"),
 ) -> WarehouseStats:
     """Counts from the raw messages table, the dbt messages model and the latest load run.
 
-    `modeled_messages` is (schema, table); the default is the dbt fct_messages mart.
+    `modeled_messages` and `eligibility` are (schema, table); the defaults are the dbt
+    fct_messages and fct_message_eligibility marts. The consent count reads raw.sender_consent.
     Distinct senders are distinct sender names across the model and threads are distinct thread
     IDs; both are counted inside the database and only the numbers come back.
     """
@@ -215,14 +223,27 @@ def warehouse_stats(
                 "SELECT count(*), count(DISTINCT thread_id), count(DISTINCT sender_name) FROM {}"
             ).format(modeled)
         ).fetchone()
+        consent_row = conn.execute(
+            "SELECT count(*) FROM raw.sender_consent WHERE consent = 'yes'"
+        ).fetchone()
+        eligible_row = conn.execute(
+            sql.SQL("SELECT count(*) FROM {} WHERE external_ok").format(
+                sql.Identifier(*eligibility)
+            )
+        ).fetchone()
     run = latest_run(url)
-    if raw_row is None or modeled_row is None:
+    if raw_row is None or modeled_row is None or consent_row is None or eligible_row is None:
         raise MetricsError
-    return _stats(name, raw_row[0], modeled_row, run)
+    return _stats(name, raw_row[0], modeled_row, run, consent_row[0], eligible_row[0])
 
 
 def _stats(
-    database: str, raw_messages: int, modeled_row: tuple[int, int, int], run: RunSummary | None
+    database: str,
+    raw_messages: int,
+    modeled_row: tuple[int, int, int],
+    run: RunSummary | None,
+    consent_senders_yes: int,
+    external_eligible_messages: int,
 ) -> WarehouseStats:
     # A run still open has no duration; a run with no counts cannot be reported as numbers.
     if (
@@ -244,6 +265,8 @@ def _stats(
         rows_parsed=run.rows_parsed,
         rows_inserted=run.rows_inserted,
         load_seconds=run.elapsed_seconds,
+        consent_senders_yes=consent_senders_yes,
+        external_eligible_messages=external_eligible_messages,
     )
 
 
@@ -367,6 +390,8 @@ def render(w: WarehouseStats, d: DbtCounts, p: PytestCounts) -> list[str]:
         f"latest load rows parsed: {w.rows_parsed}",
         f"latest load rows inserted: {w.rows_inserted}",
         f"latest load seconds: {w.load_seconds:.2f}",
+        f"consent senders yes: {w.consent_senders_yes}",
+        f"external-eligible messages: {w.external_eligible_messages}",
         f"dbt models: {d.models}",
         f"dbt data tests: {d.data_tests}",
         f"dbt generic tests: {d.generic_tests}",

@@ -29,3 +29,6 @@ tests/fixtures/synthetic/
 dbt/.user.yml
 real.env
 tests/fixtures/sentinel/
+
+# Synthetic consent ledger (make synth writes it; dev GCW_CONSENT_LEDGER points here)
+tests/fixtures/synthetic_consent/

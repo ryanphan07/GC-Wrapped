@@ -1,0 +1,45 @@
+version: 2
+
+unit_tests:
+  - name: external_ok_only_for_yes
+    description: >
+      Only an exact "yes" for the message's own thread and sender is eligible. "no", blank, a
+      sender missing from the ledger, and the same name in another thread's ledger row are not.
+    model: fct_message_eligibility
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A}
+          - {message_key: m2, thread_id: t1, sender_name: B}
+          - {message_key: m3, thread_id: t1, sender_name: C}
+          - {message_key: m4, thread_id: t1, sender_name: D}
+          - {message_key: m5, thread_id: t2, sender_name: A}
+      - input: ref('stg_consent__sender_consent')
+        rows:
+          - {thread_id: t1, sender_name: A, consent: "yes"}
+          - {thread_id: t1, sender_name: B, consent: "no"}
+          - {thread_id: t1, sender_name: C, consent: ""}
+          - {thread_id: t2, sender_name: Z, consent: "yes"}
+    expect:
+      rows:
+        - {message_key: m1, external_ok: true}
+        - {message_key: m2, external_ok: false}
+        - {message_key: m3, external_ok: false}
+        - {message_key: m4, external_ok: false}
+        - {message_key: m5, external_ok: false}
+
+  - name: external_ok_false_with_no_ledger
+    description: With no ledger loaded, every message is external_ok = false.
+    model: fct_message_eligibility
+    given:
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A}
+          - {message_key: m2, thread_id: t2, sender_name: B}
+      - input: ref('stg_consent__sender_consent')
+        format: sql
+        rows: select null::text as thread_id, null::text as sender_name, null::text as consent where false
+    expect:
+      rows:
+        - {message_key: m1, external_ok: false}
+        - {message_key: m2, external_ok: false}

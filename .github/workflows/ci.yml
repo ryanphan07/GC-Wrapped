@@ -139,6 +139,7 @@ jobs:
           echo "LANDING=$RUNNER_TEMP/ci-landing" >> "$GITHUB_ENV"
           ENV_FILE="$RUNNER_TEMP/ci.env"
           LANDING="$RUNNER_TEMP/ci-landing"
+          CONSENT="$RUNNER_TEMP/ci-consent/senders.csv"
           cat > "$ENV_FILE" <<EOF
           COMPOSE_PROJECT_NAME=gc-wrapped-ci
           GCW_DB_NAME=gcw_dev
@@ -148,8 +149,10 @@ jobs:
           POSTGRES_PORT=5432
           GCW_READER_PASSWORD=ci-reader-password
           GCW_LANDING_HOST_DIR=$LANDING
+          GCW_CONSENT_LEDGER=$CONSENT
           EOF
-          uv run python tests/synthetic/instagram.py --out "$LANDING"
+          # Also writes the synthetic consent ledger (a mix of yes, no and blank) to $CONSENT.
+          uv run python tests/synthetic/instagram.py --out "$LANDING" --ledger "$CONSENT"
       - name: make e2e (first run)
         run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-1.log; test "${PIPESTATUS[0]}" -eq 0
       - name: Compose project comes from the env file, not the pinned default
@@ -184,6 +187,25 @@ jobs:
           test "$(psql 'SELECT count(*) FROM raw.messages')" -gt 0
           grep "rows inserted:" e2e-2.log | tail -n 1 | grep -qx "rows inserted: 0"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8501/_stcore/health)" = 200
+      # The second gate (D69). The template adds nothing the synthetic ledger lacks, the load is
+      # idempotent, and after one more e2e run exactly the "yes" senders' messages are external_ok.
+      - name: Consent ledger (template, load, eligibility)
+        run: |
+          make consent-template ENV_FILE="$ENV_FILE" 2>&1 | tee consent-t1.log; test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "consent-template: ok" consent-t1.log
+          grep -qx "new rows added: 0" consent-t1.log
+          make consent-load ENV_FILE="$ENV_FILE" 2>&1 | tee consent-l1.log; test "${PIPESTATUS[0]}" -eq 0
+          make consent-load ENV_FILE="$ENV_FILE" 2>&1 | tee consent-l2.log; test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "consent-load: ok" consent-l1.log
+          cmp consent-l1.log consent-l2.log
+          make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-3.log; test "${PIPESTATUS[0]}" -eq 0
+          psql() { docker compose --env-file "$ENV_FILE" exec -T db psql -U gcw -d gcw_dev -tA -c "$1"; }
+          yes_messages="$(psql "SELECT count(*) FROM raw.messages m JOIN raw.sender_consent c ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name WHERE c.consent = 'yes'")"
+          test "$yes_messages" -gt 0
+          test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE external_ok')" -eq "$yes_messages"
+          test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE NOT external_ok')" -gt 0
+          make metrics ENV_FILE="$ENV_FILE" 2>&1 | tee consent-metrics.log; test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "external-eligible messages: $yes_messages" consent-metrics.log
       - name: Compose logs on failure
         if: failure()
         run: docker compose --env-file "$ENV_FILE" logs --no-color --tail=80 db dashboard
@@ -248,6 +270,9 @@ jobs:
           grep -qx "metrics: ok" "$RUNNER_TEMP/out_metrics.txt"
           grep -qx "target database: gcw_ci" "$RUNNER_TEMP/out_metrics.txt"
           grep -qE "^warehouse raw messages: [1-9][0-9]*$" "$RUNNER_TEMP/out_metrics.txt"
+          # Deny by default: no ledger was loaded, so no sender is "yes" and nothing is eligible.
+          grep -qx "consent senders yes: 0" "$RUNNER_TEMP/out_metrics.txt"
+          grep -qx "external-eligible messages: 0" "$RUNNER_TEMP/out_metrics.txt"
           built="$(sed -nE 's/^Done\. PASS=.* TOTAL=([0-9]+)$/\1/p' "$RUNNER_TEMP/out1.txt" | sort -u)"
           counted="$(sed -nE 's/^dbt buildable nodes: ([0-9]+)$/\1/p' "$RUNNER_TEMP/out_metrics.txt")"
           if ! [[ "$built" =~ ^[0-9]+$ && "$built" = "$counted" ]]; then echo "dbt buildable nodes differs from run 1 dbt build total"; exit 1; fi

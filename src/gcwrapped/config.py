@@ -93,6 +93,12 @@ class ConsentSettings(_HostSettings):
     gcw_thread_allowlist: str = ""
 
 
+class LedgerSettings(_HostSettings):
+    """Where the per-sender consent ledger (CSV) lives. Empty means not configured."""
+
+    gcw_consent_ledger: str = ""
+
+
 class DatabaseSettings(_HostSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
 

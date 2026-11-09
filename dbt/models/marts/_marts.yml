@@ -255,3 +255,26 @@ models:
       - name: sessions_started
         description: Sessions whose first message was sent that local day; each session is counted once, on its start date.
         data_tests: [not_null]
+
+  - name: fct_message_eligibility
+    description: >
+      One row per message with `external_ok`, the single definition of which messages may be sent
+      outside this machine (D69): true only when the sender is "yes" in the consent ledger for that
+      thread. Blank, "no", unlisted senders and an empty ledger are all false. No message text.
+    columns:
+      - name: message_key
+        description: Primary key, from the parser's dedup key.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_messages')
+                field: message_key
+      - name: thread_id
+        data_tests: [not_null]
+      - name: sender_name
+        data_tests: [not_null]
+      - name: external_ok
+        description: True only when the sender's consent in this thread is "yes".
+        data_tests: [not_null]

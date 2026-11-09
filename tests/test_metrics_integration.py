@@ -47,6 +47,19 @@ def _seed(url: str) -> None:
             "SELECT message_key, thread_id, sender_name FROM raw.messages "
             "WHERE message_key <> 'k5'"
         )
+        # Consent: "a" is yes in both threads, "b" is no, "c" is blank. The eligibility stand-in
+        # marks exactly the messages whose sender is yes in their own thread.
+        conn.execute(
+            "INSERT INTO raw.sender_consent (thread_id, sender_name, consent) VALUES "
+            "('111', 'SENTINELNAME a', 'yes'), ('111', 'SENTINELNAME b', 'no'), "
+            "('222', 'SENTINELNAME c', ''), ('222', 'SENTINELNAME a', 'yes')"
+        )
+        conn.execute(
+            f"CREATE TABLE {PROBE_SCHEMA}.fct_message_eligibility AS "
+            "SELECT m.message_key, coalesce(c.consent = 'yes', false) AS external_ok "
+            "FROM raw.messages m LEFT JOIN raw.sender_consent c "
+            "ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name"
+        )
 
 
 def test_metrics_counts_are_correct_and_leak_nothing(
@@ -57,7 +70,9 @@ def test_metrics_counts_are_correct_and_leak_nothing(
         steps = Steps(
             database=lambda: None,
             warehouse=lambda: metrics.warehouse_stats(
-                migrated_db, modeled_messages=(PROBE_SCHEMA, "fct_messages")
+                migrated_db,
+                modeled_messages=(PROBE_SCHEMA, "fct_messages"),
+                eligibility=(PROBE_SCHEMA, "fct_message_eligibility"),
             ),
             dbt=lambda: DbtCounts(1, 2, 1, 1, 0, 1, 0, 0),
             pytest=lambda: PytestCounts(3, 4),
@@ -79,6 +94,9 @@ def test_metrics_counts_are_correct_and_leak_nothing(
     assert "latest load rows parsed: 5" in lines
     assert "latest load rows inserted: 4" in lines
     assert any(line.startswith("latest load seconds: 2.") for line in lines)
+    assert "consent senders yes: 2" in lines
+    # yes rows: (111, a) -> k1; (222, a) -> k3, k4. k2 is "no" (b); k5 is blank (c).
+    assert "external-eligible messages: 3" in lines
     assert lines[-1] == "metrics: ok"
     assert "sentinel" not in out.lower()
 
@@ -86,8 +104,17 @@ def test_metrics_counts_are_correct_and_leak_nothing(
 def test_warehouse_stats_with_no_load_run_fails_by_type_name(
     migrated_db: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    with psycopg.connect(migrated_db, autocommit=True) as conn:
+        conn.execute(f"DROP SCHEMA IF EXISTS {PROBE_SCHEMA} CASCADE")
+        conn.execute(f"CREATE SCHEMA {PROBE_SCHEMA}")
+        conn.execute(f"CREATE TABLE {PROBE_SCHEMA}.eligibility (external_ok boolean)")
+
     def stats() -> WarehouseStats:
-        return metrics.warehouse_stats(migrated_db, modeled_messages=("raw", "messages"))
+        return metrics.warehouse_stats(
+            migrated_db,
+            modeled_messages=("raw", "messages"),
+            eligibility=(PROBE_SCHEMA, "eligibility"),
+        )
 
     steps = Steps(
         database=lambda: None,
@@ -96,5 +123,9 @@ def test_warehouse_stats_with_no_load_run_fails_by_type_name(
         pytest=lambda: PytestCounts(0, 0),
     )
 
-    assert metrics.run(steps) == 1
+    try:
+        assert metrics.run(steps) == 1
+    finally:
+        with psycopg.connect(migrated_db, autocommit=True) as conn:
+            conn.execute(f"DROP SCHEMA IF EXISTS {PROBE_SCHEMA} CASCADE")
     assert capsys.readouterr().out == "metrics: failed at warehouse (NoLoadRunError)\n"
