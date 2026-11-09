@@ -723,6 +723,30 @@ def test_unexpected_failures_print_the_step_and_type_only(
     assert _no_sentinel(out)
 
 
+@pytest.mark.parametrize("command", ["template", "load"])
+def test_docker_down_is_its_own_failure_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    """Docker not running shows as DockerUnavailableError, not a bare CalledProcessError."""
+    from gcwrapped import docker
+
+    def docker_down(argv: list[str], **_kwargs: object) -> None:
+        assert argv[:2] == ["docker", "info"]  # compose is never reached
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(subprocess, "run", docker_down)
+    _use_ledger(monkeypatch, _write(tmp_path / "l.csv", HEADER_LINE, "yes,111,Sam Lee,1"))
+
+    assert _runner(command)(docker.start_database) == 1
+
+    assert capsys.readouterr().out == (
+        f"consent-{command}: failed at database (DockerUnavailableError)\n"
+    )
+
+
 def test_cli_subcommands_call_the_matching_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

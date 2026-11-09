@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TextIO
 
 from gcwrapped.consent import ALLOWLIST_VAR, AllowlistError, parse_allowlist
+from gcwrapped.docker import DockerUnavailableError, require_docker
 
 # What the dev stack uses (docker-compose.yml `name:` and port defaults; a test pins them).
 DEV_COMPOSE_PROJECT = "gc-wrapped"
@@ -252,13 +253,19 @@ def run(
     *,
     steps_for: Callable[[Plan], list[Step]] = build_steps,
     show: Callable[[str], None] = lambda s: print(s, flush=True),
+    preflight: Callable[[], None] = require_docker,
 ) -> int:
-    """Guards, then each step in order. Returns the failing step's exit status, or 0."""
+    """Guards, the Docker preflight, then each step in order. Returns the failing status, or 0."""
     try:
         plan = check_guards(env_file)
     except GuardError as exc:
         show(f"real-ingest: refused: {exc}")
         return 2
+    try:
+        preflight()  # `make e2e` starts compose; a stopped Docker gets its own failure line
+    except DockerUnavailableError as exc:
+        show(f"real-ingest: failed at docker ({type(exc).__name__})")
+        return 1
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = plan.log_dir / f"real-ingest-{stamp}.log"
     # ENV_FILE is set for every step so host-side gcw commands read this file, not the repo's .env.

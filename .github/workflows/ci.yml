@@ -170,11 +170,13 @@ jobs:
           test "$(psql 'SELECT count(*) FROM staging.stg_instagram__messages')" -gt 0
           # No staging or intermediate relation may live in analytics.
           test "$(psql "SELECT count(*) FROM pg_tables WHERE schemaname = 'analytics' AND tablename ~ '^(stg|int)_'")" -eq 0
-          test "$(psql "SELECT count(*) FROM pg_views WHERE schemaname = 'analytics'")" -eq 0
-          # The reader role: marts yes, the staging schema itself no.
+          # The only view in analytics is fct_message_eligibility (D75); every other mart is a table.
+          test "$(psql "SELECT string_agg(viewname, ',') FROM pg_views WHERE schemaname = 'analytics'")" = "fct_message_eligibility"
+          # The reader role: marts yes, the staging schema itself no, the eligibility view no.
           reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
           test "$(reader 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
           reader 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
+          reader 'SELECT 1 FROM analytics.fct_message_eligibility LIMIT 1' | grep -q "permission denied for view fct_message_eligibility"
           test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -gt 0
           grep -qx "target database: gcw_dev" e2e-1.log
       - name: make e2e (second run inserts nothing)
@@ -206,6 +208,37 @@ jobs:
           test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE NOT external_ok')" -gt 0
           make metrics ENV_FILE="$ENV_FILE" 2>&1 | tee consent-metrics.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "external-eligible messages: $yes_messages" consent-metrics.log
+      # D75: the eligibility mart is a view, so a consent change shows up the moment consent-load
+      # commits. Flip one "yes" sender to "no" in a copy of the synthetic ledger, load the copy, and
+      # query with no e2e or dbt build in between.
+      - name: Consent change shows up without a dbt build
+        run: |
+          psql() { docker compose --env-file "$ENV_FILE" exec -T db psql -U gcw -d gcw_dev -tA -c "$1"; }
+          before="$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE external_ok')"
+          FLIPPED="$RUNNER_TEMP/ci-consent/flipped.csv"
+          # Synthetic data only: copy the ledger, flip its first "yes" row to "no", print that row.
+          IFS=$'\t' read -r thread sender < <(uv run python - "$RUNNER_TEMP/ci-consent/senders.csv" "$FLIPPED" <<'PY'
+          import csv, sys
+          src, dst = sys.argv[1:3]
+          with open(src, newline="", encoding="utf-8") as f:
+              rows = list(csv.DictReader(f))
+          row = next(r for r in rows if r["consent"] == "yes")
+          row["consent"] = "no"
+          with open(dst, "w", newline="", encoding="utf-8") as f:
+              w = csv.DictWriter(f, fieldnames=["consent", "thread_id", "sender_name", "messages"])
+              w.writeheader()
+              w.writerows(rows)
+          print(row["thread_id"], row["sender_name"], sep="\t")
+          PY
+          )
+          flipped_messages="$(psql "SELECT count(*) FROM raw.messages WHERE thread_id = '$thread' AND sender_name = '$sender'")"
+          test "$flipped_messages" -gt 0
+          sed "s|^GCW_CONSENT_LEDGER=.*|GCW_CONSENT_LEDGER=$FLIPPED|" "$ENV_FILE" > "$RUNNER_TEMP/ci-flipped.env"
+          make consent-load ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-l3.log; test "${PIPESTATUS[0]}" -eq 0
+          expected=$((before - flipped_messages))
+          test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE external_ok')" -eq "$expected"
+          make metrics ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-metrics2.log; test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "external-eligible messages: $expected" consent-metrics2.log
       - name: Compose logs on failure
         if: failure()
         run: docker compose --env-file "$ENV_FILE" logs --no-color --tail=80 db dashboard

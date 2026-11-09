@@ -255,6 +255,7 @@ def test_consent_ledger_symlink_from_the_repo_to_outside_is_rejected(
     outside = tmp_path / "outside"
     outside.mkdir()
     link = REPO_ROOT / "tests" / "fixtures" / "ledger-guard-test-link"
+    link.unlink(missing_ok=True)  # a killed earlier run may have left the link behind
     link.symlink_to(outside)
     try:
         with pytest.raises(IsolationError):

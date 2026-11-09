@@ -25,8 +25,8 @@ from typing import Any
 import psycopg
 from psycopg import sql
 
-from gcwrapped.config import env_file_path
 from gcwrapped.db import database_name, database_url
+from gcwrapped.docker import start_database
 from gcwrapped.runs import RunSummary, latest_run
 
 ALLOWED_DATABASES = frozenset({"gcw_dev", "gcw_real", "gcw_ci", "gcw_test"})
@@ -181,19 +181,6 @@ class Steps:
 
 
 # --- Step 1: the database ------------------------------------------------------------------------
-
-
-def start_database() -> None:
-    """Start only the db service of the compose project ENV_FILE names; leave it running.
-
-    Output is captured, not shown: compose prints container names. `make down` stops it.
-    """
-    subprocess.run(
-        ["docker", "compose", "--env-file", env_file_path(), "up", "-d", "--wait", "db"],
-        check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-    )
 
 
 # --- Step 2: the warehouse -----------------------------------------------------------------------

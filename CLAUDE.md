@@ -12,7 +12,7 @@ Context is cleared after every session. Anything not written into the repo is lo
 - main is protected: all changes go through a PR.
 
 ## Current phase
-Phase 2 (Enrichment + evals): the eval score is reported automatically on every change. Checklist and next step: `docs/STATUS.md`; decisions D69-D73 in `docs/decisions.md`.
+Phase 2 (Enrichment + evals): the eval score is reported automatically on every change. Checklist and next step: `docs/STATUS.md`; Phase 2 decisions start at D69 in `docs/decisions.md`.
 Phase 1 (Pipeline) is complete: parse Instagram DMs (Meta "Download your information" export, JSON format) → clean/dedupe → Postgres `raw` schema → dbt models with tests → Airflow landing-zone DAG → Streamlit dashboard, run end to end with one command. Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
 Not yet in scope: embeddings, analysis of image/video content, React frontend, deploy, a second platform, a local LLM backend (Phase 3, D71).
 
@@ -85,6 +85,7 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 3. Overwrite docs/STATUS.md in the format below.
 4. Append new decisions to docs/decisions.md.
 5. Run make lint test, then create a branch, commit, push, and open a PR with gh. If the brief says to update an existing PR, push to that PR's branch instead of opening a new one.
+6. When the session has a real-data step for Ryan, the PR body includes the "Run in your terminal" block verbatim (the same block that ends your reply).
 
 ### docs/STATUS.md format (overwrite every session, max 40 lines)
 Sections, in this order:
