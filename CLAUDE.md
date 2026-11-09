@@ -28,7 +28,7 @@ Not yet in scope: embeddings, analysis of image/video content, React frontend, d
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
 - No external API calls from pipeline code yet (the first arrives in P2-3, behind redaction).
-- No message text leaves the machine except through the redaction module (D70), and only for messages external_ok under the consent ledger (D69). Claude Code never reads, creates or edits the real ledger.
+- No message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages external_ok under the consent ledger (D69). Claude Code never reads, creates or edits the real ledger.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 
 ## Stack
@@ -46,6 +46,7 @@ make dbt-deps / make dbt-build  # against gcw_dev only
 make airflow-up / dashboard-up  # Airflow UI :8080 / Streamlit dashboard
 make e2e [ENV_FILE=...]         # one-command end to end
 make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
+make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.

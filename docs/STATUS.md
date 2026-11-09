@@ -1,37 +1,36 @@
 # Status
-Last session: 2026-11-09 — P2-1b eligibility view, Docker preflight, METRICS rows
+Last session: 2026-11-09 — P2-2a redaction module and redaction-audit
 
 ## Phase & state
 Phase 2 (Enrichment + evals); Phase 1 complete.
-consent ledger [x] redaction [ ] tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
+consent ledger [x] redaction [~] (module + audit built; NER eval/gate = P2-2b) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
 
 ## Done this session
-- Resolved: Ryan's P2-1 real-data step (2026-11-09, as reported by Ryan): template 583 rows (new 583, kept 0, stale 0), modes 700/600, consent-load applied 002 and loaded 583 (yes 0, no 0, blank 583), real-ingest ok with dbt PASS=143 TOTAL=143, metrics yes 0 / eligible 0 / buildable 143, tree clean; CI on PR #30 green. Consent ledger ticked.
-- dbt: fct_message_eligibility is a view (D75). dbt_project.yml: reader grants listed per mart (dbt merges model-level grants into the folder's, so the view could not opt out); new marts get no grant until listed.
-- src/gcwrapped/docker.py (new): require_docker (`docker info`, output discarded, 30 s), DockerUnavailableError, start_database (moved from metrics.py; ledger.py no longer imports metrics for it).
-- real_ingest.py: preflight before the log is created; prints "real-ingest: failed at docker (DockerUnavailableError)". `make e2e` starts compose itself, so this is its Docker path.
-- ci.yml: reader denied on the view; analytics holds exactly one view; freshness step (flip one yes sender in a ledger copy, consent-load, no build, count drops by that sender's messages, metrics matches).
-- Tests: tests/test_docker.py, plus cases in test_ledger.py and test_real_ingest.py; isolation-guard symlink test removes a stale link first.
-- CLAUDE.md: phase line without D-range; session-end rule 6 (PR body carries the "Run in your terminal" block). README, METRICS rows (dbt 11/125/6/143, pytest 406+55 from main 468bca3), D75.
+- src/gcwrapped/redaction.py (new): MemberDirectory, Redactor.redact_thread, residual_member_tokens, load_model/RedactionModelError. Presidio + member-name/@handle/address/lenient-phone recognizers; own span replacement; per-call pseudonyms never returned; no network (sockets blocked in tests).
+- src/gcwrapped/redaction_audit.py (new), cli.py (lazy import), Makefile `redaction-audit`, log.py (Presidio loggers at ERROR).
+- pyproject/uv.lock: `redaction` group (presidio-analyzer 2.2.366, spacy 3.8.18, en_core_web_lg 3.8.0 wheel URL) included by `dev`; hypothesis 6.170.15 in dev. Airflow export verified to omit them.
+- Tests: tests/test_redaction.py (incl. hypothesis property), test_redaction_audit.py, test_redaction_audit_integration.py.
+- ci.yml: uv cache enabled on every setup-uv; e2e job "Redaction audit" step. README privacy bullet, CLAUDE.md (privacy rule, command). decisions.md: D76, D77 verbatim, D78.
 
 ## Deviations from brief
-- Grants: `grants={'+select': []}` in the model did not clobber the folder grant (verified with dbt ls), so grants moved to per-model entries in dbt_project.yml.
-- CI's "no views in analytics" check now expects exactly fct_message_eligibility.
-- Freshness: CI only. No integration test, because the view is built by dbt and a test copy would duplicate its definition. I ran the CI step's script locally against gcw_dev with the default .env (ledger override via make variable): eligible 97 -> 80, metrics 80; ledger reloaded afterwards.
+- Member directory read from raw.messages (senders + reaction actors), not analytics.dim_members: same facts, no dbt dependency (D78).
+- Added a lenient phone regex, a person-span merge and a "pattern containing a name wins" rule: the property test and a handle case showed leaks without them (D78).
+- Ambiguity (D77.4) judged within the thread (D78).
+- Dependencies are in a group under `dev`, not runtime deps, so the Airflow image is unchanged (D78).
 
 ## Checks
-- make lint: pass. make test: 415 passed, 37 deselected. make test-integration: 37 passed. make test-warehouse: 18 passed.
-- make e2e (.env): dbt PASS=143 WARN=0 ERROR=0 TOTAL=143, view in analytics, gcw_reader denied (psql), 6 marts granted.
-- make metrics (gcw_dev, end of session): yes 6, eligible 97, buildable 143, pytest 415 + 55.
-- Docker-down path: stubbed subprocess and a fake docker binary only (Docker not stopped).
+- make lint: pass. make test: 485 passed, 41 deselected. make test-integration: 41 passed. make test-warehouse: 18 passed.
+- make synth && make e2e (.env): exit 0. make redaction-audit (gcw_dev): scanned 170, with text 117, changed 10, person 29, other types 0, residual 0, 0.56 s, "redaction-audit: ok". make metrics raw messages: 170 (equal).
+- CI on this branch: not yet seen.
 
 ## Not verified
-- CI on this branch (freshness step, reader denial on the view). Real-data step: see the PR.
+- CI (new audit step, uv cache, model install time). Real data: `make redaction-audit ENV_FILE=$HOME/gcw-private/real.env`.
 
 ## Open issues and questions
-- One metrics run right after test-integration failed "failed at dbt (CalledProcessError)" earlier; not reproduced. Cause not found.
+- One metrics run right after test-integration failed "failed at dbt (CalledProcessError)" earlier; not reproduced.
 - tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled; reject as unparsable if touched again.
 - Question: real-ingest-synthetic run 3 takes ~323 s; parked.
+- Question: nickname/misspelling gap stays until a real-data audit or P2-2b shows its size.
 
 ## Suggested next session
-P2-2: redaction module (D70). Tagging (P2-3) must read eligibility at send time per batch (D75).
+P2-2b: NER eval set, scorer with bootstrap CIs, baseline and CI gate (D76). Then P2-3 tagging.

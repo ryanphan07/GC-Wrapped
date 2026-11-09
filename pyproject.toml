@@ -18,6 +18,9 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "hypothesis==6.170.15",
+    # Presidio, spaCy and the model: dev-group only, so the Airflow image (--no-dev) never gets them.
+    {include-group = "redaction"},
 ]
 dbt = [
     "dbt-postgres>=1.10",
@@ -25,6 +28,11 @@ dbt = [
 dashboard = [
     "streamlit",
     "pandas",
+]
+redaction = [
+    "presidio-analyzer==2.2.366",
+    "spacy==3.8.18",
+    "en-core-web-lg",
 ]
 
 [build-system]
@@ -60,3 +68,6 @@ markers = [
     "integration: needs a running Postgres (writes only to gcw_test); run with `make test-integration`",
     "warehouse: needs gcw_dev after migrate, ingest and dbt build, plus the gcw_reader role; run with `make test-warehouse`",
 ]
+
+[tool.uv.sources]
+en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" }
