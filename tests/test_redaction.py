@@ -5,11 +5,13 @@ scored NER set and its gate are P2-2b. Everything else is deterministic and must
 """
 
 import dataclasses
+import itertools
 import re
 import socket
 import string
 import unicodedata
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -28,6 +30,7 @@ from gcwrapped.redaction import (
     load_model,
     residual_member_tokens,
 )
+from reference_redaction_98df696 import ReferenceDirectory
 
 T1 = "1000000000000001"
 T2 = "1000000000000002"
@@ -459,13 +462,40 @@ _SEPARATORS = st.sampled_from([" ", ", ", " 🔥 ", "-", " O'"])
 _FILLER = st.sampled_from(["hey", "so", "lol", "ok", "then", "yesterday", "and", "the", "to"])
 
 
+_ASCII_WORD = st.text(alphabet=string.ascii_letters, min_size=2, max_size=8)
+
+
 @st.composite
-def display_names(draw: st.DrawFn) -> str:
+def decorated_names(draw: st.DrawFn) -> tuple[str, str]:
+    """(display name, how someone types it plainly): the name as written, and the same words typed
+    with ordinary letters. Decorations (D83): all or one token in enclosed letters, a "™" suffix, a
+    "⑵" suffix. Undecorated names are their own plain form."""
+    if draw(st.integers(0, 2)) == 0:
+        words = draw(st.lists(_ASCII_WORD, min_size=1, max_size=3))
+        seps = [draw(st.sampled_from([" ", ", ", "-"])) for _ in words[1:]]
+
+        def join(parts: list[str]) -> str:
+            return parts[0] + "".join(sep + w for sep, w in zip(seps, parts[1:], strict=True))
+
+        plain = join(words)
+        kind = draw(st.sampled_from(["enclosed_all", "enclosed_one", "tm", "paren2"]))
+        if kind == "enclosed_all":
+            return _enclosed(plain), plain
+        if kind == "enclosed_one":
+            k = draw(st.integers(0, len(words) - 1))
+            return join([_enclosed(w) if i == k else w for i, w in enumerate(words)]), plain
+        return plain + ("\u2122" if kind == "tm" else "\u2475"), plain
     words = draw(st.lists(_LETTERS, min_size=1, max_size=3))
     name = words[0]
     for word in words[1:]:
         name += draw(_SEPARATORS) + word
-    return name + draw(st.sampled_from(["", " 🔥", "!"]))
+    name += draw(st.sampled_from(["", " 🔥", "!"]))
+    return name, name
+
+
+@st.composite
+def display_names(draw: st.DrawFn) -> str:
+    return draw(decorated_names())[0]
 
 
 def _strip_accents(text: str) -> str:
@@ -709,3 +739,175 @@ def test_d81_every_word_break_that_folds_to_alphanumerics(nlp: Language) -> None
         assert residual_member_tokens(out.text, names) == 0, repr(text)
         assert "<PERSON" in out.text, repr(text)
         assert out.backstop_adjacent == out.backstop_standalone == 0, repr(text)
+
+
+# --- Two segmentations, used as a union (D83) -------------------------------------------------
+
+
+def _enclosed(text: str) -> str:
+    """ASCII letters as enclosed letters (U+24B6-24CF / U+24D0-24E9): symbols, not alphanumerics."""
+    return "".join(
+        chr(0x24B6 + ord(c) - 65)
+        if "A" <= c <= "Z"
+        else chr(0x24D0 + ord(c) - 97)
+        if "a" <= c <= "z"
+        else c
+        for c in text
+    )
+
+
+def _redact(
+    nlp: Language, names: list[str], text: str
+) -> tuple[MemberDirectory, redaction.RedactedMessage]:
+    directory = MemberDirectory([(T1, n) for n in names])
+    out = Redactor(directory, nlp).redact_thread(T1, [(ZED, text)])[0]
+    assert out.text is not None
+    return directory, out
+
+
+def test_d83_enclosed_letter_name_is_matched_by_a_plain_mention(nlp: Language) -> None:
+    name = _enclosed("SENTINELNAMEJ")
+    directory, out = _redact(nlp, [name], "hey sentinelnamej and SENTINELNAMEJ")
+    assert out.text is not None and "sentinelnamej" not in out.text.casefold()
+    assert residual_member_tokens(out.text, directory) == 0
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+
+
+def test_d83_name_ending_in_a_raw_alphanumeric_symbol_matches_a_plain_mention(
+    nlp: Language,
+) -> None:
+    _, out = _redact(nlp, ["SENTINELNAMEK⑵"], "hi sentinelnamek there")
+    assert out.text is not None and "sentinelnamek" not in out.text.casefold()
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+
+
+def test_d83_name_followed_by_a_symbol_that_is_alphanumeric_but_folds_to_a_break(
+    nlp: Language,
+) -> None:
+    directory, out = _redact(nlp, ["SENTINELNAMEL"], "ping SENTINELNAMEL⑴ now")
+    assert out.text is not None and "SENTINELNAMEL" not in out.text
+    assert residual_member_tokens(out.text, directory) == 0
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+    assert "⑴" not in out.text  # the whole raw word is replaced, no fragment is left
+
+
+def test_d83_mention_written_in_enclosed_letters_is_redacted(nlp: Language) -> None:
+    directory, out = _redact(nlp, ["SENTINELNAMEM"], f"hi {_enclosed('sentinelnamem')} ok")
+    assert out.text is not None and "ⓢ" not in out.text
+    assert residual_member_tokens(out.text, directory) == 0
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+
+
+@settings(
+    max_examples=200,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.differing_executors],
+)
+@given(
+    pairs=st.lists(decorated_names(), min_size=1, max_size=3, unique_by=lambda p: p[0]),
+    glue=st.sampled_from([" ", ", ", " - ", "\u2122 ", " \u2475 "]),
+    form=st.sampled_from(["same", "lower", "upper"]),
+)
+def test_d83_property_plain_mentions_of_decorated_names_need_no_backstop(
+    nlp: Language, pairs: list[tuple[str, str]], glue: str, form: str
+) -> None:
+    names = [name for name, _ in pairs]
+    mentions = [
+        plain.lower() if form == "lower" else plain.upper() if form == "upper" else plain
+        for _, plain in pairs
+    ]
+    text = "hey " + glue.join(mentions) + " ok"
+    directory, out = _redact(nlp, names, text)
+    assert out.text is not None
+    assert residual_member_tokens(out.text, directory) == 0
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+    # every plain mention was found: none of its words is left in the output
+    bare = redaction._PLACEHOLDER.sub(" ", out.text).casefold()
+    for _, plain in pairs:
+        for word in re.findall(r"[A-Za-z]{2,}", plain):
+            assert word.casefold() not in re.findall(r"[a-z]+", bare), (word, out.text)
+
+
+def _mirror_symbol_breaks() -> list[str]:
+    """BMP characters that are alphanumeric on their own (so a raw word keeps them) but whose fold
+    contains a character that is not alphanumeric: "⑴" folds to "(1)", "⒈" to "1.", "½" to "1", a
+    fraction slash and "2"."""
+    out = []
+    for code in range(0x10000):
+        ch = chr(code)
+        if ch.isalnum() and not all(c.isalnum() for c in redaction._fold_char(ch)):
+            out.append(ch)
+    return out
+
+
+def test_d83_mirror_sweep_name_beside_an_alphanumeric_that_folds_to_a_break(
+    nlp: Language,
+) -> None:
+    """Both sides of every such character. A name is told apart from its neighbour only on a side
+    where the fold starts (after the name) or ends (before it) with a non-alphanumeric. "priya" +
+    one-half folds to "priya1" plus a slash plus "2": a name glued to a digit, the documented gap
+    (D81, D83)."""
+    breaks = _mirror_symbol_breaks()
+    assert {"\u2474", "\u2488", "\u00bd"} <= set(breaks)  # the sweep is not empty
+    names = MemberDirectory([(T1, "SENTINELNAMEA Priya")])
+    redactor = Redactor(names, nlp)
+    texts = []
+    for ch in breaks:
+        fold = redaction._fold_char(ch)
+        if not fold[0].isalnum():
+            texts.append(f"priya{ch}")
+        if not fold[-1].isalnum():
+            texts.append(f"{ch}priya")
+    assert len(texts) > 100
+    for text in texts:
+        assert len(names.find(text)) == 1, repr(text)
+    outs = redactor.redact_thread(T1, [(ZED, t) for t in texts])
+    for text, out in zip(texts, outs, strict=True):
+        assert out.text is not None
+        assert residual_member_tokens(out.text, names) == 0, repr(text)
+        assert "<PERSON" in out.text and "riya" not in out.text, repr(text)
+        assert out.backstop_adjacent == out.backstop_standalone == 0, repr(text)
+
+
+# --- Coverage never drops against the pre-D81 matcher (D83) ------------------------------------
+
+_SYMBOL_GLUE = st.sampled_from(
+    ["", " ", "\u2122", "\u2120", "\u338f", "\u2474", "\u2488", "\u00bd", "\u24d9", ", "]
+)
+
+
+@st.composite
+def reference_texts(draw: st.DrawFn, pairs: list[tuple[str, str]]) -> str:
+    pieces = []
+    for _ in range(draw(st.integers(1, 6))):
+        name, plain = draw(st.sampled_from(pairs))
+        shown = draw(st.sampled_from([name, plain, _enclosed(plain), plain.upper(), "x" + plain]))
+        pieces.append(shown + draw(_SYMBOL_GLUE))
+    return draw(_SYMBOL_GLUE).join(pieces)
+
+
+@settings(max_examples=500, deadline=None, derandomize=True)
+@given(
+    pairs=st.lists(decorated_names(), min_size=1, max_size=4, unique_by=lambda p: p[0]),
+    data=st.data(),
+)
+def test_d83_every_character_the_reference_matcher_covered_is_still_covered(
+    pairs: list[tuple[str, str]], data: st.DataObject
+) -> None:
+    members = [(T1, name) for name, _ in pairs]
+    text = data.draw(reference_texts(pairs))
+    reference = ReferenceDirectory(members).find(text)
+    now = MemberDirectory(members).find(text)
+    covered = {i for m in now for i in range(m.start, m.end)}
+    for ref in reference:
+        assert set(range(ref.start, ref.end)) <= covered, (text, members)
+    starts = [m.start for m in now]
+    assert starts == sorted(starts)
+    assert all(a.end <= b.start for a, b in itertools.pairwise(now))  # non-overlapping
+
+
+def test_d83_src_never_imports_the_frozen_reference() -> None:
+    root = Path(__file__).resolve().parent.parent / "src"
+    for path in root.rglob("*.py"):
+        assert "reference_redaction" not in path.read_text(encoding="utf-8"), path
