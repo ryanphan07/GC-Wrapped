@@ -941,7 +941,7 @@ def _check_glued(
     redactor = _RecordsSpans(names, nlp)
     texts = [f"{a}{g}{b}" for g in glues]
     outs = redactor.redact_thread(T1, [(ZED, t) for t in texts])  # no exception
-    assert len(redactor.handed) == 1 or len(redactor.handed) == len(texts)
+    assert len(redactor.handed) == len(texts)
     for text, out, spans in zip(texts, outs, redactor.handed, strict=True):
         assert out.text is not None
         assert "<PERSON" in out.text, repr(text)

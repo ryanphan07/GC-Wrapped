@@ -16,15 +16,17 @@ consent ledger [x] redaction [x] (P2-2a; NER eval/gate = P2-2b, before any exter
 - Glued-name tests PASSED on unchanged main (guards, not a bug): no redaction.py change, no decision added.
 - Sweep excludes "⒈" (folds to "1.", starts alphanumeric); it is covered by the explicit parametrized test. Sweep covers 45 characters.
 - Allowlist edits approved by Ryan: ci.yml lines 42, 100, 162 and .env.example line 46 (new ID 51928374650192837 appended). Nothing else in ci.yml changed.
+- CI e2e root cause (PR #36 runs 42819080491, 42819103532): the "Consent ledger" step failed at .github/workflows/ci.yml:214 (`new rows added: 0`; got 1). `consent_ledger_rows` (tests/synthetic/instagram.py:~336) only listed senders in the overlap of export_a and export_b, but e2e ingests both, so the decorated thread's third member (SENTINELDECB™, written only outside the overlap) was in the warehouse with no ledger row. Fix: ledger now lists every sender in the full history (12 rows, was 11); with one export ingested the extras are only stale. No privacy check, ci.yml step or redaction.py touched.
+- Local dev landing (data/landing) predated the 4th thread, so make e2e ingested nothing new; regenerated with `instagram.py --out data/landing` (synthetic only), then e2e inserted 30 rows.
+- tests/test_redaction.py _check_glued: assertion tightened to `len(redactor.handed) == len(texts)`.
 - Tests adapted for the 4th thread: tests/test_consent.py (ID unpacking, shape/allowlist counts in two tests), tests/test_env_file.py (ID unpacking).
 
 ## Checks
 - make lint: pass. make test: 529 passed (42 deselected). make test-integration: 42 passed (528 deselected). Baseline 524 / 42. (Counts from pytest output.)
-- make synth && make e2e && make redaction-audit (gcw_dev, .env): residual 0, backstop 0, ok, BUT the new thread was not ingested (dev .env edit denied), so raw-only/folded-only/match lines are 0 and the brief's >= 1 criteria are NOT shown.
+- make synth && make e2e && make redaction-audit (gcw_dev, .env, after fix): member-name tokens remaining 0, backstop replacements 0, redaction-audit: ok; directory tokens raw-only: 2; directory tokens folded-only: 3; messages with a match on a folded-only token: 7. make consent-template: new rows added: 0. make lint test: 529 passed; make test-integration: 42 passed.
 
 ## Not verified
-- Dev `.env` line 33 (GCW_THREAD_ALLOWLIST) must end `,51928374650192837`. Then: make synth && make e2e && make redaction-audit; expect directory tokens raw-only >= 1, folded-only >= 1, messages with a match on a folded-only token >= 1, residual 0, backstop 0, ok.
-- CI not yet seen.
+- CI rerun on PR #36 after this push.
 - Real data: none (redaction.py unchanged).
 
 ## Open issues and questions

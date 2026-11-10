@@ -331,15 +331,16 @@ def _histories(seed: int) -> list[list[Message]]:
 
 
 def consent_ledger_rows(seed: int = 1234) -> list[ledger.LedgerRow]:
-    """Synthetic ledger rows: every sender who wrote in the part of a thread that both exports
-    contain (so the sender is in the warehouse whichever export was ingested), with the consent
-    from CONSENT_BY_SENDER and their message count over the full history."""
+    """Synthetic ledger rows: every sender who wrote anywhere in a thread's full history, with the
+    consent from CONSENT_BY_SENDER and their message count over the full history. `make e2e`
+    ingests both exports, so the warehouse holds the union of senders; a sender seen in only one
+    export (the decorated thread's third name) would otherwise be missing and the CI template
+    step would add a row. With one export ingested the extra rows are only stale (allowed)."""
     rows: list[ledger.LedgerRow] = []
-    for (_folder, _title, _participants, count), thread_id, history in zip(
+    for (_folder, _title, _participants, _count), thread_id, history in zip(
         THREADS, SYNTHETIC_THREAD_IDS, _histories(seed), strict=True
     ):
-        in_both = {m[fmt.KEY_SENDER] for m in history[count // 3 : count * 3 // 4]}
-        totals = {name: 0 for name in in_both}
+        totals = {m[fmt.KEY_SENDER]: 0 for m in history if fmt.KEY_SENDER in m}
         for message in history:
             if message[fmt.KEY_SENDER] in totals:
                 totals[message[fmt.KEY_SENDER]] += 1
