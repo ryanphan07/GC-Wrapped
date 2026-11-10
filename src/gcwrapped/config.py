@@ -99,6 +99,16 @@ class LedgerSettings(_HostSettings):
     gcw_consent_ledger: str = ""
 
 
+class LabelSettings(_HostSettings):
+    """Where the labeling tool keeps labels and the frozen samples (D86). Empty means not set.
+
+    A plain string, checked by `gcwrapped.labeling.commands.resolve_label_dir`, which refuses
+    anything inside the repo.
+    """
+
+    gcw_label_dir: str = ""
+
+
 class DatabaseSettings(_HostSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
 

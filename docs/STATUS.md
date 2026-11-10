@@ -1,40 +1,39 @@
 # Status
-Last session: 2026-11-10 — P2-2a close-out: real audit recorded, glued-name guard, synthetic decorated names
+Last session: 2026-11-10 — P2-3a (burst S2): labeling tool, synthetic labeled sets, burst plan, $0 local-only decision
 
 ## Phase & state
-Phase 2 (Enrichment + evals); Phase 1 complete. P2-2a is done (real audit met the pass rule). P2-2b (NER eval and D76 gate) is required only before any external model call.
-consent ledger [x] redaction [x] (P2-2a; NER eval/gate = P2-2b, before any external call) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
+Phase 2 (Enrichment + evals); burst plan in CLAUDE.md. P2-2b (NER gate) is needed only before a hosted provider (D84).
+consent ledger [x] redaction [x] labeling tool [x] synthetic labeled sets [x] real labels [ ] (Ryan) tagging pipeline [ ] eval harness + CI eval [ ] real eval [ ] profiles [ ]
 
 ## Done this session
-- METRICS.md: real audit row after #35 appended verbatim (commit e4cf89e); lockfile confirms en-core-web-lg 3.8.0, presidio-analyzer 2.2.366.
-- tests/test_redaction.py: glued-name tests (⑴, ⒈, ™; sweep over every char whose fold starts and ends non-alphanumeric) with a spy on the spans handed to replacement (non-overlapping).
-- tests/synthetic/instagram.py: 4th thread (decorated_51928374650192837): members in enclosed letters, ending "™", ending "⑵"; messages mention each in plain letters. `build_conversation` takes optional `texts`; earlier threads' histories are unchanged.
-- tests/test_redaction_audit.py: stale ™ comment fixed; new test that the decorated thread gives raw-only and folded-only tokens.
-- .env.example and .github/workflows/ci.yml: new thread ID added to the allowlist.
+- docs: D84-D86 verbatim, D87 (details they leave open). CLAUDE.md: phase, stack, scope, API line match D84; Burst plan; label-* commands. README: labeling bullet, quickstart uses `make synth`. .env.example: GCW_LABEL_DIR.
+- src/gcwrapped/labeling/: schema (constants S3 imports), source (eligible SQL, context), sampling, files (writers, loader), flows, terminal, summary, commands. config.py LabelSettings; cli.py three subcommands.
+- Makefile: label-tags/-questions/-summary; synth-landing; `make synth` also replaces data/landing; `make e2e` regenerates it first on the default .env only.
+- tests/synthetic: 5th thread evalset_61827394501827364 appended (earlier histories pinned by digest), eval_set.py, write_eval_fixtures.py; tests/fixtures/eval/*.csv.
+- New tests: eval fixtures + loader, sampling, flows, commands (guards, sentinel), terminal (pty), Makefile dry run, integration. test_consent.py counts for 5 threads.
+- .env.example and ci.yml lines 42, 100, 162: new ID in the allowlist; nothing else in ci.yml.
+- Resolved: the stale dev landing (#36) is prevented by construction.
 
 ## Deviations from brief
-- Glued-name tests PASSED on unchanged main (guards, not a bug): no redaction.py change, no decision added.
-- Sweep excludes "⒈" (folds to "1.", starts alphanumeric); it is covered by the explicit parametrized test. Sweep covers 45 characters.
-- Allowlist edits approved by Ryan: ci.yml lines 42, 100, 162 and .env.example line 46 (new ID 51928374650192837 appended). Nothing else in ci.yml changed.
-- CI e2e root cause (PR #36 runs 42819080491, 42819103532): the "Consent ledger" step failed at .github/workflows/ci.yml:214 (`new rows added: 0`; got 1). `consent_ledger_rows` (tests/synthetic/instagram.py:~336) only listed senders in the overlap of export_a and export_b, but e2e ingests both, so the decorated thread's third member (SENTINELDECB™, written only outside the overlap) was in the warehouse with no ledger row. Fix: ledger now lists every sender in the full history (12 rows, was 11); with one export ingested the extras are only stale. No privacy check, ci.yml step or redaction.py touched.
-- Local dev landing (data/landing) predated the 4th thread, so make e2e ingested nothing new; regenerated with `instagram.py --out data/landing` (synthetic only), then e2e inserted 30 rows.
-- tests/test_redaction.py _check_glued: assertion tightened to `len(redactor.handed) == len(texts)`.
-- Tests adapted for the 4th thread: tests/test_consent.py (ID unpacking, shape/allowlist counts in two tests), tests/test_env_file.py (ID unpacking).
+- Task 7: no target wrote data/landing (`make synth` wrote tests/fixtures/synthetic only). Per Ryan, `make synth` now also replaces data/landing and `make e2e` regenerates it first. Staleness is prevented by construction, not detected by comparison: no test or tool may read or hash data/ (CLAUDE.md, no exception), so tests read `make -n` output.
+- e2e regenerates only on the default .env: a real env file may leave its landing at ./data/landing (real_ingest.py) and regeneration deletes what is there.
+- CLAUDE.md edits beyond the brief: the "no external API calls" line (stale against D84) and the label-* command line. Added D87 and `question_skips.csv` (message_id, skipped_at; resume must not re-show skips). Sentiment keys g/n/b.
+- "tags labeled: n of N" uses the frozen sample size (193 on gcw_dev, pool under 200). Sender names are not shown in flows (D87).
 
 ## Checks
-- make lint: pass. make test: 529 passed (42 deselected). make test-integration: 42 passed (528 deselected). Baseline 524 / 42. (Counts from pytest output.)
-- make synth && make e2e && make redaction-audit (gcw_dev, .env, after fix): member-name tokens remaining 0, backstop replacements 0, redaction-audit: ok; directory tokens raw-only: 2; directory tokens folded-only: 3; messages with a match on a folded-only token: 7. make consent-template: new rows added: 0. make lint test: 529 passed; make test-integration: 42 passed.
+- make lint: pass. make test: 641 passed (46 deselected), baseline 529. make test-integration: 46 passed (641 deselected), baseline 42. (pytest output)
+- gcw_dev (.env, allowlist overridden on the command line): make e2e twice; dbt build PASS=143 ERROR=0 (airflow task log); second run rows inserted 0, parsed 360. redaction-audit: scanned 360, member-name tokens remaining 0, backstop 0.
+- gcw_dev scripted runs, label dir outside the repo: label-tags 5 then resumed to 6; label-questions 1 answered (skip then undo); label-summary printed the 19 fixed lines. Label dir inside the repo: non-zero, fixed message.
 
 ## Not verified
-- CI rerun on PR #36 after this push.
-- Real data: none (redaction.py unchanged).
+- CI on the PR. Hand use in a real terminal (tested via pty and pipes).
+- Dev .env (gitignored, not edited): `GCW_THREAD_ALLOWLIST=1784563920183746,293847561029384,48271936502817364,51928374650192837,61827394501827364`.
+- Real data: the labeling run below; needs consent-load and a dbt build on the real stack first.
 
 ## Open issues and questions
-- Stop-word over-redaction: D82, revisit in P2-3 only if the tagging eval shows a cost.
-- Names glued to letters/digits (incl. "name½") and nickname gap: only P2-2b measures them.
-- tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled.
-- real-ingest-synthetic run 3 takes ~323 s; parked.
-- Redaction deps are dev-group only; P2-3 must decide where tagging runs.
+- Stop-word over-redaction (D82); glued names and nicknames: only P2-2b measures them.
+- tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled. real-ingest-synthetic run 3 ~323 s; parked.
+- Redaction deps are dev-group only; S3 must decide where tagging runs. Revoked consent leaves old label rows (D87); eval must drop them.
 
 ## Suggested next session
-Planning chat sets the burst plan.
+S3: local llama.cpp backend (hosted fails closed, D84) and tagging pipeline, importing gcwrapped.labeling.schema and source. S4 needs Ryan's labels.

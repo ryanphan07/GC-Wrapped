@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from gcwrapped import ledger, metrics, real_ingest
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
+from gcwrapped.labeling import commands as labeling
 from gcwrapped.landing import check_landing, find_export_roots
 from gcwrapped.load import LoadError, load_messages
 from gcwrapped.log import setup_logging
@@ -92,6 +93,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "consent-load",
         help="validate the whole consent ledger, then load it into raw.sender_consent",
+    )
+    sub.add_parser(
+        "label-tags",
+        help="label the frozen 200-message tag sample in this terminal (D85, D86)",
+    )
+    sub.add_parser(
+        "label-questions",
+        help="write retrieval questions from the frozen candidates in this terminal (D86)",
+    )
+    sub.add_parser(
+        "label-summary",
+        help="aggregate counts about the labels so far (fixed lines only)",
     )
     real = sub.add_parser(
         "real-ingest",
@@ -282,6 +295,12 @@ def _run(argv: Sequence[str] | None) -> int:
         from gcwrapped import redaction_audit
 
         return redaction_audit.run()
+    if args.command == "label-tags":
+        return labeling.run_label_tags()
+    if args.command == "label-questions":
+        return labeling.run_label_questions()
+    if args.command == "label-summary":
+        return labeling.run_label_summary()
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

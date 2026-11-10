@@ -1,0 +1,112 @@
+"""The synthetic labeled sets (D72, D85, D86): the data behind tests/fixtures/eval/.
+
+Every message here is invented. The messages are placed, in this order, into the generator's
+"evalset" thread (tests/synthetic/instagram.py), which only "yes" senders write in, so each one is
+eligible. `write_eval_fixtures.py` turns these lists into the two CSVs with the real parser's
+message IDs; a test keeps the committed CSVs equal to that output.
+
+No names, numbers or links that look like personal data appear in the texts: the redaction layer
+would rewrite them, and the labels describe the text as written.
+"""
+
+# (topic, sentiment, text): 10 topics x 6 messages; every topic shows all three sentiments.
+EVAL_MESSAGES: list[tuple[str, str, str]] = [
+    ("plans", "positive", "dinner at 7 on saturday works for me"),
+    ("plans", "neutral", "we should pick a day for the road trip"),
+    ("plans", "positive", "i booked the cabin for the first weekend of march"),
+    ("plans", "negative", "i have to cancel brunch tomorrow, my shift got moved"),
+    ("plans", "neutral", "meeting at the train station at 9am sharp"),
+    ("plans", "neutral", "can someone drive? my car is in the shop until thursday"),
+    ("school", "negative", "the organic chemistry midterm is on friday and i have not started"),
+    ("school", "positive", "got an A on my statistics project!"),
+    ("school", "neutral", "professor moved the essay deadline to next monday"),
+    ("school", "negative", "the library is packed, i cannot find a seat anywhere"),
+    ("school", "neutral", "anyone have notes from the lecture on thermodynamics"),
+    ("school", "positive", "finally finished my thesis outline"),
+    ("work", "negative", "my manager scheduled another meeting that could have been an email"),
+    ("work", "positive", "i got the internship offer at the logistics company"),
+    ("work", "neutral", "starting my new shift at the cafe at noon tomorrow"),
+    ("work", "negative", "the deploy broke production again and i am on call all night"),
+    ("work", "neutral", "updated my resume and sent it to three recruiters"),
+    ("work", "positive", "they approved my raise, 5 percent starting next month"),
+    ("food", "positive", "that ramen place downtown was incredible"),
+    ("food", "negative", "the leftover curry made me sick, never again"),
+    ("food", "neutral", "i am making pasta tonight, want some"),
+    ("food", "positive", "best tacos i have had in years, we have to go back"),
+    ("food", "neutral", "we need to buy groceries, we are out of eggs and milk"),
+    ("food", "negative", "the pizza arrived cold and an hour late"),
+    ("entertainment", "positive", "the new season of that space show is amazing"),
+    ("entertainment", "negative", "the movie was way too long and the ending made no sense"),
+    ("entertainment", "neutral", "the concert tickets go on sale friday at 10"),
+    ("entertainment", "positive", "this playlist is perfect for the drive"),
+    ("entertainment", "neutral", "i started playing that farming game everyone talks about"),
+    ("entertainment", "negative", "the sequel was so disappointing"),
+    ("sports_fitness", "positive", "just ran my first 10k in under an hour"),
+    ("sports_fitness", "negative", "i pulled my hamstring at soccer practice"),
+    ("sports_fitness", "neutral", "gym at 6am tomorrow, who is in"),
+    ("sports_fitness", "positive", "our team won the playoff game in overtime"),
+    ("sports_fitness", "neutral", "the basketball game starts at 8 tonight"),
+    ("sports_fitness", "negative", "i skipped the gym all week and feel terrible"),
+    ("relationships", "positive", "my sister is getting engaged, i am so happy for her"),
+    ("relationships", "negative", "i had a huge fight with my roommate about the dishes"),
+    ("relationships", "neutral", "my cousin is visiting from out of town next week"),
+    ("relationships", "positive", "our anniversary dinner was so romantic"),
+    ("relationships", "negative", "i think my friend is avoiding me lately"),
+    ("relationships", "neutral", "going to my parents house for the holidays"),
+    ("banter", "positive", "haha you are ridiculous, i cannot breathe"),
+    ("banter", "neutral", "lol sure whatever you say"),
+    ("banter", "negative", "ugh you are the worst, stop spoiling it"),
+    ("banter", "positive", "that meme is the funniest thing i have seen all week"),
+    ("banter", "neutral", "who let you have the aux cord"),
+    ("banter", "negative", "bold of you to assume you would win that bet, you lost"),
+    ("news", "neutral", "apparently the city is closing the main bridge for repairs next month"),
+    ("news", "negative", "did you see the storm warning, flooding expected tonight"),
+    ("news", "positive", "they finally announced the new park downtown opens in june"),
+    ("news", "neutral", "the election results come out tomorrow morning"),
+    ("news", "negative", "gas prices went up again this week"),
+    ("news", "positive", "scientists announced a breakthrough in battery technology"),
+    ("other", "neutral", "what time is it over there"),
+    ("other", "positive", "good morning everyone"),
+    ("other", "negative", "my phone battery is dying again"),
+    ("other", "neutral", "does anyone know a good dentist"),
+    ("other", "neutral", "sorry, wrong chat"),
+    ("other", "positive", "thanks again for yesterday"),
+]
+
+EVAL_TEXTS = [text for _, _, text in EVAL_MESSAGES]
+
+# (question, index of the shown message, indexes of extra gold messages). The question is a
+# paraphrase, never the message itself (D86). The gold is the shown message plus the extras.
+EVAL_QUESTIONS: list[tuple[str, int, tuple[int, ...]]] = [
+    ("what time are we meeting at the train station", 4, ()),
+    ("which weekend is the cabin booked for", 2, ()),
+    ("why is someone cancelling brunch", 3, ()),
+    ("whose car is in the shop and until when", 5, ()),
+    ("when is the organic chemistry midterm", 6, ()),
+    ("what grade came back for the statistics project", 7, ()),
+    ("what is the new essay deadline", 8, ()),
+    ("what was wrong with the library", 9, ()),
+    ("which company made an internship offer", 13, ()),
+    ("what time does the cafe shift start tomorrow", 14, ()),
+    ("how big was the raise", 17, ()),
+    ("what went wrong with the deployment", 15, ()),
+    ("which restaurant served incredible ramen", 18, ()),
+    ("why did the leftover curry cause problems", 19, ()),
+    ("what are we out of at home", 22, ()),
+    ("what was wrong with the pizza delivery", 23, ()),
+    ("when do the concert tickets go on sale", 26, ()),
+    ("what did someone think of the movie's ending", 25, ()),
+    ("how fast was the first 10k", 30, ()),
+    ("what injury happened at soccer practice", 31, ()),
+    ("what time is the gym session tomorrow", 32, ()),
+    ("when does the basketball game start", 34, ()),
+    ("who is getting engaged", 36, ()),
+    ("what was the roommate argument about", 37, ()),
+    ("who is visiting next week", 38, ()),
+    ("what is closing next month for repairs", 48, ()),
+    ("what is expected tonight according to the storm warning", 49, ()),
+    ("when does the new park open", 50, ()),
+    ("what are the plans for saturday dinner and who can drive", 0, (5,)),
+    ("what was decided about the road trip and where are we staying", 1, (2,)),
+    ("who plans to go to the gym and who skipped it", 35, (32,)),
+]

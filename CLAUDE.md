@@ -12,9 +12,9 @@ Context is cleared after every session. Anything not written into the repo is lo
 - main is protected: all changes go through a PR.
 
 ## Current phase
-Phase 2 (Enrichment + evals): the eval score is reported automatically on every change. Checklist and next step: `docs/STATUS.md`; Phase 2 decisions start at D69 in `docs/decisions.md`.
+Phase 2 (Enrichment + evals): the eval score is reported automatically on every change. Checklist and next step: `docs/STATUS.md`; Phase 2 decisions start at D69 in `docs/decisions.md`. During the burst (D84) all model work is local and costs $0: llama.cpp for tagging and answers, a local embedding model; a hosted provider fails closed unless the D76 NER gate (P2-2b) has passed.
 Phase 1 (Pipeline) is complete: parse Instagram DMs (Meta "Download your information" export, JSON format) → clean/dedupe → Postgres `raw` schema → dbt models with tests → Airflow landing-zone DAG → Streamlit dashboard, run end to end with one command. Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
-Not yet in scope: embeddings, analysis of image/video content, React frontend, deploy, a second platform, a local LLM backend (Phase 3, D71).
+Not yet in scope: analysis of image/video content, a second platform, any hosted LLM or embedding API (D84). Local llama.cpp, local embeddings, the web app and the tunnel deploy arrive in the sessions listed under Burst plan, one per brief.
 
 ## Privacy rules (hard requirements)
 - You are a third-party API. Real chat data must never enter your context.
@@ -27,12 +27,13 @@ Not yet in scope: embeddings, analysis of image/video content, React frontend, d
 - Logs and error messages never include message bodies, sender names, phone numbers, or emails. Log counts, IDs, durations, file hashes.
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
-- No external API calls from pipeline code yet (the first arrives in P2-3, behind redaction).
+- No external API calls from pipeline code. Hosted providers fail closed unless the D76 NER gate (P2-2b) has passed (D84); a local model needs no API call.
 - No message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages external_ok under the consent ledger (D69). Claude Code never reads, creates or edits the real ledger.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 
 ## Stack
 Python 3.12 (uv), psycopg 3, pydantic-settings, Postgres 17 + pgvector (Docker), dbt-postgres, Airflow (LocalExecutor, runs from its own image: official base plus gcwrapped and dbt in an isolated venv), Streamlit dashboard, pytest, ruff, mypy --strict, GitHub Actions.
+Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Not installed yet.
 
 ## Commands
 ```
@@ -49,8 +50,20 @@ make e2e [ENV_FILE=...]         # one-command end to end
 make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
+make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
+
+## Burst plan
+One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10). One session per brief; the brief decides scope.
+- S2 labeling tool, synthetic eval sets, Ryan hand-labels (P2-3a)
+- S3 local LLM (llama.cpp) + tagging pipeline
+- S4 tagging eval
+- S5 embeddings + retrieval eval
+- S6 answers with citations
+- S7 web app
+- S8 deploy via tunnel
+- S9 wrap-up
 
 ## Conventions
 - Business logic lives in `src/gcwrapped/`; DAGs only call it. Everything runs and tests without Airflow.

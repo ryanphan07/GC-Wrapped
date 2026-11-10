@@ -18,6 +18,7 @@ import os
 import random
 import re
 import shutil
+import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +26,11 @@ from typing import Any
 
 from gcwrapped import ledger
 from gcwrapped.parsers import instagram_format as fmt
+
+# Run as a script (make synth, CI), sys.path starts at tests/synthetic, not tests/, so the package
+# import below needs tests/ added. Under pytest it is already there and this is a no-op.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from synthetic.eval_set import EVAL_TEXTS
 
 Message = dict[str, Any]
 
@@ -99,7 +105,16 @@ THREADS: list[tuple[str, str, list[str], int]] = [
         [DECORATED_ENCLOSED, DECORATED_TM, DECORATED_PAREN],
         30,
     ),
+    # The synthetic labeled sets (D86): only "yes" senders, so every message is eligible. Appended
+    # last, so the earlier threads' histories (one shared rng) are unchanged.
+    (
+        "evalset_61827394501827364",
+        "Eval Set",
+        ["Ana Ruiz", "Sam Lee", "Priya Raman"],
+        160,
+    ),
 ]
+EVAL_FOLDER = THREADS[-1][0]
 
 # The numeric thread IDs of THREADS: what GCW_THREAD_ALLOWLIST must list for synthetic data.
 # .env.example and CI list the same IDs (tests/test_consent.py keeps them in sync).
@@ -171,6 +186,7 @@ def build_conversation(
     participants: list[str],
     count: int,
     texts: Sequence[str] = _TEXTS,
+    texts_in_order: bool = False,
 ) -> list[Message]:
     """A thread's full history, oldest first, as clean (un-mojibaked) message dicts.
 
@@ -178,11 +194,17 @@ def build_conversation(
     without a link, one profile share), an export video, an external video, audio, a call,
     reactions (some with timestamps), a message with no content key, a message with empty
     content, and two fully identical messages (same ms, sender, content) mid-history.
+
+    With `texts_in_order`, the first text-kind messages carry `texts` one after another, each used
+    once (so a labeled set can say which message is which), skipping the two slots the identical
+    pair overwrites; later text-kind messages draw from the default bank. The default draws every
+    text at random, which is what the earlier threads rely on.
     """
     messages: list[Message] = []
     ts = _BASE_MS
     burst_left = 0
     prev_sender: str | None = None
+    next_text = 0
     for i in range(count):
         if burst_left == 0:
             ts += rng.randint(_BURST_GAP_MIN_MS, _BURST_GAP_MAX_MS)
@@ -210,7 +232,11 @@ def build_conversation(
         if rng.random() < 0.95:
             msg[fmt.KEY_IS_UNSENT_IMAGE] = False
         if kind == "text":
-            msg[fmt.KEY_CONTENT] = rng.choice(texts)
+            if texts_in_order and next_text < len(texts) and i not in (count // 2, count // 2 + 1):
+                msg[fmt.KEY_CONTENT] = texts[next_text]
+                next_text += 1
+            else:
+                msg[fmt.KEY_CONTENT] = rng.choice(_TEXTS if texts_in_order else texts)
         elif kind == "photo":
             n = 2 if i == 3 else rng.randint(1, 3)
             msg[fmt.KEY_PHOTOS] = [
@@ -322,12 +348,14 @@ def write_thread(
 def _histories(seed: int) -> list[list[Message]]:
     """Each thread's full history, in THREADS order. One rng, so the order of calls matters."""
     rng = random.Random(seed)
-    return [
-        build_conversation(
-            rng, participants, count, _DECORATED_TEXTS if DECORATED_TM in participants else _TEXTS
-        )
-        for _, _, participants, count in THREADS
-    ]
+    histories: list[list[Message]] = []
+    for folder, _, participants, count in THREADS:
+        if folder == EVAL_FOLDER:
+            histories.append(build_conversation(rng, participants, count, EVAL_TEXTS, True))
+        else:
+            texts = _DECORATED_TEXTS if DECORATED_TM in participants else _TEXTS
+            histories.append(build_conversation(rng, participants, count, texts))
+    return histories
 
 
 def consent_ledger_rows(seed: int = 1234) -> list[ledger.LedgerRow]:
