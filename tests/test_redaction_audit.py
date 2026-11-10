@@ -227,7 +227,7 @@ def test_d83_every_folded_only_token_falls_in_exactly_one_category() -> None:
             (
                 "t",
                 "SENTINELNAMEB\u2122",
-            ),  # raw word "sentinelnameb(tm)": folded "sentinelnameb" ... see below
+            ),  # "™" is not alphanumeric: raw token "sentinelnameb", folded-only "sentinelnamebtm"
             ("t", "\u24d9sentinelnamec"),  # one symbol character glued to regular ones: mixed
             ("t", "SENTINELNAMED\u2475"),  # split by a folded break: no symbol characters
             ("t", "SENTINELNAMEE"),  # raw and folded: neither
@@ -281,3 +281,19 @@ def test_d83_audit_lines_carry_no_name_or_text() -> None:
     redaction_audit.check_shapes(lines)
     assert len(lines) == 35
     assert not any(sentinel.lower() in ln.lower() or "SENTINELTEXT" in ln for ln in lines)
+
+
+def test_synthetic_decorated_thread_exercises_raw_only_and_folded_only_tokens() -> None:
+    """The generator's decorated names put at least one token in each side's own category (D83),
+    so a gcw_dev audit reports them once the thread is ingested."""
+    from synthetic import instagram
+
+    thread_id = instagram.SYNTHETIC_THREAD_IDS[-1]
+    members = [
+        (thread_id, n)
+        for n in (instagram.DECORATED_ENCLOSED, instagram.DECORATED_TM, instagram.DECORATED_PAREN)
+    ]
+    directory = MemberDirectory(members)
+    assert len(directory.raw_only_tokens) >= 1
+    assert len(directory.folded_only_tokens) >= 1
+    assert "sentineldeca" in directory.folded_only_tokens

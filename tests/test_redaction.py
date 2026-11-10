@@ -911,3 +911,59 @@ def test_d83_src_never_imports_the_frozen_reference() -> None:
     root = Path(__file__).resolve().parent.parent / "src"
     for path in root.rglob("*.py"):
         assert "reference_redaction" not in path.read_text(encoding="utf-8"), path
+
+
+# --- Two names glued by a character that is alphanumeric raw but folds to a break --------------
+
+
+class _RecordsSpans(Redactor):
+    """Keeps the spans _replace receives, to check they never overlap."""
+
+    def __init__(self, directory: MemberDirectory, nlp: Language) -> None:
+        super().__init__(directory, nlp)
+        self.handed: list[list[tuple[int, int]]] = []
+
+    def _replace(  # type: ignore[override]
+        self,
+        text: str,
+        spans: Sequence[redaction._Span],
+        members: frozenset[str],
+        pseudonyms: redaction._Pseudonyms,
+    ) -> tuple[str, dict[str, int]]:
+        self.handed.append([(s.start, s.end) for s in spans])
+        return Redactor._replace(text, spans, members, pseudonyms)
+
+
+def _check_glued(
+    nlp: Language, glues: Sequence[str], a: str = "SENTINELNAMEX", b: str = "SENTINELNAMEY"
+) -> None:
+    names = MemberDirectory([(T1, a), (T1, b)])
+    redactor = _RecordsSpans(names, nlp)
+    texts = [f"{a}{g}{b}" for g in glues]
+    outs = redactor.redact_thread(T1, [(ZED, t) for t in texts])  # no exception
+    assert len(redactor.handed) == len(texts)
+    for text, out, spans in zip(texts, outs, redactor.handed, strict=True):
+        assert out.text is not None
+        assert "<PERSON" in out.text, repr(text)
+        assert "sentinelname" not in out.text.casefold(), repr(text)
+        assert residual_member_tokens(out.text, names) == 0, repr(text)
+        assert out.backstop_adjacent == out.backstop_standalone == 0, repr(text)
+        ordered = sorted(spans)
+        assert all(x[1] <= y[0] for x, y in itertools.pairwise(ordered)), (repr(text), spans)
+
+
+@pytest.mark.parametrize("glue", ["⑴", "⒈", "™"])
+def test_two_names_glued_by_a_symbol_are_both_redacted(nlp: Language, glue: str) -> None:
+    """⑴ and ⒈ are alphanumeric raw and fold to a break; ™ is a break both ways (the guard)."""
+    _check_glued(nlp, [glue])
+
+
+def test_two_names_glued_by_every_alphanumeric_that_folds_to_a_break(nlp: Language) -> None:
+    glues = []
+    for ch in _mirror_symbol_breaks():
+        fold = redaction._fold_char(ch)
+        if not fold[0].isalnum() and not fold[-1].isalnum():
+            glues.append(ch)
+    # "⒈" folds to "1." (starts alphanumeric), so only the parametrized test covers it
+    assert "⑴" in glues and "⒈" not in glues and len(glues) > 30
+    _check_glued(nlp, glues)

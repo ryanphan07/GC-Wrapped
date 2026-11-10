@@ -23,7 +23,7 @@ from gcwrapped.consent import load_allowlist
 from synthetic.instagram import SYNTHETIC_THREAD_IDS, generate_pair
 
 REPO = Path(__file__).resolve().parents[1]
-ONE, TWO, THREE = SYNTHETIC_THREAD_IDS
+ONE, TWO, THREE, *_ = SYNTHETIC_THREAD_IDS
 
 
 @pytest.fixture(autouse=True)
