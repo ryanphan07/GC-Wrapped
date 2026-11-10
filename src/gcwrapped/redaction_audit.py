@@ -17,8 +17,8 @@ now unreachable without a bug. Tests and the CI audit on synthetic data require 
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 
 import psycopg
 from spacy.lang.en.stop_words import STOP_WORDS
@@ -27,6 +27,7 @@ from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
 from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.redaction import (
+    FOLDED_ONLY_CATEGORIES,
     PLACEHOLDER_TYPES,
     MemberDirectory,
     Redactor,
@@ -71,6 +72,17 @@ LINE_SHAPES = (
     r"directory tokens: \d+",
     r"directory tokens that are stop words: \d+",
     r"member matches on stop-word tokens: \d+",
+    r"directory tokens raw-only: \d+",
+    r"directory tokens folded-only: \d+",
+    r"folded-only tokens from one symbol character: \d+",
+    r"folded-only tokens from several symbol characters: \d+",
+    r"folded-only tokens mixing symbol and regular characters: \d+",
+    r"folded-only tokens split by a folded break: \d+",
+    r"matches on folded-only tokens from one symbol character: \d+",
+    r"matches on folded-only tokens from several symbol characters: \d+",
+    r"matches on folded-only tokens mixing symbol and regular characters: \d+",
+    r"matches on folded-only tokens split by a folded break: \d+",
+    r"messages with a match on a folded-only token: \d+",
 )
 OK_LINE = "redaction-audit: ok"
 RESIDUAL_LINE = "redaction-audit: failed (residual member tokens)"
@@ -98,6 +110,12 @@ class AuditReport:
     directory_tokens: int = 0
     stop_word_tokens: int = 0
     stop_word_matches: int = 0
+    raw_only_tokens: int = 0
+    folded_only_tokens: int = 0
+    # Keyed by FOLDED_ONLY_CATEGORIES (D83): tokens, and matches in the texts, per category.
+    folded_only_by_category: dict[str, int] = field(default_factory=dict)
+    folded_only_matches: dict[str, int] = field(default_factory=dict)
+    messages_with_folded_only_match: int = 0
 
 
 @dataclass(frozen=True)
@@ -141,6 +159,9 @@ def audit_database(url: str, set_step: Callable[[str], None]) -> AuditReport:
         set_step(STEP_SCAN)
         scanned = with_text = changed = residual = 0
         merges = extensions = adjacent = standalone = stop_matches = 0
+        folded_messages = 0
+        folded_matches: Counter[str] = Counter()
+        folded_only = directory.folded_only_tokens
         placeholders: Counter[str] = Counter()
         seconds = 0.0
         for thread_id, batch in _batches(conn):
@@ -160,6 +181,9 @@ def audit_database(url: str, set_step: Callable[[str], None]) -> AuditReport:
                 adjacent += message.backstop_adjacent
                 standalone += message.backstop_standalone
                 stop_matches += stop_word_matches(original, directory)
+                hits = folded_only_matches(original, directory, folded_only)
+                folded_matches.update(hits)
+                folded_messages += bool(hits)
     counts = {t: placeholders[t] for t in PLACEHOLDER_TYPES}
     tokens = directory.tokens
     return AuditReport(
@@ -177,6 +201,11 @@ def audit_database(url: str, set_step: Callable[[str], None]) -> AuditReport:
         len(tokens),
         len(tokens & STOP_WORDS),
         stop_matches,
+        len(directory.raw_only_tokens),
+        len(folded_only),
+        dict(Counter(folded_only.values())),
+        dict(folded_matches),
+        folded_messages,
     )
 
 
@@ -188,8 +217,31 @@ def stop_word_matches(text: str, directory: MemberDirectory) -> int:
     return sum(1 for m in directory.find(text) if fold(text[m.start : m.end]) in STOP_WORDS)
 
 
+_PHRASES = {
+    "one_symbol": "from one symbol character",
+    "several_symbols": "from several symbol characters",
+    "mixed": "mixing symbol and regular characters",
+    "folded_break": "split by a folded break",
+}
+
+
+def folded_only_matches(
+    text: str, directory: MemberDirectory, folded_only: Mapping[str, str]
+) -> Counter[str]:
+    """Directory matches in `text` whose word is a folded-only token, counted per category (D83).
+
+    Measurement only: shows what coverage the folded segmentation adds over the raw one, and
+    which kind of display-name character it came from. A match counts once per category.
+    """
+    counts: Counter[str] = Counter()
+    for match in directory.find(text):
+        counts.update({folded_only[w] for w in match.words if w in folded_only})
+    return counts
+
+
 def render(report: AuditReport) -> list[str]:
     """The report lines, in order, without the final status line."""
+    tokens, matches = report.folded_only_by_category, report.folded_only_matches
     return [
         f"target database: {report.database}",
         f"messages scanned: {report.scanned}",
@@ -206,6 +258,14 @@ def render(report: AuditReport) -> list[str]:
         f"directory tokens: {report.directory_tokens}",
         f"directory tokens that are stop words: {report.stop_word_tokens}",
         f"member matches on stop-word tokens: {report.stop_word_matches}",
+        f"directory tokens raw-only: {report.raw_only_tokens}",
+        f"directory tokens folded-only: {report.folded_only_tokens}",
+        *(f"folded-only tokens {_PHRASES[c]}: {tokens.get(c, 0)}" for c in FOLDED_ONLY_CATEGORIES),
+        *(
+            f"matches on folded-only tokens {_PHRASES[c]}: {matches.get(c, 0)}"
+            for c in FOLDED_ONLY_CATEGORIES
+        ),
+        f"messages with a match on a folded-only token: {report.messages_with_folded_only_match}",
     ]
 
 

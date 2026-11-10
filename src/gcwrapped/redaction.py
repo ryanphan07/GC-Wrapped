@@ -17,13 +17,12 @@ Known gaps (D77): nicknames and misspellings that are not in the member director
 can leak; the address pattern is US-centric; name tokens that are common words are over-redacted.
 """
 
-import bisect
 import logging
 import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import tldextract
@@ -104,21 +103,44 @@ class RedactionModelError(RedactionError):
     """The pinned spaCy model is not installed or could not be loaded."""
 
 
-# --- Words (D81) and folding -----------------------------------------------------------------
+# --- Words under two segmentations (D83) and folding -----------------------------------------
+
+_RUN = re.compile(r"[^\W_]+")  # alphanumeric runs of folded text; underscore separates words
+
+
+@dataclass(frozen=True)
+class Word:
+    """A word of a text: raw offsets and its folded form."""
+
+    start: int
+    end: int
+    folded: str
+    # The folded text between the previous word of the same segmentation and this one. Under the
+    # folded segmentation the glue can sit inside one raw character ("⑵" folds to "(2)"), so it is
+    # read from the folded text, as the pre-D81 matcher did. Not part of a word's identity.
+    gap: str = field(default="", compare=False)
+
+
+@lru_cache(maxsize=8192)
+def _fold_char(ch: str) -> str:
+    stripped = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+    return stripped.casefold()
+
+
+def fold(text: str) -> str:
+    """Casefolded, accents stripped."""
+    if text.isascii():
+        return text.lower()
+    return "".join(_fold_char(ch) for ch in text)
 
 
 def _in_word(ch: str, in_word: bool) -> bool:
-    """Whether `ch` continues or starts a word: a letter, a digit, or a combining mark after one."""
+    """Whether `ch` continues or starts a raw word: alphanumeric, or a combining mark after one."""
     return ch.isalnum() or (in_word and unicodedata.category(ch).startswith("M"))
 
 
-def word_spans(text: str) -> list[tuple[int, int]]:
-    """The words of `text` as (start, end) offsets, decided on the raw text (D81).
-
-    A word is a maximal run of str.isalnum characters or combining marks that follow one. This is
-    the only place a word boundary is decided: member matching, the residual check, the backstop and
-    span extension all call it. Folding never creates or removes a boundary.
-    """
+def raw_word_spans(text: str) -> list[tuple[int, int]]:
+    """Raw words (D81): maximal runs of str.isalnum characters plus combining marks after one."""
     spans: list[tuple[int, int]] = []
     start = -1
     for i, ch in enumerate(text):
@@ -133,22 +155,60 @@ def word_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-@lru_cache(maxsize=8192)
-def _fold_char(ch: str) -> str:
-    stripped = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
-    return stripped.casefold()
+def _folded_word_spans(text: str) -> list[Word]:
+    """Folded words: alphanumeric runs of the per-character fold, mapped back to raw offsets.
 
-
-def fold(text: str) -> str:
-    """Casefolded, accents stripped. Only ever applied inside a word or to a whole name."""
+    A character that folds to nothing (a combining mark) belongs to the character before it.
+    """
     if text.isascii():
-        return text.lower()
-    return "".join(_fold_char(ch) for ch in text)
+        folded_text = text.lower()
+        starts: list[int] | None = None
+        ends: list[int] | None = None
+    else:
+        pieces: list[str] = []
+        starts, ends = [], []
+        for i, ch in enumerate(text):
+            folded = _fold_char(ch)
+            if not folded:
+                if ends:
+                    ends[-1] = i + 1
+                continue
+            pieces.append(folded)
+            starts.extend([i] * len(folded))
+            ends.extend([i + 1] * len(folded))
+        folded_text = "".join(pieces)
+    out: list[Word] = []
+    previous_end = 0
+    for m in _RUN.finditer(folded_text):
+        start, end = m.start(), m.end()
+        gap = folded_text[previous_end:start]
+        previous_end = end
+        if starts is not None and ends is not None:
+            start, end = starts[start], ends[end - 1]
+        out.append(Word(start, end, m.group(), gap))
+    return out
 
 
-def _folded_words(text: str) -> list[tuple[int, int, str]]:
-    """Each word of `text` with its folded form, skipping words that fold to nothing."""
-    return [(s, e, w) for s, e in word_spans(text) if (w := fold(text[s:e]))]
+def words(text: str) -> tuple[list[Word], list[Word]]:
+    """The words of `text` under both segmentations: (raw, folded), each in text order (D83).
+
+    This is the only place a word boundary is decided. Raw words are decided on the raw text and
+    folded per word; folded words are alphanumeric runs of the folded text. Every member check
+    (matching, the residual count, the backstop, span extension) uses both.
+    """
+    raw: list[Word] = []
+    previous_end = 0
+    for s, e in raw_word_spans(text):
+        if w := fold(text[s:e]):
+            raw.append(Word(s, e, w, fold(text[previous_end:s])))
+        previous_end = e
+    return raw, _folded_word_spans(text)
+
+
+def all_words(text: str) -> list[Word]:
+    """The union of both segmentations, deduplicated on (start, end, folded), in text order."""
+    raw, folded = words(text)
+    return sorted({*raw, *folded}, key=lambda w: (w.start, w.end, w.folded))
 
 
 def _identity(name: str) -> str:
@@ -156,9 +216,33 @@ def _identity(name: str) -> str:
     return " ".join(fold(name).split())
 
 
+def _token_ok(word: str) -> bool:
+    return len(word) >= 2 and any(c.isalpha() for c in word)
+
+
 def _tokens(name: str) -> list[str]:
-    """Name tokens: folded words of the name, at least 2 characters, one letter."""
-    return [w for _, _, w in _folded_words(name) if len(w) >= 2 and any(c.isalpha() for c in w)]
+    """Name tokens: folded words of the name under either segmentation, 2+ characters, a letter."""
+    return sorted({w.folded for w in all_words(name) if _token_ok(w.folded)})
+
+
+def _is_symbol(ch: str) -> bool:
+    """Not alphanumeric on its own, but folds to something that is (for example "™" or "ⓙ")."""
+    return not ch.isalnum() and any(c.isalnum() for c in _fold_char(ch))
+
+
+# Categories of a token only the folded segmentation produces, judged on the raw characters it came
+# from (the audit reports them, D83). Order is the priority when one token has several sources.
+FOLDED_ONLY_CATEGORIES = ("one_symbol", "several_symbols", "mixed", "folded_break")
+
+
+def _folded_only_category(raw: str) -> str:
+    symbols = sum(_is_symbol(c) for c in raw)
+    regular = sum(c.isalnum() for c in raw)
+    if symbols == 0:
+        return "folded_break"
+    if regular:
+        return "mixed"
+    return "one_symbol" if symbols == 1 else "several_symbols"
 
 
 # --- The member directory --------------------------------------------------------------------
@@ -169,6 +253,28 @@ class _Match:
     start: int
     end: int
     identities: frozenset[str]
+    words: frozenset[str] = frozenset()  # single-word matches only: the folded words matched
+
+
+def _gap_pattern(gap: str) -> re.Pattern[str]:
+    """Whitespace in a name's gap matches any whitespace run; other glue must match literally."""
+    chunks = gap.split()
+    body = r"\s+".join(re.escape(c) for c in chunks)
+    if not chunks:
+        return re.compile(r"\s+")
+    lead = r"\s+" if gap[0].isspace() else ""
+    trail = r"\s+" if gap[-1].isspace() else ""
+    return re.compile(lead + body + trail)
+
+
+@dataclass(frozen=True)
+class _Full:
+    """A multi-word full name: its folded words, a pattern per gap, its identity and its length."""
+
+    parts: tuple[str, ...]
+    gaps: tuple[re.Pattern[str], ...]
+    identity: str
+    length: int
 
 
 class MemberDirectory:
@@ -177,16 +283,20 @@ class MemberDirectory:
     Built from (thread_id, display_name) pairs: in the audit, raw.messages senders and reaction
     actors, the facts analytics.dim_members is built from (D78). The dictionary covers
     everyone, so a "no" sender or a reactor is redacted too (D77). Thread membership only decides
-    which pseudonym a match gets.
+    which pseudonym a match gets. Names and texts are both read under two word segmentations (D83).
     """
 
     def __init__(self, members: Iterable[tuple[str, str]]) -> None:
         self._thread_members: dict[str, set[str]] = {}
         # token or single-word full name -> identities that contain it
         self._singles: dict[str, set[str]] = {}
-        # first word of a multi-word full name -> (words, gaps between them, identity, length),
-        # longest first
-        self._multi: dict[str, list[tuple[tuple[str, ...], tuple[str, ...], str, int]]] = {}
+        # which segmentation produced each single (a token may come from both)
+        self._raw_singles: set[str] = set()
+        self._folded_singles: set[str] = set()
+        # for tokens only the folded segmentation produced: category of the raw source characters
+        self._source_category: dict[str, str] = {}
+        # first word of a multi-word full name -> full names starting with it, longest first
+        self._multi: dict[str, list[_Full]] = {}
         seen: set[str] = set()
         for thread_id, name in members:
             ident = _identity(name)
@@ -196,90 +306,144 @@ class MemberDirectory:
             seen.add(name)
             self._add(name, ident)
         for entries in self._multi.values():
-            entries.sort(key=lambda e: -e[3])
+            entries.sort(key=lambda e: -e.length)
 
     def _add(self, name: str, ident: str) -> None:
-        for token in _tokens(name):
-            self._singles.setdefault(token, set()).add(ident)
+        raw, folded = words(name)
+        for segmentation, is_raw in ((raw, True), (folded, False)):
+            for word in segmentation:
+                if _token_ok(word.folded):
+                    self._register(word.folded, ident, is_raw)
+                    if not is_raw:
+                        category = _folded_only_category(name[word.start : word.end])
+                        known = self._source_category.get(word.folded)
+                        if known is None or FOLDED_ONLY_CATEGORIES.index(
+                            category
+                        ) < FOLDED_ONLY_CATEGORIES.index(known):
+                            self._source_category[word.folded] = category
+            self._add_full_name(name, segmentation, ident, is_raw)
+
+    def _register(self, word: str, ident: str, is_raw: bool) -> None:
+        self._singles.setdefault(word, set()).add(ident)
+        (self._raw_singles if is_raw else self._folded_singles).add(word)
+
+    def _add_full_name(self, name: str, ws: Sequence[Word], ident: str, is_raw: bool) -> None:
         # Full name: words only, so an emoji at either end is not part of the name.
-        words = _folded_words(name)
-        if not words:
+        if not ws:
             return
-        folded_name = fold(name[words[0][0] : words[-1][1]])
+        folded_name = fold(name[ws[0].start : ws[-1].end])
         if len(folded_name) < 2 or not any(c.isalpha() for c in folded_name):
             return
-        if len(words) == 1:
-            self._singles.setdefault(words[0][2], set()).add(ident)
+        if len(ws) == 1:
+            self._register(ws[0].folded, ident, is_raw)
             return
-        gaps = tuple(fold(name[words[i][1] : words[i + 1][0]]) for i in range(len(words) - 1))
-        self._multi.setdefault(words[0][2], []).append(
-            (tuple(w for _, _, w in words), gaps, ident, len(folded_name))
-        )
+        gaps = tuple(_gap_pattern(w.gap) for w in ws[1:])
+        full = _Full(tuple(w.folded for w in ws), gaps, ident, len(folded_name))
+        entries = self._multi.setdefault(ws[0].folded, [])
+        if full not in entries:
+            entries.append(full)
 
     @property
     def tokens(self) -> frozenset[str]:
         return frozenset(self._singles)
 
+    @property
+    def raw_only_tokens(self) -> frozenset[str]:
+        """Tokens only the raw segmentation produces."""
+        return frozenset(self._raw_singles - self._folded_singles)
+
+    @property
+    def folded_only_tokens(self) -> Mapping[str, str]:
+        """Tokens only the folded segmentation produces -> their source category (D83)."""
+        return {
+            t: self._source_category[t]
+            for t in self._folded_singles - self._raw_singles
+            if t in self._source_category
+        }
+
     def members_of(self, thread_id: str) -> frozenset[str]:
         return frozenset(self._thread_members.get(thread_id, ()))
 
     def find(self, text: str) -> list[_Match]:
-        """Whole-word, case- and accent-insensitive matches, longest full name first.
+        """Whole-word, case- and accent-insensitive matches under both segmentations (D83).
 
-        Offsets are into `text`. A match's identities are every member the matched word could be.
+        Offsets are into `text`. Matches are non-overlapping: overlapping ones merge into their
+        union, which takes the identities of the longest match (a tie: the union of the tied
+        matches' identities). A match's identities are every member the matched word could be.
         """
-        words = _folded_words(text)
+        raw, folded = words(text)
+        found = self._scan(raw) + self._scan(folded)
+        found.sort(key=lambda m: (m.start, m.end))
+        merged: list[_Match] = []
+        group: list[_Match] = []
+        group_end = -1
+        for match in [*found, None]:
+            if match is not None and group and match.start < group_end:
+                group.append(match)
+                group_end = max(group_end, match.end)
+                continue
+            if group:
+                longest = max(m.end - m.start for m in group)
+                tied = [m for m in group if m.end - m.start == longest]
+                merged.append(
+                    _Match(
+                        group[0].start,
+                        group_end,
+                        frozenset().union(*(m.identities for m in tied)),
+                        frozenset().union(*(m.words for m in group)),
+                    )
+                )
+            if match is not None:
+                group, group_end = [match], match.end
+        return merged
+
+    def _scan(self, ws: Sequence[Word]) -> list[_Match]:
+        """Matches in one segmentation, longest full name first at each word."""
         matches: list[_Match] = []
         i = 0
-        while i < len(words):
-            start, end, word = words[i]
+        while i < len(ws):
+            word = ws[i]
             hit: _Match | None = None
             used = 1
-            for parts, gaps, ident, _length in self._multi.get(word, ()):
-                if self._full_name_at(text, words, i, parts, gaps):
-                    used = len(parts)
-                    hit = _Match(start, words[i + used - 1][1], frozenset({ident}))
+            for full in self._multi.get(word.folded, ()):
+                if self._full_name_at(ws, i, full):
+                    used = len(full.parts)
+                    hit = _Match(word.start, ws[i + used - 1].end, frozenset({full.identity}))
                     break
-            if hit is None and word in self._singles:
-                hit = _Match(start, end, frozenset(self._singles[word]))
+            if hit is None and word.folded in self._singles:
+                hit = _Match(
+                    word.start,
+                    word.end,
+                    frozenset(self._singles[word.folded]),
+                    frozenset({word.folded}),
+                )
             if hit is not None:
                 matches.append(hit)
             i += used
         return matches
 
     @staticmethod
-    def _full_name_at(
-        text: str,
-        words: Sequence[tuple[int, int, str]],
-        i: int,
-        parts: tuple[str, ...],
-        gaps: tuple[str, ...],
-    ) -> bool:
-        if i + len(parts) > len(words):
+    def _full_name_at(ws: Sequence[Word], i: int, full: _Full) -> bool:
+        if i + len(full.parts) > len(ws):
             return False
-        for k, part in enumerate(parts):
-            if words[i + k][2] != part:
+        for k, part in enumerate(full.parts):
+            if ws[i + k].folded != part:
                 return False
-            if k:
-                gap = text[words[i + k - 1][1] : words[i + k][0]]
-                # Whitespace in the name matches any whitespace run; other glue must be the same.
-                if gaps[k - 1].isspace():
-                    if not gap.isspace():
-                        return False
-                elif fold(gap) != gaps[k - 1]:
-                    return False
+            if k and full.gaps[k - 1].fullmatch(ws[i + k].gap) is None:
+                return False
         return True
 
 
 def residual_member_tokens(text: str, directory: MemberDirectory) -> int:
-    """How many dictionary tokens are still in `text` as whole words (casefolded, accents removed).
+    """How many dictionary tokens are still in `text` as whole words under either segmentation.
 
-    Placeholders are ignored. Used by the tests and by `gcw redaction-audit`; a non-zero count on
-    redacted output means a member name leaked.
+    Counts distinct (start, end) spans, so a word both segmentations see counts once. Placeholders
+    are ignored. Used by the tests and by `gcw redaction-audit`; a non-zero count on redacted output
+    means a member name leaked.
     """
     text = _PLACEHOLDER.sub(" ", text)
     tokens = directory.tokens
-    return sum(1 for _, _, word in _folded_words(text) if word in tokens)
+    return len({(w.start, w.end) for w in all_words(text) if w.folded in tokens})
 
 
 # --- Presidio wiring -------------------------------------------------------------------------
@@ -397,30 +561,23 @@ def _merge_overlaps(spans: Sequence[_Span]) -> tuple[list[_Span], int]:
 
 
 def _extend_to_words(text: str, spans: Sequence[_Span]) -> tuple[list[_Span], int]:
-    """Move each span edge that falls inside a word out to the word's edge (D79.2, D81).
+    """Move each span edge that falls inside a word of either segmentation out to that word's edge
+    (D79.2, D83), repeating until no edge is inside a word.
 
     Without this, a pattern that stops mid-word (a handle capped at 30 characters, a URL ending at
     a non-ASCII letter) leaves the rest of the word standing alone after replacement. Returns the
     spans and how many edges moved.
     """
-    words = word_spans(text)
-    starts = [s for s, _ in words]
-
-    def containing(pos: int) -> tuple[int, int] | None:
-        """The word with start < pos < end, i.e. an edge at `pos` cuts it in two."""
-        k = bisect.bisect_left(starts, pos) - 1
-        if k >= 0 and words[k][0] < pos < words[k][1]:
-            return words[k]
-        return None
+    ws = sorted({(w.start, w.end) for w in all_words(text)})
 
     out: list[_Span] = []
     moved = 0
     for span in spans:
         start, end = span.start, span.end
-        if (w := containing(start)) is not None:
-            start = w[0]
-        if (w := containing(end)) is not None:
-            end = w[1]
+        while cut := [w[0] for w in ws if w[0] < start < w[1]]:
+            start = min(cut)
+        while cut := [w[1] for w in ws if w[0] < end < w[1]]:
+            end = max(cut)
         moved += (start != span.start) + (end != span.end)
         out.append(_Span(start, end, span.entity, span.score, span.identities))
     return out, moved
