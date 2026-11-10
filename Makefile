@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load redaction-audit
 
 up:
 	mkdir -p data/landing data/archive
@@ -127,3 +127,10 @@ consent-template:
 
 consent-load:
 	@uv run gcw consent-load
+
+# Redacts every ingested message in memory (gcwrapped.redaction, D70) and prints aggregate counts
+# only: scanned, changed, placeholders by type, member-name tokens remaining. Writes nothing.
+# Exit 1 if any member-name token survives. Real-data runs are Ryan's:
+#   make redaction-audit ENV_FILE=<env file outside the repo>
+redaction-audit:
+	@uv run gcw redaction-audit

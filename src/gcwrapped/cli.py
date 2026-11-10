@@ -82,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
         "metrics", help="aggregate counts report: warehouse, dbt and pytest (fixed labels only)"
     )
     sub.add_parser(
+        "redaction-audit",
+        help="redact every ingested message in memory and print aggregate counts only",
+    )
+    sub.add_parser(
         "consent-template",
         help="create or extend the per-sender consent ledger from the warehouse (counts only)",
     )
@@ -272,6 +276,12 @@ def _run(argv: Sequence[str] | None) -> int:
         return real_ingest.run(args.env_file)
     if args.command == "metrics":
         return metrics.run()
+    if args.command == "redaction-audit":
+        # Imported here: the redaction dependencies are dev-only, and the Airflow image's venv
+        # (which runs every other command) does not have them.
+        from gcwrapped import redaction_audit
+
+        return redaction_audit.run()
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

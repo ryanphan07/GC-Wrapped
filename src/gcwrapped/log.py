@@ -9,6 +9,8 @@ import logging
 
 from gcwrapped.config import get_settings
 
+QUIET_LOGGERS = ("presidio-analyzer", "decision_process")
+
 
 class KeyValueFormatter(logging.Formatter):
     """Format records as `ts=... level=... logger=... msg="..."`."""
@@ -32,3 +34,7 @@ def setup_logging(level: str | None = None) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel((level or get_settings().log_level).upper())
+    # Presidio logs at import time and its decision_process logger can describe matches; neither
+    # may reach the terminal. Set before anything imports it (the audit command imports lazily).
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
