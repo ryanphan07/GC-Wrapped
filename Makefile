@@ -15,7 +15,11 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load redaction-audit
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load redaction-audit sync
+
+# Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
+sync:
+	uv sync --group dbt --group dashboard
 
 up:
 	mkdir -p data/landing data/archive

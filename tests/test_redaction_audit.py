@@ -10,8 +10,8 @@ import sys
 import pytest
 
 from gcwrapped import redaction_audit
-from gcwrapped.redaction import PLACEHOLDER_TYPES
-from gcwrapped.redaction_audit import AuditReport, Steps
+from gcwrapped.redaction import PLACEHOLDER_TYPES, MemberDirectory
+from gcwrapped.redaction_audit import AuditReport, Steps, stop_word_matches
 
 
 def _report(residual: int = 0, database: str = "gcw_dev") -> AuditReport:
@@ -23,6 +23,13 @@ def _report(residual: int = 0, database: str = "gcw_dev") -> AuditReport:
         placeholders={t: i for i, t in enumerate(PLACEHOLDER_TYPES)},
         residual=residual,
         seconds=1.234,
+        overlap_merges=11,
+        boundary_extensions=12,
+        backstop_adjacent=2,
+        backstop_standalone=3,
+        directory_tokens=100,
+        stop_word_tokens=4,
+        stop_word_matches=55,
     )
 
 
@@ -60,6 +67,14 @@ def test_success_prints_fixed_lines_in_order(capsys: pytest.CaptureFixture[str])
         "placeholders iban: 9",
         "member-name tokens remaining: 0",
         "redaction seconds: 1.23",
+        "overlap merges: 11",
+        "boundary extensions: 12",
+        "backstop replacements: 5",
+        "backstop next to a placeholder: 2",
+        "backstop standalone: 3",
+        "directory tokens: 100",
+        "directory tokens that are stop words: 4",
+        "member matches on stop-word tokens: 55",
         "redaction-audit: ok",
     ]
 
@@ -73,6 +88,39 @@ def test_residual_tokens_print_counts_then_fail(capsys: pytest.CaptureFixture[st
     assert "redaction-audit: ok" not in lines
     assert lines[-1] == "redaction-audit: failed (residual member tokens)"
     assert len(lines) == len(redaction_audit.LINE_SHAPES) + 1
+
+
+def test_backstop_replacements_are_reported_not_failed(capsys: pytest.CaptureFixture[str]) -> None:
+    """On real data the backstop count is a signal to read; only residual tokens fail the audit."""
+    assert redaction_audit.run(_steps(_report())) == 0
+    assert "backstop replacements: 5" in capsys.readouterr().out.splitlines()
+
+
+def test_new_lines_have_fixed_shapes() -> None:
+    lines = redaction_audit.render(_report())
+    redaction_audit.check_shapes(lines)
+    assert lines[-8:] == [
+        "overlap merges: 11",
+        "boundary extensions: 12",
+        "backstop replacements: 5",
+        "backstop next to a placeholder: 2",
+        "backstop standalone: 3",
+        "directory tokens: 100",
+        "directory tokens that are stop words: 4",
+        "member matches on stop-word tokens: 55",
+    ]
+    lines[-3] = "directory tokens: SENTINELNAME"
+    with pytest.raises(redaction_audit.ShapeError):
+        redaction_audit.check_shapes(lines)
+
+
+def test_stop_word_matches_counts_single_stop_word_tokens_only() -> None:
+    directory = MemberDirectory([("t", "Will Smith"), ("t", "May Chen"), ("t", "Ana Ruiz")])
+    assert directory.tokens >= {"will", "may", "smith", "chen", "ana", "ruiz"}
+    # "will" and "May" match as single stop-word tokens; "smith" and "Ruiz" are not stop words,
+    # and the full name "Will Smith" is one multi-word match.
+    assert stop_word_matches("I will see May, and smith or Ruiz", directory) == 2
+    assert stop_word_matches("Will Smith is here", directory) == 0
 
 
 @pytest.mark.parametrize("failure", [ValueError, RuntimeError, KeyError])

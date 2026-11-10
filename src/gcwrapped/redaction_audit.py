@@ -9,6 +9,9 @@ log line. Redacted text is counted and thrown away.
 The member directory is every sender and reactor in raw.messages, which is exactly what
 analytics.dim_members is built from (D77), so the audit needs no dbt run. Messages are read per
 thread in batches; pseudonym numbers restart with each batch, which does not affect any count.
+
+The backstop count (D79) is reported, not failed: only a residual member token exits 1, and that is
+now unreachable without a bug. Tests and the CI audit on synthetic data require the count to be 0.
 """
 
 import re
@@ -18,6 +21,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import psycopg
+from spacy.lang.en.stop_words import STOP_WORDS
 
 from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
@@ -26,6 +30,7 @@ from gcwrapped.redaction import (
     PLACEHOLDER_TYPES,
     MemberDirectory,
     Redactor,
+    fold,
     load_model,
     residual_member_tokens,
 )
@@ -58,6 +63,14 @@ LINE_SHAPES = (
     *(rf"placeholders {t}: \d+" for t in PLACEHOLDER_TYPES),
     r"member-name tokens remaining: \d+",
     r"redaction seconds: \d+\.\d{2}",
+    r"overlap merges: \d+",
+    r"boundary extensions: \d+",
+    r"backstop replacements: \d+",
+    r"backstop next to a placeholder: \d+",
+    r"backstop standalone: \d+",
+    r"directory tokens: \d+",
+    r"directory tokens that are stop words: \d+",
+    r"member matches on stop-word tokens: \d+",
 )
 OK_LINE = "redaction-audit: ok"
 RESIDUAL_LINE = "redaction-audit: failed (residual member tokens)"
@@ -78,6 +91,13 @@ class AuditReport:
     placeholders: dict[str, int]
     residual: int
     seconds: float
+    overlap_merges: int = 0
+    boundary_extensions: int = 0
+    backstop_adjacent: int = 0
+    backstop_standalone: int = 0
+    directory_tokens: int = 0
+    stop_word_tokens: int = 0
+    stop_word_matches: int = 0
 
 
 @dataclass(frozen=True)
@@ -120,6 +140,7 @@ def audit_database(url: str, set_step: Callable[[str], None]) -> AuditReport:
         redactor = Redactor(directory, nlp)
         set_step(STEP_SCAN)
         scanned = with_text = changed = residual = 0
+        merges = extensions = adjacent = standalone = stop_matches = 0
         placeholders: Counter[str] = Counter()
         seconds = 0.0
         for thread_id, batch in _batches(conn):
@@ -134,8 +155,37 @@ def audit_database(url: str, set_step: Callable[[str], None]) -> AuditReport:
                 changed += message.text != original
                 placeholders.update(message.counts)
                 residual += residual_member_tokens(message.text or "", directory)
+                merges += message.overlap_merges
+                extensions += message.boundary_extensions
+                adjacent += message.backstop_adjacent
+                standalone += message.backstop_standalone
+                stop_matches += stop_word_matches(original, directory)
     counts = {t: placeholders[t] for t in PLACEHOLDER_TYPES}
-    return AuditReport(name, scanned, with_text, changed, counts, residual, seconds)
+    tokens = directory.tokens
+    return AuditReport(
+        name,
+        scanned,
+        with_text,
+        changed,
+        counts,
+        residual,
+        seconds,
+        merges,
+        extensions,
+        adjacent,
+        standalone,
+        len(tokens),
+        len(tokens & STOP_WORDS),
+        stop_matches,
+    )
+
+
+def stop_word_matches(text: str, directory: MemberDirectory) -> int:
+    """How many directory matches in `text` are a single token that is a spaCy stop word.
+
+    Measurement only (D79): shows how much over-redaction common-word names cause.
+    """
+    return sum(1 for m in directory.find(text) if fold(text[m.start : m.end]) in STOP_WORDS)
 
 
 def render(report: AuditReport) -> list[str]:
@@ -148,6 +198,14 @@ def render(report: AuditReport) -> list[str]:
         *(f"placeholders {t}: {report.placeholders[t]}" for t in PLACEHOLDER_TYPES),
         f"member-name tokens remaining: {report.residual}",
         f"redaction seconds: {report.seconds:.2f}",
+        f"overlap merges: {report.overlap_merges}",
+        f"boundary extensions: {report.boundary_extensions}",
+        f"backstop replacements: {report.backstop_adjacent + report.backstop_standalone}",
+        f"backstop next to a placeholder: {report.backstop_adjacent}",
+        f"backstop standalone: {report.backstop_standalone}",
+        f"directory tokens: {report.directory_tokens}",
+        f"directory tokens that are stop words: {report.stop_word_tokens}",
+        f"member matches on stop-word tokens: {report.stop_word_matches}",
     ]
 
 

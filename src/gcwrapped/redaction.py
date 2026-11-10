@@ -2,8 +2,10 @@
 
 Text goes through Presidio (spaCy NER for people who are not members; built-in recognizers for
 phone numbers, emails, URLs, cards, SSNs, IPs and IBANs) plus three custom recognizers: member
-names (score 1.0, so they win overlaps), @handles and US-style street addresses. Spans are replaced
-here, not by Presidio, so overlap handling and numbering are ours and testable.
+names (score 1.0), @handles and US-style street addresses. Spans are replaced here, not by Presidio,
+so overlap handling and numbering are ours and testable. No part of a word is left behind (D79):
+overlapping spans merge into their union, span edges inside a word move out to the word's edge, and
+a final pass replaces any member-dictionary token still present or raises RedactionError.
 
 Guarantees the tests pin:
   - no network call (the model is loaded from the installed wheel; Presidio's download-on-miss path
@@ -43,6 +45,7 @@ for _name in ("presidio-analyzer", "decision_process"):
 SPACY_MODEL = "en_core_web_lg"
 LANGUAGE = "en"
 BATCH_SIZE = 64
+_BACKSTOP_PASSES = 3  # D79.3
 
 # Counts are keyed by these, in this order (the audit prints them in this order).
 PLACEHOLDER_TYPES = (
@@ -315,9 +318,16 @@ def _offline_tldextract() -> None:
 
 @dataclass(frozen=True)
 class RedactedMessage:
+    """One redacted message. Every field is an integer count or placeholder text: no offsets, no
+    names, no mapping (D77.6)."""
+
     sender_label: str
     text: str | None
     counts: Mapping[str, int]  # placeholder type -> how many in `text`; all PLACEHOLDER_TYPES keys
+    overlap_merges: int = 0  # spans absorbed into an overlapping, higher-ranked span (D79.1)
+    boundary_extensions: int = 0  # span edges moved out to the edge of a word (D79.2)
+    backstop_adjacent: int = 0  # backstop replacements touching a placeholder (D79.3)
+    backstop_standalone: int = 0  # backstop replacements not touching one (D79.3)
 
 
 @dataclass
@@ -326,8 +336,74 @@ class _Span:
     end: int
     entity: str
     score: float
-    identities: frozenset[str] | None = None  # members a person span could be
-    name_key: str = ""  # folded text, for people only NER found
+    identities: frozenset[str] | None = None  # members a MEMBER_NAME span could be
+
+
+@dataclass(frozen=True)
+class _Chosen:
+    spans: list[_Span]
+    merges: int
+    extensions: int
+
+
+def _rank(span: _Span) -> tuple[float, int, int]:
+    """Best first: higher score, then longer, then earlier."""
+    return (-span.score, -(span.end - span.start), span.start)
+
+
+def _merge_overlaps(spans: Sequence[_Span]) -> tuple[list[_Span], int]:
+    """Replace every group of overlapping spans by its union (D79.1).
+
+    The union takes the entity, score and identities of the span ranked first in the group. Returns
+    the merged spans in order and how many spans were absorbed into another.
+    """
+    merged: list[_Span] = []
+    absorbed = 0
+    group: list[_Span] = []
+    group_end = -1
+    for span in [*sorted(spans, key=lambda s: s.start), None]:
+        if span is not None and group and span.start < group_end:
+            group.append(span)
+            group_end = max(group_end, span.end)
+            continue
+        if group:
+            lead = min(group, key=_rank)
+            start = min(g.start for g in group)
+            merged.append(_Span(start, group_end, lead.entity, lead.score, lead.identities))
+            absorbed += len(group) - 1
+        if span is not None:
+            group, group_end = [span], span.end
+    return merged, absorbed
+
+
+def _in_run(ch: str) -> bool:
+    """Part of an alphanumeric run: a letter or digit, or a combining mark that follows one."""
+    return ch.isalnum() or unicodedata.category(ch).startswith("M")
+
+
+def _extend_to_runs(text: str, spans: Sequence[_Span]) -> tuple[list[_Span], int]:
+    """Move each span edge that falls inside an alphanumeric run out to the run's edge (D79.2).
+
+    Without this, a pattern that stops mid-word (a handle capped at 30 characters, a URL ending at
+    a non-ASCII letter) leaves the rest of the word standing alone after replacement. Returns the
+    spans and how many edges moved.
+    """
+    out: list[_Span] = []
+    moved = 0
+    for span in spans:
+        start, end = span.start, span.end
+        while start > 0 and _in_run(text[start - 1]) and _in_run(text[start]):
+            start -= 1
+        while end < len(text) and _in_run(text[end - 1]) and _in_run(text[end]):
+            end += 1
+        moved += (start != span.start) + (end != span.end)
+        out.append(_Span(start, end, span.entity, span.score, span.identities))
+    return out, moved
+
+
+def _mask_placeholders(text: str) -> str:
+    """`text` with each placeholder replaced by spaces of equal length: same offsets, no words."""
+    return _PLACEHOLDER.sub(lambda m: " " * len(m.group()), text)
 
 
 class _Pseudonyms:
@@ -403,61 +479,92 @@ class Redactor:
             if not text:
                 out.append(RedactedMessage(label, text, dict.fromkeys(PLACEHOLDER_TYPES, 0)))
                 continue
-            spans = self._choose(text, analyzed[i])
-            redacted, counts = self._replace(text, spans, members, pseudonyms)
-            out.append(RedactedMessage(label, redacted, counts))
+            chosen = self._choose(text, analyzed[i])
+            redacted, counts = self._replace(text, chosen.spans, members, pseudonyms)
+            redacted, adjacent, standalone = self._backstop(redacted, members, pseudonyms)
+            counts["person"] += adjacent + standalone
+            out.append(
+                RedactedMessage(
+                    label,
+                    redacted,
+                    counts,
+                    chosen.merges,
+                    chosen.extensions,
+                    adjacent,
+                    standalone,
+                )
+            )
         return out
 
-    def _choose(self, text: str, results: Sequence[RecognizerResult]) -> list[_Span]:
-        """Merge overlapping person spans, then keep the best non-overlapping spans.
+    def _choose(self, text: str, results: Sequence[RecognizerResult]) -> _Chosen:
+        """Turn recognizer results into the non-overlapping spans to replace (D79.1, D79.2).
 
-        Best means higher score, then longer; a pattern span that contains a member name counts as
-        score 1.0, so it wins over the name by being longer. A person span that overlaps a member
-        match becomes one span (so "Priya Sharma" is not left as "<PERSON_1> Sharma") with the
-        member's score.
+        Scores: a pattern result (handle, URL, email, address, ...) that fully contains any person
+        result, member or NER, counts as 1.0, so "@priya_x" is replaced as a handle and not left as
+        "@<PERSON_1>_x". Overlapping spans then merge into their union, which takes the type of the
+        span ranked first (score, then length); nothing is dropped, so no part of a name is left
+        outside the winner. Finally every edge inside a word moves out to the word's edge; that can
+        make neighbours overlap, so merging and extending repeat until neither changes anything.
         """
-        people = sorted(
-            (r for r in results if r.entity_type in _PERSON_ENTITIES), key=lambda r: r.start
-        )
+        persons = [r for r in results if r.entity_type in _PERSON_ENTITIES]
         spans: list[_Span] = []
-        group: list[RecognizerResult] = []
-        group_end = -1
-        for r in [*people, None]:
-            if r is not None and group and r.start < group_end:
-                group.append(r)
-                group_end = max(group_end, r.end)
-                continue
-            if group:
-                spans.append(self._person_span(text, group))
-            if r is not None:
-                group, group_end = [r], r.end
-        person_spans = list(spans)
         for r in results:
-            if r.entity_type not in _ENTITY_TO_TYPE or r.entity_type in _PERSON_ENTITIES:
+            if r.entity_type not in _ENTITY_TO_TYPE:
                 continue
-            # A handle, URL, email or address that contains a member name is replaced whole:
-            # "@priya_x" must not become "@<PERSON_1>_x", which leaves part of the handle behind.
-            holds_name = any(r.start <= p.start and p.end <= r.end for p in person_spans)
-            spans.append(
-                _Span(r.start, r.end, r.entity_type, 1.0 if holds_name else float(r.score))
-            )
-        spans.sort(key=lambda s: (-s.score, -(s.end - s.start), s.start))
-        chosen: list[_Span] = []
-        for span in spans:
-            if all(span.end <= c.start or span.start >= c.end for c in chosen):
-                chosen.append(span)
-        chosen.sort(key=lambda s: s.start)
-        return chosen
+            if r.entity_type == "MEMBER_NAME":
+                hit = self._directory.find(text[r.start : r.end])
+                spans.append(
+                    _Span(r.start, r.end, r.entity_type, 1.0, hit[0].identities if hit else None)
+                )
+                continue
+            score = float(r.score)
+            if r.entity_type not in _PERSON_ENTITIES and any(
+                r.start <= p.start and p.end <= r.end for p in persons
+            ):
+                score = 1.0
+            spans.append(_Span(r.start, r.end, r.entity_type, score))
+        merges = extensions = 0
+        while True:
+            spans, absorbed = _merge_overlaps(spans)
+            spans, moved = _extend_to_runs(text, spans)
+            merges += absorbed
+            extensions += moved
+            if moved == 0:
+                return _Chosen(spans, merges, extensions)
 
-    def _person_span(self, text: str, group: Sequence[RecognizerResult]) -> _Span:
-        start = min(r.start for r in group)
-        end = max(r.end for r in group)
-        member = next((r for r in group if r.entity_type == "MEMBER_NAME"), None)
-        if member is not None:
-            hit = self._directory.find(text[member.start : member.end])
-            return _Span(start, end, "MEMBER_NAME", 1.0, hit[0].identities if hit else None)
-        score = max(float(r.score) for r in group)
-        return _Span(start, end, "PERSON", score, None, " ".join(fold(text[start:end]).split()))
+    def _backstop(
+        self, text: str, members: frozenset[str], pseudonyms: _Pseudonyms
+    ) -> tuple[str, int, int]:
+        """Replace any member-dictionary token still in `text` (D79.3). Fails closed.
+
+        Placeholders are masked by spaces first, so a word inside one ("person") is never matched.
+        Returns the text, how many replacements touched a placeholder and how many did not. Raises
+        RedactionError if a token is still there after _BACKSTOP_PASSES passes.
+        """
+        adjacent = standalone = 0
+        for _ in range(_BACKSTOP_PASSES):
+            matches = self._directory.find(_mask_placeholders(text))
+            if not matches:
+                return text, adjacent, standalone
+            held = [m.span() for m in _PLACEHOLDER.finditer(text)]
+            ends = {end for _, end in held}
+            starts = {start for start, _ in held}
+            pieces: list[str] = []
+            cursor = 0
+            for match in matches:
+                if match.start in ends or match.end in starts:
+                    adjacent += 1
+                else:
+                    standalone += 1
+                span = _Span(match.start, match.end, "MEMBER_NAME", 1.0, match.identities)
+                pieces.append(text[cursor : match.start])
+                pieces.append(_person_placeholder(span, text, members, pseudonyms))
+                cursor = match.end
+            pieces.append(text[cursor:])
+            text = "".join(pieces)
+        if self._directory.find(_mask_placeholders(text)):
+            raise RedactionError
+        return text, adjacent, standalone
 
     @staticmethod
     def _replace(
@@ -471,7 +578,7 @@ class Redactor:
             counts[kind] += 1
             pieces.append(text[cursor : span.start])
             if kind == "person":
-                pieces.append(_person_placeholder(span, members, pseudonyms))
+                pieces.append(_person_placeholder(span, text, members, pseudonyms))
             else:
                 pieces.append(f"<{kind.upper()}>")
             cursor = span.end
@@ -479,7 +586,9 @@ class Redactor:
         return "".join(pieces), {t: counts[t] for t in PLACEHOLDER_TYPES}
 
 
-def _person_placeholder(span: _Span, members: frozenset[str], pseudonyms: _Pseudonyms) -> str:
+def _person_placeholder(
+    span: _Span, text: str, members: frozenset[str], pseudonyms: _Pseudonyms
+) -> str:
     if span.entity == "MEMBER_NAME" and span.identities is not None:
         here = span.identities & members
         if len(here) == 1:
@@ -489,4 +598,5 @@ def _person_placeholder(span: _Span, members: frozenset[str], pseudonyms: _Pseud
         if len(span.identities) > 1:
             return "<PERSON>"
         return pseudonyms.label("~" + next(iter(span.identities)))  # a member of another thread
-    return pseudonyms.label("~" + span.name_key)
+    # A person only NER found: numbered by its casefolded text.
+    return pseudonyms.label("~" + " ".join(fold(text[span.start : span.end]).split()))
