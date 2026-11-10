@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load redaction-audit sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load redaction-audit label-tags label-questions label-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -56,7 +56,13 @@ dashboard-up:
 # One command, fresh export to dashboard: db + dashboard up and healthy, then the Airflow DAG once
 # (check landing -> migrate -> ingest -> dbt build -> summary), the same path CI verifies.
 # Safe to re-run: ingest is idempotent. Any failure exits non-zero. Prints counts, never content.
-e2e:
+#
+# Local dev only (ENV_FILE left at the default .env, which is the synthetic stack): data/landing is
+# replaced from the generator first, so an e2e can never ingest a landing that predates the
+# generator (a stale one once hid a new thread). Any other env file, a real run included, skips
+# this: data/landing is never touched and its landing is never regenerated or deleted.
+E2E_REGENERATE = $(if $(filter .env,$(ENV_FILE)),synth-landing)
+e2e: $(E2E_REGENERATE)
 	@test -f "$(ENV_FILE)" || { echo "error: env file not found (set ENV_FILE)"; exit 1; }
 	$(COMPOSE) up -d --build --wait db dashboard
 	$(COMPOSE) build airflow
@@ -85,8 +91,15 @@ ingest:
 	@echo "Real-data ingestion is run manually by Ryan in his own terminal. Not run by Claude Code."
 	@exit 1
 
-synth:
+# Synthetic exports, default seed: tests/fixtures/synthetic (tests) and data/landing (the dev stack's
+# landing, synthetic only). data/landing is replaced wholesale on every run: emptied, then written
+# from tests/synthetic/instagram.py. Nothing in it is ever read, so it cannot go stale or mix
+# generations; there is deliberately no check that compares it with the generator.
+synth: synth-landing
 	uv run python tests/synthetic/instagram.py
+
+synth-landing:
+	uv run python tests/synthetic/instagram.py --out data/landing
 
 # Content-free format report (counts, histograms, masked URI shapes) for an export ROOT.
 # Real exports: Ryan runs this himself, e.g. make inspect EXPORT_DIR="$EXPORT" > /tmp/instagram-schema.md
@@ -138,3 +151,17 @@ consent-load:
 #   make redaction-audit ENV_FILE=<env file outside the repo>
 redaction-audit:
 	@uv run gcw redaction-audit
+
+# Local hand labeling (D85, D86). Interactive: shows real messages in THIS terminal only and writes
+# labels to GCW_LABEL_DIR (must exist, outside the repo). Both refuse a database outside
+# ALLOWED_DATABASES. Keys: topic 1-9 and 0, sentiment g/n/b, u undo, q quit; resume where you left
+# off. Real-data runs are Ryan's: make label-tags ENV_FILE=<env file outside the repo>
+label-tags:
+	@uv run gcw label-tags
+
+label-questions:
+	@uv run gcw label-questions
+
+# Fixed aggregate lines only (counts per topic and sentiment, questions answered); safe to paste.
+label-summary:
+	@uv run gcw label-summary
