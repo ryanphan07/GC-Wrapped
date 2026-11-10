@@ -1,40 +1,39 @@
 # Status
-Last session: 2026-11-09 — P2-2a follow-ups on PR #32
+Last session: 2026-11-09 — P2-2a-fix: close residual member-token leaks (D79, D80)
 
 ## Phase & state
 Phase 2 (Enrichment + evals); Phase 1 complete.
-consent ledger [x] redaction [~] (module + audit built; NER eval/gate = P2-2b) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
+consent ledger [x] redaction [~] (leak fixes in; real-data re-audit pending; NER eval/gate = P2-2b) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
 
 ## Done this session
-- src/gcwrapped/redaction.py (new): MemberDirectory, Redactor.redact_thread, residual_member_tokens, load_model/RedactionModelError. Presidio + member-name/@handle/address/lenient-phone recognizers; own span replacement; per-call pseudonyms never returned; no network (sockets blocked in tests).
-- src/gcwrapped/redaction_audit.py (new), cli.py (lazy import), Makefile `redaction-audit`, log.py (Presidio loggers at ERROR).
-- pyproject/uv.lock: `redaction` group (presidio-analyzer 2.2.366, spacy 3.8.18, en_core_web_lg 3.8.0 wheel URL) included by `dev`; hypothesis 6.170.15 in dev. Airflow export verified to omit them.
-- Tests: tests/test_redaction.py (incl. hypothesis property), test_redaction_audit.py, test_redaction_audit_integration.py.
-- Follow-ups: every capsys test now also checks stderr for "sentinel"; new integration test runs `python -m gcwrapped.cli redaction-audit` in a subprocess against gcw_test (only `docker` faked as a no-op binary); run() sets step to database after docker returns (an audit failure is never "docker"); MemberDirectory docstring and README wording corrected.
-- ci.yml: uv cache enabled on every setup-uv; e2e job "Redaction audit" step. README privacy bullet, CLAUDE.md (privacy rule, command). decisions.md: D76, D77 verbatim, D78.
+- src/gcwrapped/redaction.py: `_choose` now merges overlapping spans into their union (type of the best-ranked) and extends every edge inside a word to the word's edge, repeating until stable; new `Redactor._backstop` (placeholders masked, 3 passes, `RedactionError` if a token survives); `RedactedMessage` gained 4 integer counters; comments in `_choose` corrected.
+- src/gcwrapped/redaction_audit.py: 8 new fixed-shape lines (merges, extensions, backstop total/adjacent/standalone, directory tokens, stop-word tokens, stop-word matches); exit rule unchanged.
+- tests: M1/M2 regressions, forced-residual backstop tests, raise-after-3-passes, placeholder-word test, new property test (names in/beside handles, URLs, emails, non-ASCII, overlapping names; derandomized), audit shape/sentinel tests.
+- ci.yml (assert "backstop replacements: 0"), Makefile `sync`, CLAUDE.md, README (setup + privacy bullet), METRICS.md (real failed audit + pytest baseline), decisions.md D79 (verbatim), D80.
 
 ## Deviations from brief
-- Member directory read from raw.messages (senders + reaction actors), not analytics.dim_members: same facts, no dbt dependency (D78).
-- Added a lenient phone regex, a person-span merge and a "pattern containing a name wins" rule: the property test and a handle case showed leaks without them (D78).
-- Ambiguity (D77.4) judged within the thread; deps in a group under `dev` so Airflow is unchanged (D78).
-- uv.lock moved numpy 2.5.4 -> 2.4.6 (pulled in by spaCy/thinc). Airflow export (`uv export --frozen --no-dev --group dbt --no-emit-project --no-hashes`) compared on main and this branch: identical (63 packages; numpy is not in it).
+- M1 reproduced only for the handle-vs-full-name case and a forced score-1.0 overlap (card); the URL and email variants did not fail on old code (kept as tests). D79 rule covers them anyway.
+- The 'ñ'-before-token M2 case "@priyañsentinelnameb" passed on old code (leftover folds to a non-token); kept as a guard.
+- `member-name tokens remaining: 0` was already asserted in ci.yml; only the backstop line was added.
+- Extra: `holds_name` now compares against raw person results, not merged groups (D80.3).
 
 ## Checks
-- Subprocess audit run (real model, gcw_test): stderr was 0 lines (no warnings, no logs); stdout exactly the 16 fixed lines + ok.
-- make lint: pass. make test: 485 passed. make test-integration: 42 passed. make test-warehouse: 18 passed (earlier). make redaction-audit (.env): ok.
-- make synth && make e2e (.env): exit 0. make redaction-audit (gcw_dev): scanned 170, with text 117, changed 10, person 29, other types 0, residual 0, 0.56 s, "redaction-audit: ok". make metrics raw messages: 170 (equal).
+- Regression tests failed on unchanged code (5 of 8: m1 handle, m1 forced card, 3 m2 cases), pass now.
+- make lint: pass. make test: 502 passed. make test-integration: 42 passed. Baseline on main 5a9907f: 485 / 42.
+- make synth && make e2e: ok. make redaction-audit (gcw_dev, .env): scanned 170, residual 0, backstop replacements 0, merges 0, extensions 0, directory tokens 14, ok.
+- make sync: ok; `import dbt, streamlit` ok. Airflow export identical to main's.
 - CI on this branch: not yet seen.
 
 ## Not verified
-- CI (new audit step, uv cache, model install time). Real data: `make redaction-audit ENV_FILE=$HOME/gcw-private/real.env`.
+- Real data (Ryan): `make redaction-audit ENV_FILE=$HOME/gcw-private/real.env`; expect residual 0 and read the backstop lines. CI audit step.
 
 ## Open issues and questions
-- One metrics run right after test-integration failed "failed at dbt (CalledProcessError)" earlier; not reproduced.
-- tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled; reject as unparsable if touched again.
+- redaction.py: "Priya™"-style chars (fold to letters but not isalnum) are a blind spot of extension and backstop (D80).
+- One metrics run after test-integration failed "failed at dbt (CalledProcessError)" earlier; not reproduced.
+- tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled.
 - Question: real-ingest-synthetic run 3 takes ~323 s; parked.
-- Question: nickname/misspelling gap stays until a real-data audit or P2-2b shows its size.
-
-- Redaction deps are dev-group only; P2-3 must decide where tagging runs (Airflow image vs separate container) before it can call gcwrapped.redaction.
+- Question: nickname/misspelling gap stays until a real audit or P2-2b shows its size.
+- Redaction deps are dev-group only; P2-3 must decide where tagging runs.
 
 ## Suggested next session
-P2-2b: NER eval set, scorer with bootstrap CIs, baseline and CI gate (D76). Then P2-3 tagging.
+Ryan's real re-audit; then P2-2b (NER eval set, scorer, CIs, D76 gate), then P2-3.

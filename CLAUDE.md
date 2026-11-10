@@ -36,6 +36,7 @@ Python 3.12 (uv), psycopg 3, pydantic-settings, Postgres 17 + pgvector (Docker),
 
 ## Commands
 ```
+make sync                       # uv sync --group dbt --group dashboard (plain uv sync drops them)
 make up / make down             # docker compose (Postgres)
 make synth                      # generate synthetic exports
 make test                       # unit tests

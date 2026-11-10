@@ -68,6 +68,12 @@ def test_audit_counts_and_leaks_nothing(
     assert "placeholders phone: 1" in lines
     assert "placeholders person: 3" in lines  # jose, priya, gwen (a reactor, in the directory)
     assert "member-name tokens remaining: 0" in lines
+    assert (
+        "backstop replacements: 0" in lines
+    )  # a non-zero count on synthetic data: a fix is missing
+    assert "directory tokens: 6" in lines
+    assert "directory tokens that are stop words: 0" in lines
+    assert "member matches on stop-word tokens: 0" in lines
     assert lines[-1] == "redaction-audit: ok"
     assert "sentinel" not in (captured.out + captured.err).lower()
 
@@ -143,5 +149,6 @@ def test_real_command_in_a_subprocess_leaks_nothing_on_either_stream(
         assert re.fullmatch(shape, line), shape
     assert lines[-1] == "redaction-audit: ok"
     assert "target database: gcw_test" in lines
+    assert "backstop replacements: 0" in lines
     assert "sentinel" not in result.stdout.lower()
     assert "sentinel" not in result.stderr.lower()

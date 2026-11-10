@@ -263,6 +263,7 @@ jobs:
           make redaction-audit ENV_FILE="$ENV_FILE" 2>&1 | tee redaction-audit.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "redaction-audit: ok" redaction-audit.log
           grep -qx "member-name tokens remaining: 0" redaction-audit.log
+          grep -qx "backstop replacements: 0" redaction-audit.log
           grep -qx "target database: gcw_dev" redaction-audit.log
           raw="$(psql 'SELECT count(*) FROM raw.messages')"
           test "$raw" -gt 0

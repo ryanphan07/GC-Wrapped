@@ -9,18 +9,20 @@ import re
 import socket
 import string
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import NoReturn
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from presidio_analyzer import RecognizerResult
 from spacy.language import Language
 
 from gcwrapped import redaction
 from gcwrapped.redaction import (
     PLACEHOLDER_TYPES,
     MemberDirectory,
+    RedactionError,
     RedactionModelError,
     Redactor,
     load_model,
@@ -211,7 +213,18 @@ def test_media_only_messages_pass_through(redactor: Redactor) -> None:
 
 def test_result_exposes_no_mapping(redactor: Redactor) -> None:
     result = redactor.redact_thread(T1, [(PRIYA, "Priya")])[0]
-    assert [f.name for f in dataclasses.fields(result)] == ["sender_label", "text", "counts"]
+    assert [f.name for f in dataclasses.fields(result)] == [
+        "sender_label",
+        "text",
+        "counts",
+        "overlap_merges",
+        "boundary_extensions",
+        "backstop_adjacent",
+        "backstop_standalone",
+    ]
+    counters = ("overlap_merges", "boundary_extensions", "backstop_adjacent", "backstop_standalone")
+    assert all(type(getattr(result, name)) is int for name in counters)
+
     assert list(result.counts) == list(PLACEHOLDER_TYPES)
     assert "SENTINEL" not in repr(result).upper()
     assert not hasattr(redactor, "mapping")
@@ -277,6 +290,133 @@ def test_model_dependent_ner_name_merges_with_member_match(redactor: Redactor) -
 def test_model_dependent_same_ner_name_gets_one_number(redactor: Redactor) -> None:
     out = one(redactor, "Daniela said hi and then daniela left")
     assert out.count("<PERSON_2>") == 2
+
+
+# --- Residual-token regressions (D79) ---------------------------------------------------------
+
+
+def test_m1_member_span_partly_overlapping_a_longer_handle_is_not_dropped(
+    redactor: Redactor, directory: MemberDirectory
+) -> None:
+    """The handle holds the member token "gwen", so it scores 1.0 and is longer than the full name
+    "SENTINELNAMEA Priya" that starts inside it. The name's tail must not survive as a word."""
+    out = one(redactor, "@gwen_xx_sentinelnamea priya")
+    assert residual_member_tokens(out, directory) == 0
+    assert out == "<HANDLE>"
+
+
+def test_m1_member_span_partly_overlapping_a_url_or_email(
+    redactor: Redactor, directory: MemberDirectory
+) -> None:
+    for text in (
+        "see gwen.example.com/sentinelnamea priya ok",
+        "gwen_xx_sentinelnamea@mail.com priya",
+    ):
+        assert residual_member_tokens(one(redactor, text), directory) == 0, text
+
+
+def test_m1_other_score_one_span_partly_overlapping_a_member_span(
+    redactor: Redactor, directory: MemberDirectory
+) -> None:
+    """A checksum-validated card or IBAN scores 1.0 in Presidio; it must not drop a member span
+    it only partly covers either. Spans are forced because no natural text overlaps both."""
+    text = "pay 4111111111111111 sentinelnamea priya"
+    results = [
+        RecognizerResult("CREDIT_CARD", 4, 24, 1.0),
+        RecognizerResult("MEMBER_NAME", 21, 40, 1.0),
+    ]
+    chosen = redactor._choose(text, results)
+    assert [(s.start, s.end, s.entity) for s in chosen.spans] == [(4, 40, "CREDIT_CARD")]
+    assert chosen.merges == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "@priya\u011fwen",  # handle stops at the non-ASCII letter; "gwen" is left over
+        "@" + "a" * 29 + "gwen",  # handle capped at 30 characters; "gwen" is left over
+        "@" + "a" * 29 + "gwen's",
+        "@priya\u00f1sentinelnameb",
+        "see https://example.com/\u00e9priya",
+    ],
+)
+def test_m2_pattern_span_ending_inside_a_word_leaves_no_member_token(
+    redactor: Redactor, directory: MemberDirectory, text: str
+) -> None:
+    out = one(redactor, text)
+    assert residual_member_tokens(out, directory) == 0
+
+
+# --- Counters and the backstop (D79) -----------------------------------------------------------
+
+
+class _DropsMemberSpans(Redactor):
+    """Test double for an unknown bug: every member span is lost before replacement."""
+
+    def _choose(self, text: str, results: Sequence[RecognizerResult]) -> redaction._Chosen:
+        chosen = super()._choose(text, results)
+        kept = [s for s in chosen.spans if s.entity != "MEMBER_NAME"]
+        return redaction._Chosen(kept, chosen.merges, chosen.extensions)
+
+
+def test_counters_report_merges_and_extensions(redactor: Redactor) -> None:
+    merged = redactor.redact_thread(T1, [(ZED, "@gwen_xx_sentinelnamea priya")])[0]
+    assert merged.overlap_merges >= 1
+    extended = redactor.redact_thread(T1, [(ZED, "@priya\u011fwen")])[0]
+    assert extended.boundary_extensions >= 1
+    for message in (merged, extended):
+        assert message.backstop_adjacent == message.backstop_standalone == 0
+
+
+def test_backstop_replaces_a_forced_residual_and_counts_it(
+    nlp: Language, directory: MemberDirectory
+) -> None:
+    double = _DropsMemberSpans(directory, nlp)
+    result = double.redact_thread(T1, [(ZED, "hi Priya and gwen!")])[0]
+    assert result.text is not None
+    assert residual_member_tokens(result.text, directory) == 0
+    assert result.text == "hi <PERSON_2> and <PERSON_3>!"
+    assert (result.backstop_adjacent, result.backstop_standalone) == (0, 2)
+    assert result.counts["person"] == 2
+
+
+def test_backstop_tells_adjacent_from_standalone(
+    redactor: Redactor, directory: MemberDirectory
+) -> None:
+    pseudonyms = redaction._Pseudonyms()
+    text, adjacent, standalone = redactor._backstop(
+        "<HANDLE>priya and <PERSON_1> priya, gwen<URL>", frozenset(), pseudonyms
+    )
+    assert residual_member_tokens(text, directory) == 0
+    assert (adjacent, standalone) == (2, 1)
+
+
+def test_backstop_raises_when_tokens_survive_three_passes(
+    nlp: Language, directory: MemberDirectory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(redaction, "_person_placeholder", lambda *_args: "priya")
+    double = _DropsMemberSpans(directory, nlp)
+    with pytest.raises(RedactionError) as excinfo:
+        double.redact_thread(T1, [(ZED, "hi Priya")])
+    assert "priya" not in str(excinfo.value).lower()
+
+
+def test_backstop_never_matches_words_inside_placeholders(nlp: Language) -> None:
+    """Names that equal placeholder words must not be found inside <PERSON_1>, <HANDLE>, <URL>..."""
+    names = MemberDirectory([(T1, "Person Handle"), (T1, "Url Ip"), (T1, "Email Phone")])
+    redactor = Redactor(names, nlp)
+    out = one(redactor, "@some_one_else http://example.com 203.0.113.9 a@b.com 415-867-5309")
+    assert out == "<HANDLE> <URL> <IP> <EMAIL> <PHONE>"
+    text, adjacent, standalone = redactor._backstop(
+        "<PERSON_1> <PERSON> <HANDLE> <URL> <IP> <EMAIL> <PHONE>",
+        frozenset(),
+        redaction._Pseudonyms(),
+    )
+    assert text == "<PERSON_1> <PERSON> <HANDLE> <URL> <IP> <EMAIL> <PHONE>"
+    assert (adjacent, standalone) == (0, 0)
+    assert redactor._backstop("a person here", frozenset(), redaction._Pseudonyms())[0] == (
+        "a <PERSON_1> here"
+    )
 
 
 # --- Plumbing --------------------------------------------------------------------------------
@@ -399,6 +539,7 @@ def test_property_no_member_token_phone_or_email_survives(
     out = Redactor(directory, nlp).redact_thread(T1, [(names[0], text)])[0]
     assert out.text is not None
     assert residual_member_tokens(out.text, directory) == 0
+    assert out.backstop_adjacent == out.backstop_standalone == 0
     assert phone not in out.text
     assert email not in out.text
     # An NER span may swallow a number or address into <PERSON_n> instead of <PHONE>; either way
@@ -406,3 +547,75 @@ def test_property_no_member_token_phone_or_email_survives(
     assert re.sub(r"\D", "", phone)[-7:] not in re.sub(r"\D", "", out.text)
     bare = redaction._PLACEHOLDER.sub(" ", out.text)  # "1@x.com" must not match "<PERSON_1>"
     assert email.split("@")[0] not in bare.split()
+
+
+# --- Property test: names inside and next to patterns (D79) ---------------------------------------
+
+_GLUE = st.sampled_from(["", " ", ",", "/", ".", "-"])
+_NON_ASCII = st.sampled_from(["\u00f1", "\u00e9", "\u011f", "\u00fc", "\u0131"])
+
+
+@st.composite
+def pattern_contexts(draw: st.DrawFn, names: list[str]) -> str:
+    """One piece of text that puts a member name token inside or beside a handle, URL or email."""
+    word = _variant(draw, draw(st.sampled_from(names)))
+    tokens = [t for t in re.findall(r"[^\W_]+", word) if len(t) >= 2] or [word]
+    token = str(draw(st.sampled_from(tokens)))
+    ascii_token = _strip_accents(token)
+    kind = draw(st.sampled_from(["handle", "long", "url", "email", "after", "unicode", "overlap"]))
+    if kind == "handle":
+        return "@" + ascii_token + draw(st.sampled_from(["", "_x", ".9", "_" + ascii_token]))
+    if kind == "long":
+        return "@" + "a" * draw(st.integers(24, 40)) + ascii_token
+    if kind == "url":
+        path = draw(
+            st.sampled_from(["https://example.com/{}/p", "www.site.org/u/{}?x=1", "http://a.io/{}"])
+        )
+        return path.format(ascii_token)
+    if kind == "email":
+        return f"{ascii_token}.{draw(st.sampled_from(['x', 'y9']))}@mail.com"
+    if kind == "after":
+        before = draw(st.sampled_from(["@bob", "https://e.com/a", "x@y.org", "(415) 867-5309"]))
+        return str(before) + str(draw(_GLUE)) + token
+    if kind == "unicode":
+        mark = draw(_NON_ASCII)
+        return draw(
+            st.sampled_from(["{t}{m}", "{m}{t}", "@b{m}{t}", "@{t}{m}b", "{t}{m} {t}"])
+        ).format(t=token, m=mark)
+    first, second = draw(_LETTERS), draw(_LETTERS)  # a two-word name partly overlapping a handle
+    names.append(f"{first} {second}")
+    return f"@pre_{draw(st.integers(10, 99))}_{first} {second}"
+
+
+@st.composite
+def context_scenario(draw: st.DrawFn) -> tuple[list[str], str, str, str]:
+    names = draw(st.lists(display_names(), min_size=1, max_size=3, unique=True))
+    pieces = [draw(pattern_contexts(names)) for _ in range(draw(st.integers(1, 3)))]
+    phone, email = draw(phones()), draw(emails())
+    pieces += [phone, email]
+    for word in draw(st.lists(_FILLER, min_size=1, max_size=4)):
+        pieces.insert(draw(st.integers(0, len(pieces))), word)
+    return names, " ".join(pieces), phone, email
+
+
+@settings(
+    max_examples=300,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.differing_executors],
+)
+@given(data=context_scenario())
+def test_property_names_in_and_beside_patterns_need_no_backstop(
+    nlp: Language, data: tuple[list[str], str, str, str]
+) -> None:
+    names, text, phone, email = data
+    directory = MemberDirectory([(T1, n) for n in names])
+    out = Redactor(directory, nlp).redact_thread(T1, [(names[0], text)])[0]
+    assert out.text is not None
+    assert residual_member_tokens(out.text, directory) == 0
+    assert (
+        out.backstop_adjacent == out.backstop_standalone == 0
+    )  # a non-zero count: a fix is missing
+    assert phone not in out.text
+    assert email not in out.text
+    assert re.sub(r"\D", "", phone)[-7:] not in re.sub(r"\D", "", out.text)
