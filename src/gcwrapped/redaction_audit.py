@@ -183,6 +183,7 @@ def run(steps: Steps = DEFAULT_STEPS) -> int:
 
     try:
         steps.docker()
+        set_step(STEP_DATABASE)  # from here on a failure is the audit's, never docker's
         report = steps.audit(set_step)
         set_step(STEP_RENDER)
         lines = render(report)

@@ -1,6 +1,11 @@
 """`gcw redaction-audit` against gcw_test with SENTINELNAME senders and SENTINELTEXT bodies."""
 
 import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -53,7 +58,8 @@ def test_audit_counts_and_leaks_nothing(
 
     assert redaction_audit.run(_run(migrated_db)) == 0
 
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     lines = out.splitlines()
     assert "target database: gcw_test" in lines
     assert "messages scanned: 4" in lines
@@ -63,7 +69,7 @@ def test_audit_counts_and_leaks_nothing(
     assert "placeholders person: 3" in lines  # jose, priya, gwen (a reactor, in the directory)
     assert "member-name tokens remaining: 0" in lines
     assert lines[-1] == "redaction-audit: ok"
-    assert "sentinel" not in out.lower()
+    assert "sentinel" not in (captured.out + captured.err).lower()
 
 
 def test_audit_writes_nothing(migrated_db: str) -> None:
@@ -84,8 +90,9 @@ def test_unknown_database_name_is_refused(capsys: pytest.CaptureFixture[str]) ->
         redaction_audit.audit_database(url, lambda step: None)
     steps = Steps(docker=lambda: None, audit=lambda s: redaction_audit.audit_database(url, s))
     assert redaction_audit.run(steps) == 1
-    out = capsys.readouterr().out
-    assert out == "redaction-audit: failed at database (UnexpectedDatabaseError)\n"
+    captured = capsys.readouterr()
+    assert captured.out == "redaction-audit: failed at database (UnexpectedDatabaseError)\n"
+    assert "sentinel" not in (captured.out + captured.err).lower()
 
 
 def test_database_error_prints_type_name_only(
@@ -94,5 +101,47 @@ def test_database_error_prints_type_name_only(
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         conn.execute("DROP TABLE raw.messages CASCADE")
     assert redaction_audit.run(_run(migrated_db)) == 1
-    out = capsys.readouterr().out
-    assert out == "redaction-audit: failed at directory (UndefinedTable)\n"
+    captured = capsys.readouterr()
+    assert captured.out == "redaction-audit: failed at directory (UndefinedTable)\n"
+    assert "sentinel" not in (captured.out + captured.err).lower()
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def test_real_command_in_a_subprocess_leaks_nothing_on_either_stream(
+    migrated_db: str, tmp_path: Path
+) -> None:
+    """`gcw redaction-audit` as a user runs it: real model, real database (gcw_test), two streams.
+
+    Only the external binary is faked: a `docker` that succeeds, so the db-start step does not
+    touch compose. The database comes from the environment clean_db set (GCW_DB_NAME,
+    DATABASE_URL), which wins over .env, so this cannot reach gcw_dev or gcw_real.
+    """
+    _seed(migrated_db)
+    fake = tmp_path / "docker"
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "ENV_FILE"}
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    assert env["GCW_DB_NAME"] == "gcw_test"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "gcwrapped.cli", "redaction-audit"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0
+    lines = result.stdout.splitlines()
+    shapes = redaction_audit.LINE_SHAPES
+    assert len(lines) == len(shapes) + 1
+    for line, shape in zip(lines[:-1], shapes, strict=True):
+        assert re.fullmatch(shape, line), shape
+    assert lines[-1] == "redaction-audit: ok"
+    assert "target database: gcw_test" in lines
+    assert "sentinel" not in result.stdout.lower()
+    assert "sentinel" not in result.stderr.lower()

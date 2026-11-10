@@ -171,7 +171,8 @@ class _Match:
 class MemberDirectory:
     """Every member display name (all threads), as a name dictionary plus per-thread membership.
 
-    Built from (thread_id, display_name) pairs, i.e. analytics.dim_members. The dictionary covers
+    Built from (thread_id, display_name) pairs: in the audit, raw.messages senders and reaction
+    actors, the facts analytics.dim_members is built from (D78). The dictionary covers
     everyone, so a "no" sender or a reactor is redacted too (D77). Thread membership only decides
     which pseudonym a match gets.
     """
