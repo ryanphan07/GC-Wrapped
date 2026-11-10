@@ -1,39 +1,36 @@
 # Status
-Last session: 2026-11-09 — P2-2a-fix: close residual member-token leaks (D79, D80)
+Last session: 2026-11-10 — P2-2a-close: record the real re-audit, one word definition (D81)
 
 ## Phase & state
 Phase 2 (Enrichment + evals); Phase 1 complete.
-consent ledger [x] redaction [~] (leak fixes in; real-data re-audit pending; NER eval/gate = P2-2b) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
+consent ledger [x] redaction [~] (real re-audit passed, D81 in; re-audit after D81 pending; NER eval/gate = P2-2b) tagging pipeline [ ] eval harness + CI eval [ ] real labels + real eval [ ] profiles [ ]
 
 ## Done this session
-- src/gcwrapped/redaction.py: `_choose` now merges overlapping spans into their union (type of the best-ranked) and extends every edge inside a word to the word's edge, repeating until stable; new `Redactor._backstop` (placeholders masked, 3 passes, `RedactionError` if a token survives); `RedactedMessage` gained 4 integer counters; comments in `_choose` corrected.
-- src/gcwrapped/redaction_audit.py: 8 new fixed-shape lines (merges, extensions, backstop total/adjacent/standalone, directory tokens, stop-word tokens, stop-word matches); exit rule unchanged.
-- tests: M1/M2 regressions, forced-residual backstop tests, raise-after-3-passes, placeholder-word test, new property test (names in/beside handles, URLs, emails, non-ASCII, overlapping names; derandomized), audit shape/sentinel tests.
-- ci.yml (assert "backstop replacements: 0"), Makefile `sync`, CLAUDE.md, README (setup + privacy bullet), METRICS.md (real failed audit + pytest baseline), decisions.md D79 (verbatim), D80.
+- METRICS.md: real re-audit row (after #33, 98df696) appended verbatim.
+- src/gcwrapped/redaction.py: `word_spans` is the one word definition (raw text, isalnum or a combining mark after one). `MemberDirectory.find`/`_add`/`_tokens`, `residual_member_tokens`, `_backstop` (via find) and `_extend_to_words` (was `_extend_to_runs`) all use it; folding is applied per word. The `_Folded` offset map and the `_RUN` regexes are gone: offsets are raw already. Full names match as folded words joined by the same gap (whitespace = any whitespace run).
+- tests/test_redaction.py: D81 regressions (symbol cases, full-width and ligature guards, glued-word gap guard, BMP sweep of every word break that folds to an alphanumeric); `pattern_contexts` now returns (text, extra names) instead of appending to `names`, and has ™ ℠ ℡ ㎏ in the glue plus a "symbol" kind.
+- docs/decisions.md: D81, D82 (verbatim). CLAUDE.md: git/gh end-of-session steps run as separate commands. Priya™ blind spot removed from Open issues; D80 untouched.
 
 ## Deviations from brief
-- M1 reproduced only for the handle-vs-full-name case and a forced score-1.0 overlap (card); the URL and email variants did not fail on old code (kept as tests). D79 rule covers them anyway.
-- The 'ñ'-before-token M2 case "@priyañsentinelnameb" passed on old code (leftover folds to a non-token); kept as a guard.
-- `member-name tokens remaining: 0` was already asserted in ci.yml; only the backstop line was added.
-- Extra: `holds_name` now compares against raw person results, not merged groups (D80.3).
+- none (no existing assertion changed; `_extend_to_runs` renamed `_extend_to_words`, no test referenced it).
 
 ## Checks
-- Regression tests failed on unchanged code (5 of 8: m1 handle, m1 forced card, 3 m2 cases), pass now.
-- make lint: pass. make test: 502 passed. make test-integration: 42 passed. Baseline on main 5a9907f: 485 / 42.
-- make synth && make e2e: ok. make redaction-audit (gcw_dev, .env): scanned 170, residual 0, backstop replacements 0, merges 0, extensions 0, directory tokens 14, ok.
-- make sync: ok; `import dbt, streamlit` ok. Airflow export identical to main's.
-- CI on this branch: not yet seen.
+- Regression tests failed on unchanged code (6 of 10): the 4 `name_beside_a_symbol` cases, `ligature_inside_a_name` (with a trailing ™), `every_word_break_that_folds_to_alphanumerics`. The full-width cases and the glued-word guard passed on old code (guards).
+- make lint: pass. make test: 512 passed (42 deselected). make test-integration: 42 passed (512 deselected). Baseline before: 502 / 42.
+- make synth && make e2e: ok. make redaction-audit (gcw_dev, .env): scanned 170, residual 0, backstop replacements 0, ok.
+- CI on this branch: not yet seen. ci.yml unchanged.
 
 ## Not verified
-- Real data (Ryan): `make redaction-audit ENV_FILE=$HOME/gcw-private/real.env`; expect residual 0 and read the backstop lines. CI audit step.
+- Real data (Ryan): `make redaction-audit ENV_FILE=$HOME/gcw-private/real.env`; expect gcw_real, residual 0, backstop 0, ok.
 
 ## Open issues and questions
-- redaction.py: "Priya™"-style chars (fold to letters but not isalnum) are a blind spot of extension and backstop (D80).
+- Stop-word over-redaction (measured in METRICS 2026-11-10): decided, D82: keep redacting; revisit in P2-3 only if the tagging eval shows a cost.
+- Interpretation: backstop 0 on real data means the 2026-11-09 residual tokens were closed at their source; residual 0 is guaranteed by the backstop and is not the signal.
+- Names glued to letters/digits and nickname gap: only a labeled eval (P2-2b) measures them.
 - One metrics run after test-integration failed "failed at dbt (CalledProcessError)" earlier; not reproduced.
 - tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled.
 - Question: real-ingest-synthetic run 3 takes ~323 s; parked.
-- Question: nickname/misspelling gap stays until a real audit or P2-2b shows its size.
 - Redaction deps are dev-group only; P2-3 must decide where tagging runs.
 
 ## Suggested next session
-Ryan's real re-audit; then P2-2b (NER eval set, scorer, CIs, D76 gate), then P2-3.
+P2-2b (NER eval set, scorer, CIs, D76 gate), then P2-3.
