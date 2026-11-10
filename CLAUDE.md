@@ -87,6 +87,7 @@ Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You neve
 3. Overwrite docs/STATUS.md in the format below.
 4. Append new decisions to docs/decisions.md.
 5. Run make lint test, then create a branch, commit, push, and open a PR with gh. If the brief says to update an existing PR, push to that PR's branch instead of opening a new one.
+Run the end-of-session git and gh steps as separate commands (git switch -c, git add, git commit, git push, gh pr create), never chained with && or ;. If a command is denied, stop and report it; do not retry it another way.
 6. When the session has a real-data step for Ryan, the PR body includes the "Run in your terminal" block verbatim (the same block that ends your reply).
 
 ### docs/STATUS.md format (overwrite every session, max 40 lines)

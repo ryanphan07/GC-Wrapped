@@ -17,6 +17,7 @@ Known gaps (D77): nicknames and misspellings that are not in the member director
 can leak; the address pattern is US-centric; name tokens that are common words are over-redacted.
 """
 
+import bisect
 import logging
 import re
 import unicodedata
@@ -79,10 +80,6 @@ _ENTITIES = tuple(_ENTITY_TO_TYPE)
 _PERSON_ENTITIES = frozenset({"MEMBER_NAME", "PERSON"})
 _PLACEHOLDER = re.compile(r"<(?:PERSON(?:_\d+)?|PHONE|EMAIL|URL|HANDLE|ADDRESS|CARD|SSN|IP|IBAN)>")
 
-# Alphanumeric runs: the unit names are split into and matched on (underscore separates words).
-_RUN = re.compile(r"[^\W_]+")
-_NOT_RUN_CHAR = r"(?![^\W_])"
-
 _HANDLE_REGEX = r"(?<![\w.@])@[A-Za-z0-9_](?:[A-Za-z0-9_.]{0,28}[A-Za-z0-9_])?"
 # Presidio's phone recognizer asks the phonenumbers library for a *valid* number and skips shapes it
 # rejects (an unassigned exchange, say). A leaked number is worse than an over-redacted digit run,
@@ -107,7 +104,33 @@ class RedactionModelError(RedactionError):
     """The pinned spaCy model is not installed or could not be loaded."""
 
 
-# --- Folding: case- and accent-insensitive matching, with offsets into the original ---------
+# --- Words (D81) and folding -----------------------------------------------------------------
+
+
+def _in_word(ch: str, in_word: bool) -> bool:
+    """Whether `ch` continues or starts a word: a letter, a digit, or a combining mark after one."""
+    return ch.isalnum() or (in_word and unicodedata.category(ch).startswith("M"))
+
+
+def word_spans(text: str) -> list[tuple[int, int]]:
+    """The words of `text` as (start, end) offsets, decided on the raw text (D81).
+
+    A word is a maximal run of str.isalnum characters or combining marks that follow one. This is
+    the only place a word boundary is decided: member matching, the residual check, the backstop and
+    span extension all call it. Folding never creates or removes a boundary.
+    """
+    spans: list[tuple[int, int]] = []
+    start = -1
+    for i, ch in enumerate(text):
+        if _in_word(ch, start >= 0):
+            if start < 0:
+                start = i
+        elif start >= 0:
+            spans.append((start, i))
+            start = -1
+    if start >= 0:
+        spans.append((start, len(text)))
+    return spans
 
 
 @lru_cache(maxsize=8192)
@@ -116,39 +139,16 @@ def _fold_char(ch: str) -> str:
     return stripped.casefold()
 
 
-class _Folded:
-    """`text` casefolded with accents stripped, and a way back to offsets in the original."""
-
-    def __init__(self, original: str) -> None:
-        self.original = original
-        self._starts: list[int] | None = None
-        self._ends: list[int] | None = None
-        if original.isascii():
-            self.text = original.lower()  # one output char per input char for ASCII
-            return
-        pieces: list[str] = []
-        starts: list[int] = []
-        ends: list[int] = []
-        for i, ch in enumerate(original):
-            folded = _fold_char(ch)
-            if not folded:
-                if ends:  # a combining mark belongs to the character before it
-                    ends[-1] = i + 1
-                continue
-            pieces.append(folded)
-            starts.extend([i] * len(folded))
-            ends.extend([i + 1] * len(folded))
-        self.text = "".join(pieces)
-        self._starts, self._ends = starts, ends
-
-    def original_span(self, start: int, end: int) -> tuple[int, int]:
-        if self._starts is None or self._ends is None:
-            return start, end
-        return self._starts[start], self._ends[end - 1]
-
-
 def fold(text: str) -> str:
-    return _Folded(text).text
+    """Casefolded, accents stripped. Only ever applied inside a word or to a whole name."""
+    if text.isascii():
+        return text.lower()
+    return "".join(_fold_char(ch) for ch in text)
+
+
+def _folded_words(text: str) -> list[tuple[int, int, str]]:
+    """Each word of `text` with its folded form, skipping words that fold to nothing."""
+    return [(s, e, w) for s, e in word_spans(text) if (w := fold(text[s:e]))]
 
 
 def _identity(name: str) -> str:
@@ -157,8 +157,8 @@ def _identity(name: str) -> str:
 
 
 def _tokens(name: str) -> list[str]:
-    """Name tokens: alphanumeric runs of the folded name, at least 2 characters, one letter."""
-    return [r for r in _RUN.findall(fold(name)) if len(r) >= 2 and any(c.isalpha() for c in r)]
+    """Name tokens: folded words of the name, at least 2 characters, one letter."""
+    return [w for _, _, w in _folded_words(name) if len(w) >= 2 and any(c.isalpha() for c in w)]
 
 
 # --- The member directory --------------------------------------------------------------------
@@ -184,8 +184,9 @@ class MemberDirectory:
         self._thread_members: dict[str, set[str]] = {}
         # token or single-word full name -> identities that contain it
         self._singles: dict[str, set[str]] = {}
-        # first run of a multi-run full name -> (pattern, identity), longest first
-        self._multi: dict[str, list[tuple[re.Pattern[str], str, int]]] = {}
+        # first word of a multi-word full name -> (words, gaps between them, identity, length),
+        # longest first
+        self._multi: dict[str, list[tuple[tuple[str, ...], tuple[str, ...], str, int]]] = {}
         seen: set[str] = set()
         for thread_id, name in members:
             ident = _identity(name)
@@ -195,25 +196,24 @@ class MemberDirectory:
             seen.add(name)
             self._add(name, ident)
         for entries in self._multi.values():
-            entries.sort(key=lambda e: -e[2])
+            entries.sort(key=lambda e: -e[3])
 
     def _add(self, name: str, ident: str) -> None:
         for token in _tokens(name):
             self._singles.setdefault(token, set()).add(ident)
-        # Full name: trim non-alphanumerics at both ends (an emoji is not part of the name).
-        runs = list(_RUN.finditer(fold(name)))
-        if not runs:
+        # Full name: words only, so an emoji at either end is not part of the name.
+        words = _folded_words(name)
+        if not words:
             return
-        folded = fold(name)
-        trimmed = folded[runs[0].start() : runs[-1].end()]
-        if len(trimmed) < 2 or not any(c.isalpha() for c in trimmed):
+        folded_name = fold(name[words[0][0] : words[-1][1]])
+        if len(folded_name) < 2 or not any(c.isalpha() for c in folded_name):
             return
-        if len(runs) == 1:
-            self._singles.setdefault(trimmed, set()).add(ident)
+        if len(words) == 1:
+            self._singles.setdefault(words[0][2], set()).add(ident)
             return
-        pattern = r"\s+".join(re.escape(part) for part in trimmed.split()) + _NOT_RUN_CHAR
-        self._multi.setdefault(runs[0].group(), []).append(
-            (re.compile(pattern), ident, len(trimmed))
+        gaps = tuple(fold(name[words[i][1] : words[i + 1][0]]) for i in range(len(words) - 1))
+        self._multi.setdefault(words[0][2], []).append(
+            (tuple(w for _, _, w in words), gaps, ident, len(folded_name))
         )
 
     @property
@@ -228,27 +228,47 @@ class MemberDirectory:
 
         Offsets are into `text`. A match's identities are every member the matched word could be.
         """
-        folded = _Folded(text)
+        words = _folded_words(text)
         matches: list[_Match] = []
-        covered_until = 0
-        for run in _RUN.finditer(folded.text):
-            if run.start() < covered_until:
-                continue
-            word = run.group()
+        i = 0
+        while i < len(words):
+            start, end, word = words[i]
             hit: _Match | None = None
-            for pattern, ident, _length in self._multi.get(word, ()):
-                m = pattern.match(folded.text, run.start())
-                if m:
-                    start, end = folded.original_span(m.start(), m.end())
-                    hit = _Match(start, end, frozenset({ident}))
-                    covered_until = m.end()
+            used = 1
+            for parts, gaps, ident, _length in self._multi.get(word, ()):
+                if self._full_name_at(text, words, i, parts, gaps):
+                    used = len(parts)
+                    hit = _Match(start, words[i + used - 1][1], frozenset({ident}))
                     break
             if hit is None and word in self._singles:
-                start, end = folded.original_span(run.start(), run.end())
                 hit = _Match(start, end, frozenset(self._singles[word]))
             if hit is not None:
                 matches.append(hit)
+            i += used
         return matches
+
+    @staticmethod
+    def _full_name_at(
+        text: str,
+        words: Sequence[tuple[int, int, str]],
+        i: int,
+        parts: tuple[str, ...],
+        gaps: tuple[str, ...],
+    ) -> bool:
+        if i + len(parts) > len(words):
+            return False
+        for k, part in enumerate(parts):
+            if words[i + k][2] != part:
+                return False
+            if k:
+                gap = text[words[i + k - 1][1] : words[i + k][0]]
+                # Whitespace in the name matches any whitespace run; other glue must be the same.
+                if gaps[k - 1].isspace():
+                    if not gap.isspace():
+                        return False
+                elif fold(gap) != gaps[k - 1]:
+                    return False
+        return True
 
 
 def residual_member_tokens(text: str, directory: MemberDirectory) -> int:
@@ -257,9 +277,9 @@ def residual_member_tokens(text: str, directory: MemberDirectory) -> int:
     Placeholders are ignored. Used by the tests and by `gcw redaction-audit`; a non-zero count on
     redacted output means a member name leaked.
     """
-    folded = fold(_PLACEHOLDER.sub(" ", text))
+    text = _PLACEHOLDER.sub(" ", text)
     tokens = directory.tokens
-    return sum(1 for run in _RUN.finditer(folded) if run.group() in tokens)
+    return sum(1 for _, _, word in _folded_words(text) if word in tokens)
 
 
 # --- Presidio wiring -------------------------------------------------------------------------
@@ -376,26 +396,31 @@ def _merge_overlaps(spans: Sequence[_Span]) -> tuple[list[_Span], int]:
     return merged, absorbed
 
 
-def _in_run(ch: str) -> bool:
-    """Part of an alphanumeric run: a letter or digit, or a combining mark that follows one."""
-    return ch.isalnum() or unicodedata.category(ch).startswith("M")
-
-
-def _extend_to_runs(text: str, spans: Sequence[_Span]) -> tuple[list[_Span], int]:
-    """Move each span edge that falls inside an alphanumeric run out to the run's edge (D79.2).
+def _extend_to_words(text: str, spans: Sequence[_Span]) -> tuple[list[_Span], int]:
+    """Move each span edge that falls inside a word out to the word's edge (D79.2, D81).
 
     Without this, a pattern that stops mid-word (a handle capped at 30 characters, a URL ending at
     a non-ASCII letter) leaves the rest of the word standing alone after replacement. Returns the
     spans and how many edges moved.
     """
+    words = word_spans(text)
+    starts = [s for s, _ in words]
+
+    def containing(pos: int) -> tuple[int, int] | None:
+        """The word with start < pos < end, i.e. an edge at `pos` cuts it in two."""
+        k = bisect.bisect_left(starts, pos) - 1
+        if k >= 0 and words[k][0] < pos < words[k][1]:
+            return words[k]
+        return None
+
     out: list[_Span] = []
     moved = 0
     for span in spans:
         start, end = span.start, span.end
-        while start > 0 and _in_run(text[start - 1]) and _in_run(text[start]):
-            start -= 1
-        while end < len(text) and _in_run(text[end - 1]) and _in_run(text[end]):
-            end += 1
+        if (w := containing(start)) is not None:
+            start = w[0]
+        if (w := containing(end)) is not None:
+            end = w[1]
         moved += (start != span.start) + (end != span.end)
         out.append(_Span(start, end, span.entity, span.score, span.identities))
     return out, moved
@@ -526,7 +551,7 @@ class Redactor:
         merges = extensions = 0
         while True:
             spans, absorbed = _merge_overlaps(spans)
-            spans, moved = _extend_to_runs(text, spans)
+            spans, moved = _extend_to_words(text, spans)
             merges += absorbed
             extensions += moved
             if moved == 0:

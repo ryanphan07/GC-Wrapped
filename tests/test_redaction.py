@@ -551,46 +551,59 @@ def test_property_no_member_token_phone_or_email_survives(
 
 # --- Property test: names inside and next to patterns (D79) ---------------------------------------
 
-_GLUE = st.sampled_from(["", " ", ",", "/", ".", "-"])
+# "™ ℠ ℡ ㎏" are not alphanumeric but fold to letters (D81): glue that used to hide a name.
+_GLUE = st.sampled_from(["", " ", ",", "/", ".", "-", "\u2122", "\u2120", "\u2121", "\u338f"])
 _NON_ASCII = st.sampled_from(["\u00f1", "\u00e9", "\u011f", "\u00fc", "\u0131"])
 
 
 @st.composite
-def pattern_contexts(draw: st.DrawFn, names: list[str]) -> str:
-    """One piece of text that puts a member name token inside or beside a handle, URL or email."""
+def pattern_contexts(draw: st.DrawFn, names: list[str]) -> tuple[str, list[str]]:
+    """One piece of text that puts a member name token inside or beside a handle, URL or email.
+
+    Returns the text and any extra member names it needs in the directory; `names` is not changed.
+    """
     word = _variant(draw, draw(st.sampled_from(names)))
     tokens = [t for t in re.findall(r"[^\W_]+", word) if len(t) >= 2] or [word]
     token = str(draw(st.sampled_from(tokens)))
     ascii_token = _strip_accents(token)
-    kind = draw(st.sampled_from(["handle", "long", "url", "email", "after", "unicode", "overlap"]))
+    kind = draw(
+        st.sampled_from(["handle", "long", "url", "email", "after", "unicode", "symbol", "overlap"])
+    )
     if kind == "handle":
-        return "@" + ascii_token + draw(st.sampled_from(["", "_x", ".9", "_" + ascii_token]))
+        return ("@" + ascii_token + draw(st.sampled_from(["", "_x", ".9", "_" + ascii_token])), [])
     if kind == "long":
-        return "@" + "a" * draw(st.integers(24, 40)) + ascii_token
+        return ("@" + "a" * draw(st.integers(24, 40)) + ascii_token, [])
     if kind == "url":
         path = draw(
             st.sampled_from(["https://example.com/{}/p", "www.site.org/u/{}?x=1", "http://a.io/{}"])
         )
-        return path.format(ascii_token)
+        return (path.format(ascii_token), [])
     if kind == "email":
-        return f"{ascii_token}.{draw(st.sampled_from(['x', 'y9']))}@mail.com"
+        return (f"{ascii_token}.{draw(st.sampled_from(['x', 'y9']))}@mail.com", [])
     if kind == "after":
         before = draw(st.sampled_from(["@bob", "https://e.com/a", "x@y.org", "(415) 867-5309"]))
-        return str(before) + str(draw(_GLUE)) + token
+        return (str(before) + str(draw(_GLUE)) + token, [])
     if kind == "unicode":
         mark = draw(_NON_ASCII)
-        return draw(
-            st.sampled_from(["{t}{m}", "{m}{t}", "@b{m}{t}", "@{t}{m}b", "{t}{m} {t}"])
-        ).format(t=token, m=mark)
+        pattern = draw(st.sampled_from(["{t}{m}", "{m}{t}", "@b{m}{t}", "@{t}{m}b", "{t}{m} {t}"]))
+        return pattern.format(t=token, m=mark), []
+    if kind == "symbol":
+        symbol = draw(_GLUE.filter(bool))
+        return draw(st.sampled_from(["{t}{g}", "{g}{t}", "x {t}{g}x", "{t}{g}{t}"])).format(
+            t=token, g=symbol
+        ), []
     first, second = draw(_LETTERS), draw(_LETTERS)  # a two-word name partly overlapping a handle
-    names.append(f"{first} {second}")
-    return f"@pre_{draw(st.integers(10, 99))}_{first} {second}"
+    return f"@pre_{draw(st.integers(10, 99))}_{first} {second}", [f"{first} {second}"]
 
 
 @st.composite
 def context_scenario(draw: st.DrawFn) -> tuple[list[str], str, str, str]:
     names = draw(st.lists(display_names(), min_size=1, max_size=3, unique=True))
-    pieces = [draw(pattern_contexts(names)) for _ in range(draw(st.integers(1, 3)))]
+    pieces: list[str] = []
+    for _ in range(draw(st.integers(1, 3))):
+        piece, extra = draw(pattern_contexts(names))
+        pieces.append(piece)
+        names = [*names, *extra]
     phone, email = draw(phones()), draw(emails())
     pieces += [phone, email]
     for word in draw(st.lists(_FILLER, min_size=1, max_size=4)):
@@ -619,3 +632,80 @@ def test_property_names_in_and_beside_patterns_need_no_backstop(
     assert phone not in out.text
     assert email not in out.text
     assert re.sub(r"\D", "", phone)[-7:] not in re.sub(r"\D", "", out.text)
+
+
+# --- One definition of a word (D81) ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["hi Priya™", "™priya", "Priya℠ and Jose㎏", "℡José"])
+def test_d81_name_beside_a_symbol_that_folds_to_letters(
+    redactor: Redactor, directory: MemberDirectory, text: str
+) -> None:
+    assert residual_member_tokens(text, directory) >= 1  # the audit counts it before redaction
+    out = redactor.redact_thread(T1, [(ZED, text)])[0]
+    assert out.text is not None
+    assert residual_member_tokens(out.text, directory) == 0
+    assert "priya" not in unicodedata.normalize("NFKD", out.text).casefold().replace("™", "")
+    assert out.backstop_adjacent == out.backstop_standalone == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "\uff30\uff52\uff49\uff59\uff41",  # full-width "Priya"
+        "hi \uff30\uff32\uff29\uff39\uff21!",
+        "\uff2a\uff4f\uff53\u00e9",
+    ],
+)
+def test_d81_full_width_letters_are_part_of_the_word(
+    redactor: Redactor, directory: MemberDirectory, text: str
+) -> None:
+    assert residual_member_tokens(text, directory) >= 1
+    out = one(redactor, text)
+    assert residual_member_tokens(out, directory) == 0
+    assert "<PERSON_" in out
+
+
+def test_d81_ligature_inside_a_name_stays_one_word(nlp: Language) -> None:
+    names = MemberDirectory([(T1, "Fiona"), (T1, "Zoë Fisher")])
+    assert residual_member_tokens("ﬁona and ﬁona™", names) == 2
+    redactor = Redactor(names, nlp)
+    out = one(redactor, "hi ﬁona and Zoe ﬁsher and ﬁona™")
+    assert residual_member_tokens(out, names) == 0
+    assert "ﬁ" not in out
+
+
+def test_d81_word_without_a_break_is_still_one_word(directory: MemberDirectory) -> None:
+    """The documented gap: a name glued to letters or digits is one word and is not matched."""
+    assert directory.find("priya123 xpriya") == []
+
+
+def _symbol_breaks() -> list[str]:
+    """BMP characters that break a word under D81 but fold to something with a letter or digit."""
+    out = []
+    for code in range(0x10000):
+        ch = chr(code)
+        if ch.isalnum() or unicodedata.category(ch).startswith(("M", "C")):
+            continue
+        folded = "".join(
+            c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c)
+        ).casefold()
+        if any(c.isalnum() for c in folded):
+            out.append(ch)
+    return out
+
+
+def test_d81_every_word_break_that_folds_to_alphanumerics(nlp: Language) -> None:
+    breaks = _symbol_breaks()
+    assert "™" in breaks and "℠" in breaks and "㎏" in breaks  # the list is not empty
+    names = MemberDirectory([(T1, "SENTINELNAMEA Priya")])
+    redactor = Redactor(names, nlp)
+    texts = [f"priya{ch}" for ch in breaks] + [f"{ch}priya" for ch in breaks]
+    for text in texts:
+        assert len(names.find(text)) == 1, repr(text)
+    outs = redactor.redact_thread(T1, [(ZED, t) for t in texts])
+    for text, out in zip(texts, outs, strict=True):
+        assert out.text is not None
+        assert residual_member_tokens(out.text, names) == 0, repr(text)
+        assert "<PERSON" in out.text, repr(text)
+        assert out.backstop_adjacent == out.backstop_standalone == 0, repr(text)
