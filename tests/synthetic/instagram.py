@@ -18,6 +18,7 @@ import os
 import random
 import re
 import shutil
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,8 +48,25 @@ _SAME_SENDER_CHANCE = 0.4
 SENTINEL_NO = "SENTINELNAME Priya, 🎉"
 SENTINEL_BLANK = "SENTINELNAME Zoë Müller"
 
+# Decorated display names for the redaction audit (D83): enclosed letters, a trailing "™" and a
+# trailing "⑵". Their plain-letter forms are what the other members type. Synthetic, no real names.
+DECORATED_ENCLOSED = "".join(chr(0x24D0 + ord(c) - 97) for c in "sentineldeca")
+DECORATED_TM = "SENTINELDECB\u2122"
+DECORATED_PAREN = "SENTINELDECC\u2475"
+_DECORATED_TEXTS = [
+    "did sentineldeca see this",
+    "tell SENTINELDECB we are late",
+    "SENTINELDECC said ok",
+    "sentineldeca and sentineldecb are coming",
+    "ask sentineldecc",
+    "SENTINELDECA was right",
+]
+
 # Consent by display name for the synthetic ledger: a mix of yes, no and blank.
 CONSENT_BY_SENDER = {
+    DECORATED_ENCLOSED: "yes",
+    DECORATED_TM: "no",
+    DECORATED_PAREN: "",
     "José Núñez": "yes",
     "Sam Lee": "yes",
     "Ana Ruiz": "yes",
@@ -75,6 +93,12 @@ THREADS: list[tuple[str, str, list[str], int]] = [
     ),
     ("sam_293847561029384", "Sam Lee", ["Ana Ruiz", "Sam Lee"], 40),
     ("48271936502817364", "Priya Raman", ["Ana Ruiz", "Priya Raman"], 30),
+    (
+        "decorated_51928374650192837",
+        "Decorated Names",
+        [DECORATED_ENCLOSED, DECORATED_TM, DECORATED_PAREN],
+        30,
+    ),
 ]
 
 # The numeric thread IDs of THREADS: what GCW_THREAD_ALLOWLIST must list for synthetic data.
@@ -142,7 +166,12 @@ def _external_video_uri(i: int) -> str:
     return f"https://scontent.cdninstagram.com/v/t66.30100-16/syn{i:04d}_n.mp4{_QUERY}"
 
 
-def build_conversation(rng: random.Random, participants: list[str], count: int) -> list[Message]:
+def build_conversation(
+    rng: random.Random,
+    participants: list[str],
+    count: int,
+    texts: Sequence[str] = _TEXTS,
+) -> list[Message]:
     """A thread's full history, oldest first, as clean (un-mojibaked) message dicts.
 
     Always contains: photos (some extensionless, some without creation_timestamp), shares (one
@@ -181,7 +210,7 @@ def build_conversation(rng: random.Random, participants: list[str], count: int) 
         if rng.random() < 0.95:
             msg[fmt.KEY_IS_UNSENT_IMAGE] = False
         if kind == "text":
-            msg[fmt.KEY_CONTENT] = rng.choice(_TEXTS)
+            msg[fmt.KEY_CONTENT] = rng.choice(texts)
         elif kind == "photo":
             n = 2 if i == 3 else rng.randint(1, 3)
             msg[fmt.KEY_PHOTOS] = [
@@ -293,7 +322,12 @@ def write_thread(
 def _histories(seed: int) -> list[list[Message]]:
     """Each thread's full history, in THREADS order. One rng, so the order of calls matters."""
     rng = random.Random(seed)
-    return [build_conversation(rng, participants, count) for _, _, participants, count in THREADS]
+    return [
+        build_conversation(
+            rng, participants, count, _DECORATED_TEXTS if DECORATED_TM in participants else _TEXTS
+        )
+        for _, _, participants, count in THREADS
+    ]
 
 
 def consent_ledger_rows(seed: int = 1234) -> list[ledger.LedgerRow]:

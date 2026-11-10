@@ -19,7 +19,7 @@ from synthetic import sentinel
 from synthetic.instagram import SYNTHETIC_THREAD_IDS, generate_pair
 
 REPO = Path(__file__).resolve().parents[1]
-FIRST_ID, SECOND_ID, THIRD_ID = SYNTHETIC_THREAD_IDS
+FIRST_ID, SECOND_ID, THIRD_ID, *_ = SYNTHETIC_THREAD_IDS
 MALFORMED = "{ this is not json SENTINELTEXT"
 
 
@@ -146,8 +146,8 @@ def test_select_threads_counts_shapes_and_skips_the_rest(tmp_path: Path) -> None
     sel = fmt.select_threads(a, {FIRST_ID, SECOND_ID})
 
     assert {fmt.thread_id(d) for d in sel.threads} == {FIRST_ID, SECOND_ID}
-    assert sel.shapes == {"<name>_<digits>": 3, "<digits>": 1, "other": 1}
-    assert sel.not_allowlisted == 2  # the sentinel thread and the third synthetic thread
+    assert sel.shapes == {"<name>_<digits>": 4, "<digits>": 1, "other": 1}
+    assert sel.not_allowlisted == 3  # the sentinel thread and the third and fourth synthetic ones
     assert sel.other_shape == 1
     assert sel.allowlisted_found == {FIRST_ID, SECOND_ID}
 
@@ -277,17 +277,17 @@ def test_check_landing_reports_counts_per_root_and_in_total(
     lines = out.splitlines()
     assert "export roots: 2" in lines
     for number in (1, 2):
-        assert f"root {number} folders <name>_<digits>: 2" in lines
+        assert f"root {number} folders <name>_<digits>: 3" in lines
         assert f"root {number} folders <digits>: 1" in lines
         assert f"root {number} folders other: 0" in lines
-        assert f"root {number} allowlisted IDs found: 3" in lines
-        assert f"root {number} allowlisted threads to ingest: 3" in lines
-    assert "total folders <name>_<digits>: 4" in lines
+        assert f"root {number} allowlisted IDs found: 4" in lines
+        assert f"root {number} allowlisted threads to ingest: 4" in lines
+    assert "total folders <name>_<digits>: 6" in lines
     assert "total folders <digits>: 2" in lines
-    assert "allowlisted IDs configured: 3" in lines
-    assert "allowlisted IDs found: 3" in lines
+    assert "allowlisted IDs configured: 4" in lines
+    assert "allowlisted IDs found: 4" in lines
     assert "allowlisted IDs not found: 0" in lines
-    assert "allowlisted threads to ingest: 3" in lines
+    assert "allowlisted threads to ingest: 4" in lines
 
 
 def test_check_landing_counts_configured_ids_that_were_not_found(
