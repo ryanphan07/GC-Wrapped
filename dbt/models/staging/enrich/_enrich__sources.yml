@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: enrich
+    description: Model-derived labels written by `gcw tag` (D89). Topic and sentiment only, no text.
+    schema: enrich
+    tables:
+      - name: message_tags
+        description: One row per (message_key, model_id, prompt_version).

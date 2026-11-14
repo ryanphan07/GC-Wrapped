@@ -33,7 +33,7 @@ Not yet in scope: analysis of image/video content, a second platform, any hosted
 
 ## Stack
 Python 3.12 (uv), psycopg 3, pydantic-settings, Postgres 17 + pgvector (Docker), dbt-postgres, Airflow (LocalExecutor, runs from its own image: official base plus gcwrapped and dbt in an isolated venv), Streamlit dashboard, pytest, ruff, mypy --strict, GitHub Actions.
-Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Not installed yet.
+Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Installed so far (D89, D90): the llama.cpp server as the `llm` compose service (CPU image pinned by digest, 127.0.0.1 only, profile `llm`) and Qwen3-4B-Instruct-2507 Q4_K_M, fetched to ~/.cache/gcw/models by `make llm-model`. The local embedding model is not installed yet.
 
 ## Commands
 ```
@@ -52,6 +52,9 @@ make redaction-audit            # redact all ingested messages in memory, aggreg
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
+make llm-model                  # download the pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models)
+make tag [LIMIT=n]              # starts db + llm only; tags local-eligible messages, resumable, prunes revoked; fixed lines only. Real-data runs are Ryan's.
+make tag-bench                  # the 60 synthetic labeled messages through the real model; gcw_dev only, stores nothing, a sanity check not an eval
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
 
@@ -103,6 +106,7 @@ One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10).
 4. Append new decisions to docs/decisions.md.
 5. Run make lint test, then create a branch, commit, push, and open a PR with gh. If the brief says to update an existing PR, push to that PR's branch instead of opening a new one.
 Run the end-of-session git and gh steps as separate commands (git switch -c, git add, git commit, git push, gh pr create), never chained with && or ;. If a command is denied, stop and report it; do not retry it another way.
+   Write the PR body to a file under /tmp with the Write tool and run `gh pr create --title "..." --body-file <that file>`; never build a command with command substitution or a heredoc (one was denied in P2-3b).
 6. When the session has a real-data step for Ryan, the PR body includes the "Run in your terminal" block verbatim (the same block that ends your reply).
 
 ### docs/STATUS.md format (overwrite every session, max 40 lines)

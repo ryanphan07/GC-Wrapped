@@ -78,6 +78,24 @@ jobs:
       - run: make dbt-build
       # Dashboard queries, permission-denied checks for gcw_reader, and the Streamlit AppTest.
       - run: make test-warehouse
+      # D89: tagging against a stub llama.cpp server (schema-valid JSON, no model is ever downloaded).
+      # Loads the synthetic consent ledger, tags every local-eligible message, and a rerun tags none.
+      - name: Tagging against a stub llm
+        env:
+          GCW_CONSENT_LEDGER: ./tests/fixtures/synthetic_consent/senders.csv
+          GCW_LLM_URL: http://127.0.0.1:8099
+        run: |
+          uv run gcw consent-load --no-start
+          uv run python tests/tagging_stub.py --port 8099 &
+          until curl -fsS http://127.0.0.1:8099/health >/dev/null 2>&1; do sleep 0.5; done
+          uv run gcw tag --no-start | tee tag-1.log
+          grep -qx "tag: ok" tag-1.log
+          grep -qx "failures: 0" tag-1.log
+          grep -qE "^tagged this run: [1-9][0-9]*$" tag-1.log
+          uv run gcw tag --no-start | tee tag-2.log
+          grep -qx "tagged this run: 0" tag-2.log
+          if grep -qi sentinel tag-1.log tag-2.log; then echo "sentinel string in tag output"; exit 1; fi
+          kill %1
 
   airflow:
     runs-on: ubuntu-latest

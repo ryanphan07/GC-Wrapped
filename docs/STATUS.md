@@ -1,40 +1,40 @@
 # Status
-Last session: 2026-11-13 — P2-3b (burst, between S2 and S3): two-level opt-in consent (D88), local eligibility, consent coverage report
+Last session: 2026-11-14 — P2-4 (burst S3): local llama.cpp server and tagging pipeline
 
 ## Phase & state
 Phase 2 (Enrichment + evals); burst plan in CLAUDE.md. P2-2b (NER gate) is needed only before a hosted provider (D84).
-consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] synthetic labeled sets [x] consent replies (Ryan, collecting) real labels [ ] tagging pipeline [ ] eval harness + CI eval [ ] real eval [ ] profiles [ ]
+consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] synthetic labeled sets [x] consent replies (Ryan, collecting) real labels [ ] tagging pipeline [x synthetic] eval harness + CI eval [ ] real eval [ ] profiles [ ]
 
 ## Done this session
-- docs: D88 verbatim; METRICS.md row (11a9753, the #37 squash). CLAUDE.md: privacy line, Burst plan order, consent-coverage command. README: "two gates" bullet now the two opt-in levels, labeling bullet "senders who opted in".
-- src/gcwrapped/ledger.py: values yes/local/no/blank (else bad_value, all-or-nothing as before); consent-load prints "consented (local): N" after the yes line.
-- migrations/003_consent_local.sql: replaces the CHECK on raw.sender_consent to allow "local" (002 untouched).
-- dbt: fct_message_eligibility adds local_ok; staging accepted_values has the four values; unit tests: yes = both, local = local_ok only, no/blank/missing/other-thread = neither, empty ledger = neither.
-- src/gcwrapped/labeling/source.py: local_ok instead of external_ok.
-- src/gcwrapped/consent_coverage.py, cli.py, Makefile: `make consent-coverage` (database guard, label-dir guard, 15 fixed lines, shape-checked). Priority list `consent_priorities.csv` (rank, thread_id, thread_title, sender_name, text_messages, cumulative_share, consent) written atomically, 0600, to GCW_LABEL_DIR only, never printed.
-- tests/synthetic/instagram.py: "José Núñez" (weekend thread, not in the eval thread) is now "local".
-- Tests: test_consent_coverage.py (+integration), ledger/migrate/labeling tests adapted.
+- docs: D89, D90 verbatim; CLAUDE.md Stack, Commands and the PR-body-file rule; README tagging bullet; METRICS.md row (e512679 baseline).
+- docker-compose.yml: `llm` service (image pinned by digest, profile `llm`, 127.0.0.1 only, ctx 2048, 1 slot, 8 threads, `--no-slots --no-webui`, health check); airflow gets GCW_LLM_URL from GCW_AIRFLOW_LLM_URL (empty = tag task skipped). .env.example documents the new vars.
+- src/gcwrapped/tagging/: model.py (pinned GGUF, checksum download), prompt.py, provider.py (interface, hosted stub), llamacpp.py (URL guard, no proxy, no redirect, one retry), runner.py (resumable, batched, prunes), report.py (shape-checked lines), commands.py. cli.py: tag, tag-bench, llm-model. config.py: TaggingSettings. Makefile: llm-model, tag, tag-bench.
+- migrations/004_enrich_message_tags.sql. dbt: stg_enrich__message_tags, fct_message_tags (no reader grant), agg_tags_by_thread, agg_tags_by_sender (reader grant), tests and one unit test.
+- airflow DAG: optional `tag` leaf after dbt build (exit 99 skip, `--no-start`). ci.yml: tagging step against tests/tagging_stub.py; no model download.
+- Tests: tests/test_tagging.py, test_tagging_integration.py, test_llm_server_local.py (skips unless the llm service is up), tagging_stub.py; warehouse and migrate tests adapted.
 
 ## Deviations from brief
-- New migration 003: the table's CHECK (002) rejected "local", so a schema change was unavoidable; consent-load applies it via migrate like 002.
-- Coverage reads the loaded raw.sender_consent and fct_message_eligibility (not the CSV). "Senders" are (thread, display name) pairs; the consent column adds "missing" for a sender with no ledger row. "Text message" = non-blank content (labeling's rule). "M" in "N of M threads" = all threads in raw.messages. The ranking includes already-consented senders (their consent shows in the file).
-- Synthetic counts that changed: dbt build PASS 143 -> 144 (one new not_null test, local_ok); consent-load on gcw_dev now has "consented (yes): 9, (local): 1" (was 10 yes); migrations applied 2 -> 3.
-- ci.yml unchanged: its yes/external_ok checks still hold because external_ok is unchanged.
+- Model file from the unsloth GGUF repo at commit a06e946b (Qwen publishes no pinned equivalent I could verify); same model, sha256 3605803b… checked.
+- tests/conftest.py clean_db also drops schema `enrich` (after its gcw_test assertion; the isolation guard is untouched), since 004's FK points at raw.
+- `gcw tag --no-start` for the DAG (no docker there). tag-bench refuses any database but gcw_dev. dbt PASS 144 -> 175; migrations 3 -> 4.
+- CI fix (PR #39 integration): root cause src/gcwrapped/ledger.py:415 (`run_load` calls `start_database`, i.e. `docker compose up`, which the job's Postgres service container lacks; failed as `consent-load: failed at database (CalledProcessError)`). Fix: `gcw consent-load --no-start` (cli.py, default unchanged; `run_load` untouched) used by the stub-tagging step in ci.yml; 2 tests added.
 
 ## Checks
-- make lint: pass. make test: 665 passed (50 deselected), baseline 641. make test-integration: 50 passed (665 deselected), baseline 46. (pytest output)
-- gcw_dev: make synth && make e2e twice, dbt build PASS=144 ERROR=0 (airflow task log); second run rows inserted 0, parsed 360. consent-load: ledger rows 15, yes 9, local 1, no 3, blank 2. consent-coverage: text messages 253, local-eligible 193, external-eligible 180, threads 5 of 5, senders for 50/80/90%: 4/9/11; priority file mode 600.
-- A ledger value outside the four ("Local"): consent-load exits 1 with "ledger error: bad_value at line 2", table unchanged (counts identical afterwards). Run through ledger.run_load, because .env's GCW_CONSENT_LEDGER wins over an environment override.
+- make lint: pass. make test: 722 passed (70 deselected), baseline 665. make test-integration: 69 passed, 1 skipped (llm leak test; it passed alone against the live server), baseline 50. make test-warehouse: 20 passed. Airflow image DAG tests: 5 passed. (pytest output)
+- dbt build on gcw_dev: PASS=175 WARN=0 ERROR=0 (dbt output).
+- make tag-bench (gcw_dev, 60 synthetic, qwen3-4b-instruct-2507-q4_k_m, prompt 5b3245c5c605): failures 0; seconds 148.21; 0.40 msg/s; p50 2.408 s; p95 3.545 s; synthetic topic accuracy 0.883; sentiment 0.817 (sanity check, not an eval).
+- make tag (gcw_dev): 193 local-eligible, tagged 193, failures 0, 365.73 s, 0.53 msg/s, p50 1.890 s, p95 2.254 s. Immediate rerun: tagged 0, already 193. No out-of-memory (~4 GiB available with db + llm up). After flipping one synthetic sender to no + consent-load: pruned 8, 185 left, tagged 0.
 
 ## Not verified
-- CI on the PR. Real data: the step below.
-- Existing real databases get migration 003 on the next consent-load (it calls migrate).
+- CI on the PR (stub-tagging step ran locally against gcw_dev: consent-load --no-start, tag 193, rerun 0, no leak; local DB was prepared by ingest/dbt build, not CI's psql reset, psql absent), including the new stub-tagging step and the DAG's skipped tag task in `airflow dags test`.
+- Real data: none this session. The real tagging run is part of the real-data batch.
 
 ## Open issues and questions
 - Stop-word over-redaction (D82); glued names and nicknames: only P2-2b measures them.
 - tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled. real-ingest-synthetic run 3 ~323 s; parked.
-- Redaction deps are dev-group only; S3 must decide where tagging runs. Revoked consent leaves old label rows (D87); eval must drop them.
+- Revoked consent leaves old label rows (D87); eval must drop them. Tags are pruned (D89).
 - metrics.py still reports external-eligible only; add local-eligible if wanted.
+- A real stack needs its own GCW_LLM_PORT if the dev llm is up at the same time.
 
 ## Suggested next session
-S3: tagging pipeline on synthetic data with a local llama.cpp backend (hosted fails closed, D84), selecting messages with local_ok, importing gcwrapped.labeling.schema and source.
+S4: tagging eval harness on the synthetic set (win rule fixed in advance, compare with a smaller model); real eval waits for the real-data batch.

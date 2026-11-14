@@ -40,10 +40,13 @@ models:
         +grants:
           select: ['gcw_reader']
       agg_member_activity: *reader_grant
+      agg_tags_by_sender: *reader_grant
+      agg_tags_by_thread: *reader_grant
       dim_members: *reader_grant
       fct_messages: *reader_grant
       fct_reactions: *reader_grant
       fct_sessions: *reader_grant
+      # fct_message_tags: per-message labels with keys, deliberately absent (aggregates only).
       # fct_message_eligibility: a view (set in the model), deliberately absent from this list.
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
