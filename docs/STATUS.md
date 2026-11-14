@@ -16,17 +16,17 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 ## Deviations from brief
 - Model file from the unsloth GGUF repo at commit a06e946b (Qwen publishes no pinned equivalent I could verify); same model, sha256 3605803b… checked.
 - tests/conftest.py clean_db also drops schema `enrich` (after its gcw_test assertion; the isolation guard is untouched), since 004's FK points at raw.
-- Hosted/local split: `gcw tag --no-start` for the DAG (the container has no docker). tag-bench refuses any database but gcw_dev.
-- New dbt/CI counts: dbt build PASS 144 -> 175; migrations 3 -> 4. The local-only leak test is marked integration and skips when llm is down.
+- `gcw tag --no-start` for the DAG (no docker there). tag-bench refuses any database but gcw_dev. dbt PASS 144 -> 175; migrations 3 -> 4.
+- CI fix (PR #39 integration): root cause src/gcwrapped/ledger.py:415 (`run_load` calls `start_database`, i.e. `docker compose up`, which the job's Postgres service container lacks; failed as `consent-load: failed at database (CalledProcessError)`). Fix: `gcw consent-load --no-start` (cli.py, default unchanged; `run_load` untouched) used by the stub-tagging step in ci.yml; 2 tests added.
 
 ## Checks
-- make lint: pass. make test: 720 passed (70 deselected), baseline 665. make test-integration: 69 passed, 1 skipped (llm leak test; it passed alone against the live server), baseline 50. make test-warehouse: 20 passed. Airflow image DAG tests: 5 passed. (pytest output)
+- make lint: pass. make test: 722 passed (70 deselected), baseline 665. make test-integration: 69 passed, 1 skipped (llm leak test; it passed alone against the live server), baseline 50. make test-warehouse: 20 passed. Airflow image DAG tests: 5 passed. (pytest output)
 - dbt build on gcw_dev: PASS=175 WARN=0 ERROR=0 (dbt output).
 - make tag-bench (gcw_dev, 60 synthetic, qwen3-4b-instruct-2507-q4_k_m, prompt 5b3245c5c605): failures 0; seconds 148.21; 0.40 msg/s; p50 2.408 s; p95 3.545 s; synthetic topic accuracy 0.883; sentiment 0.817 (sanity check, not an eval).
 - make tag (gcw_dev): 193 local-eligible, tagged 193, failures 0, 365.73 s, 0.53 msg/s, p50 1.890 s, p95 2.254 s. Immediate rerun: tagged 0, already 193. No out-of-memory (~4 GiB available with db + llm up). After flipping one synthetic sender to no + consent-load: pruned 8, 185 left, tagged 0.
 
 ## Not verified
-- CI on the PR, including the new stub-tagging step and the DAG's skipped tag task in `airflow dags test`.
+- CI on the PR (stub-tagging step ran locally against gcw_dev: consent-load --no-start, tag 193, rerun 0, no leak; local DB was prepared by ingest/dbt build, not CI's psql reset, psql absent), including the new stub-tagging step and the DAG's skipped tag task in `airflow dags test`.
 - Real data: none this session. The real tagging run is part of the real-data batch.
 
 ## Open issues and questions

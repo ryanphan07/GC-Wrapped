@@ -46,6 +46,10 @@ _NO_DB_CONFIG = (
 )
 
 
+def _no_op() -> None:
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gcw", description="GC Wrapped pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -91,9 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
         "consent-template",
         help="create or extend the per-sender consent ledger from the warehouse (counts only)",
     )
-    sub.add_parser(
+    consent_load = sub.add_parser(
         "consent-load",
         help="validate the whole consent ledger, then load it into raw.sender_consent",
+    )
+    consent_load.add_argument(
+        "--no-start",
+        action="store_true",
+        help="do not start compose services (the database is already running, as in CI)",
     )
     sub.add_parser(
         "consent-coverage",
@@ -334,7 +343,7 @@ def _run(argv: Sequence[str] | None) -> int:
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":
-        return ledger.run_load()
+        return ledger.run_load(_no_op) if args.no_start else ledger.run_load()
     if args.command == "consent-coverage":
         return consent_coverage.run()
     if args.command == "last-run":

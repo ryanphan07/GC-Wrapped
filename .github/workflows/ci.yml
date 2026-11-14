@@ -85,7 +85,7 @@ jobs:
           GCW_CONSENT_LEDGER: ./tests/fixtures/synthetic_consent/senders.csv
           GCW_LLM_URL: http://127.0.0.1:8099
         run: |
-          uv run gcw consent-load
+          uv run gcw consent-load --no-start
           uv run python tests/tagging_stub.py --port 8099 &
           until curl -fsS http://127.0.0.1:8099/health >/dev/null 2>&1; do sleep 0.5; done
           uv run gcw tag --no-start | tee tag-1.log
