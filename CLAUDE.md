@@ -50,6 +50,7 @@ make e2e [ENV_FILE=...]         # one-command end to end
 make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
+make purge-unlisted [CONFIRM=1]  # delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (D91); dry run unless CONFIRM=1; counts only. Real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
 make llm-model                  # download the pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models)
@@ -107,7 +108,8 @@ One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10).
 5. Run make lint test, then create a branch, commit, push, and open a PR with gh. If the brief says to update an existing PR, push to that PR's branch instead of opening a new one.
 Run the end-of-session git and gh steps as separate commands (git switch -c, git add, git commit, git push, gh pr create), never chained with && or ;. If a command is denied, stop and report it; do not retry it another way.
    Write the PR body to a file under /tmp with the Write tool and run `gh pr create --title "..." --body-file <that file>`; never build a command with command substitution or a heredoc (one was denied in P2-3b).
-6. When the session has a real-data step for Ryan, the PR body includes the "Run in your terminal" block verbatim (the same block that ends your reply).
+6. After gh pr create, run `gh pr checks <PR number> --watch`. If any job fails, read its log with `gh run view <run id> --log-failed`, fix the root cause, commit, and push to the same branch, then watch again. Stop after 2 fix attempts and report what is still failing under Open issues in docs/STATUS.md. Never remove, skip or weaken a CI step, assertion or privacy check to make CI pass.
+7. When the session has a real-data step for Ryan, the PR body includes the "Run in your terminal" block verbatim (the same block that ends your reply).
 
 ### docs/STATUS.md format (overwrite every session, max 40 lines)
 Sections, in this order:
