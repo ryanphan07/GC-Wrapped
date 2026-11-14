@@ -1,10 +1,10 @@
 version: 2
 
 unit_tests:
-  - name: external_ok_only_for_yes
+  - name: eligibility_levels_by_consent
     description: >
-      Only an exact "yes" for the message's own thread and sender is eligible. "no", blank, a
-      sender missing from the ledger, and the same name in another thread's ledger row are not.
+      D88. "yes" gives local_ok and external_ok; "local" gives local_ok only; "no", blank, a sender
+      missing from the ledger, and the same name in another thread's ledger row give neither.
     model: fct_message_eligibility
     given:
       - input: ref('stg_instagram__messages')
@@ -14,22 +14,25 @@ unit_tests:
           - {message_key: m3, thread_id: t1, sender_name: C}
           - {message_key: m4, thread_id: t1, sender_name: D}
           - {message_key: m5, thread_id: t2, sender_name: A}
+          - {message_key: m6, thread_id: t1, sender_name: E}
       - input: ref('stg_consent__sender_consent')
         rows:
           - {thread_id: t1, sender_name: A, consent: "yes"}
           - {thread_id: t1, sender_name: B, consent: "no"}
           - {thread_id: t1, sender_name: C, consent: ""}
           - {thread_id: t2, sender_name: Z, consent: "yes"}
+          - {thread_id: t1, sender_name: E, consent: "local"}
     expect:
       rows:
-        - {message_key: m1, external_ok: true}
-        - {message_key: m2, external_ok: false}
-        - {message_key: m3, external_ok: false}
-        - {message_key: m4, external_ok: false}
-        - {message_key: m5, external_ok: false}
+        - {message_key: m1, local_ok: true, external_ok: true}
+        - {message_key: m2, local_ok: false, external_ok: false}
+        - {message_key: m3, local_ok: false, external_ok: false}
+        - {message_key: m4, local_ok: false, external_ok: false}
+        - {message_key: m5, local_ok: false, external_ok: false}
+        - {message_key: m6, local_ok: true, external_ok: false}
 
-  - name: external_ok_false_with_no_ledger
-    description: With no ledger loaded, every message is external_ok = false.
+  - name: eligibility_false_with_no_ledger
+    description: With no ledger loaded, every message is local_ok = false and external_ok = false.
     model: fct_message_eligibility
     given:
       - input: ref('stg_instagram__messages')
@@ -41,5 +44,5 @@ unit_tests:
         rows: select null::text as thread_id, null::text as sender_name, null::text as consent where false
     expect:
       rows:
-        - {message_key: m1, external_ok: false}
-        - {message_key: m2, external_ok: false}
+        - {message_key: m1, local_ok: false, external_ok: false}
+        - {message_key: m2, local_ok: false, external_ok: false}

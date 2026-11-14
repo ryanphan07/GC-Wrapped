@@ -68,12 +68,13 @@ _DECORATED_TEXTS = [
     "SENTINELDECA was right",
 ]
 
-# Consent by display name for the synthetic ledger: a mix of yes, no and blank.
+# Consent by display name for the synthetic ledger: a mix of yes, local, no and blank. The "local"
+# sender is in the weekend thread only, never in the eval thread (whose senders are all yes).
 CONSENT_BY_SENDER = {
     DECORATED_ENCLOSED: "yes",
     DECORATED_TM: "no",
     DECORATED_PAREN: "",
-    "José Núñez": "yes",
+    "José Núñez": "local",
     "Sam Lee": "yes",
     "Ana Ruiz": "yes",
     "Priya Raman": "yes",

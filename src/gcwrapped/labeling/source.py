@@ -1,10 +1,11 @@
 """The labelable messages and their context (D85).
 
-One definition of "eligible": a message with text whose sender is "yes" in the consent ledger for
-that thread, i.e. `analytics.fct_message_eligibility.external_ok` (D69, D75). The labeler samples
-from it, shows context from it and the tagger (S3) will tag and embed from it, so a revoked consent
-removes a message everywhere at once. Context is the neighbours in the same thread that are
-themselves eligible, in sent order; a neighbour from a "no" or blank sender is skipped, not shown.
+One definition of "eligible": a message with text whose sender opted in ("yes" or "local") in the
+consent ledger for that thread, i.e. `analytics.fct_message_eligibility.local_ok` (D69, D75, D88).
+The labeler samples from it, shows context from it and the tagger (S3) will tag and embed from it,
+so a revoked consent removes a message everywhere at once. Context is the neighbours in the same
+thread that are themselves eligible, in sent order; a neighbour from a "no", blank or unlisted
+sender is skipped, not shown.
 
 Message text lives only in memory here: the index is built per run and never written anywhere.
 """
@@ -19,7 +20,7 @@ ELIGIBLE_SQL = """
 SELECT m.thread_id, m.message_key, m.content
 FROM raw.messages AS m
 JOIN analytics.fct_message_eligibility AS e USING (message_key)
-WHERE e.external_ok AND coalesce(m.content ~ '\\S', false)
+WHERE e.local_ok AND coalesce(m.content ~ '\\S', false)
 ORDER BY m.thread_id, m.sent_at, m.message_key
 """
 

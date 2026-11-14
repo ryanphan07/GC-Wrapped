@@ -1,9 +1,10 @@
-"""Per-sender consent ledger (D69): who may have their text processed outside this machine.
+"""Per-sender consent ledger (D69, D88): whose text may be processed, and where.
 
 A UTF-8 CSV kept outside the repo (GCW_CONSENT_LEDGER), one row per (thread_id, sender display
-name), consent "yes", "no" or blank (blank means no). `make consent-template` creates and extends
-it; `make consent-load` validates the whole file and replaces raw.sender_consent in one
-transaction. dbt's fct_message_eligibility is the one place that turns it into a per-message
+name), consent "yes" (this machine and redacted external), "local" (this machine only), "no" or
+blank (blank means no). `make consent-template` creates and extends it; `make consent-load`
+validates the whole file and replaces raw.sender_consent in one transaction. dbt's
+fct_message_eligibility is the one place that turns it into per-message `local_ok` and
 `external_ok`. The thread allowlist (consent.py) still gates ingestion; this is the second gate.
 
 Privacy: both commands print fixed labels, numbers, a line number per validation error and
@@ -29,7 +30,7 @@ from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.migrate import migrate
 
 HEADER = ("consent", "thread_id", "sender_name", "messages")
-CONSENT_VALUES = ("yes", "no", "")
+CONSENT_VALUES = ("yes", "local", "no", "")
 REAL_DATABASE = "gcw_real"
 MAX_ERROR_LINES = 20
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +64,7 @@ LOAD_SHAPES = (
     _DB,
     r"ledger rows: \d+",
     r"consented \(yes\): \d+",
+    r"consented \(local\): \d+",
     r"declined \(no\): \d+",
     r"undecided \(blank, treated as no\): \d+",
     r"consent-load: ok",
@@ -98,7 +100,7 @@ class ShapeError(LedgerError):
 
 @dataclass(frozen=True)
 class LedgerRow:
-    consent: str  # "yes", "no" or "" (undecided; treated as no)
+    consent: str  # "yes", "local", "no" or "" (undecided; treated as no)
     thread_id: str
     sender_name: str
     messages: str  # informational only; kept as written so stale rows round-trip unchanged
@@ -135,6 +137,7 @@ class MergeResult:
 class Counts:
     rows: int
     yes: int
+    local: int
     no: int
     blank: int
 
@@ -307,6 +310,7 @@ def count_consent(rows: Iterable[LedgerRow]) -> Counts:
     return Counts(
         rows=len(listed),
         yes=sum(1 for r in listed if r.consent == "yes"),
+        local=sum(1 for r in listed if r.consent == "local"),
         no=sum(1 for r in listed if r.consent == "no"),
         blank=sum(1 for r in listed if r.consent == ""),
     )
@@ -432,6 +436,7 @@ def run_load(start_db: Callable[[], None] = start_database) -> int:
             f"target database: {database}",
             f"ledger rows: {counts.rows}",
             f"consented (yes): {counts.yes}",
+            f"consented (local): {counts.local}",
             f"declined (no): {counts.no}",
             f"undecided (blank, treated as no): {counts.blank}",
             "consent-load: ok",
