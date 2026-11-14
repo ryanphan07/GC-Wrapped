@@ -27,10 +27,19 @@ def test_dags_import_without_errors(dagbag: DagBag) -> None:
 
 
 def test_tasks_run_in_the_expected_order(dag: DAG) -> None:
-    assert sorted(dag.task_ids) == sorted(ORDER)
+    assert sorted(dag.task_ids) == sorted([*ORDER, "tag"])
     for upstream, downstream in pairwise(ORDER):
         assert dag.get_task(downstream).upstream_task_ids == {upstream}
     assert dag.get_task(ORDER[0]).upstream_task_ids == set()
+
+
+def test_tag_is_an_optional_leaf_after_the_build_and_summarize_does_not_wait_for_it(
+    dag: DAG,
+) -> None:
+    tag = dag.get_task("tag")
+    assert tag.upstream_task_ids == {"dbt_deps_and_build"}
+    assert tag.downstream_task_ids == set()
+    assert dag.get_task("summarize").upstream_task_ids == {"dbt_deps_and_build"}
 
 
 def test_schedule_and_run_settings(dag: DAG) -> None:
@@ -40,4 +49,4 @@ def test_schedule_and_run_settings(dag: DAG) -> None:
 
 
 def test_every_task_retries_once(dag: DAG) -> None:
-    assert {t.task_id: t.retries for t in dag.tasks} == dict.fromkeys(ORDER, 1)
+    assert {t.task_id: t.retries for t in dag.tasks} == dict.fromkeys([*ORDER, "tag"], 1)

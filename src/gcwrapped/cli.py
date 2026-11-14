@@ -28,6 +28,7 @@ from gcwrapped.parsers.instagram import (
     parse_export_consented,
 )
 from gcwrapped.runs import latest_run
+from gcwrapped.tagging import commands as tagging
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ _NO_DB_CONFIG = (
     "error: database not configured (set GCW_DB_NAME, POSTGRES_USER, POSTGRES_PASSWORD; "
     "DATABASE_URL, if set, must name the same database)"
 )
+
+
+def _no_op() -> None:
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,9 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
         "consent-template",
         help="create or extend the per-sender consent ledger from the warehouse (counts only)",
     )
-    sub.add_parser(
+    consent_load = sub.add_parser(
         "consent-load",
         help="validate the whole consent ledger, then load it into raw.sender_consent",
+    )
+    consent_load.add_argument(
+        "--no-start",
+        action="store_true",
+        help="do not start compose services (the database is already running, as in CI)",
     )
     sub.add_parser(
         "consent-coverage",
@@ -110,6 +120,23 @@ def build_parser() -> argparse.ArgumentParser:
         "label-summary",
         help="aggregate counts about the labels so far (fixed lines only)",
     )
+    tag = sub.add_parser(
+        "tag",
+        help="tag local-eligible messages with the local llama.cpp model (fixed lines only)",
+    )
+    tag.add_argument(
+        "--limit", type=int, default=None, metavar="N", help="tag at most N messages this run"
+    )
+    tag.add_argument(
+        "--no-start",
+        action="store_true",
+        help="do not start compose services (the Airflow container has no docker)",
+    )
+    sub.add_parser(
+        "tag-bench",
+        help="run the synthetic labeled messages through the model (gcw_dev only, stores nothing)",
+    )
+    sub.add_parser("llm-model", help="download the pinned model file, checking its sha256")
     real = sub.add_parser(
         "real-ingest",
         help="guarded pipeline run for a real-data env file; prints allowlisted lines only",
@@ -305,10 +332,18 @@ def _run(argv: Sequence[str] | None) -> int:
         return labeling.run_label_questions()
     if args.command == "label-summary":
         return labeling.run_label_summary()
+    if args.command == "tag":
+        return tagging.run_tag(
+            limit=args.limit, start=None if args.no_start else tagging.start_services
+        )
+    if args.command == "tag-bench":
+        return tagging.run_bench()
+    if args.command == "llm-model":
+        return tagging.run_llm_model()
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":
-        return ledger.run_load()
+        return ledger.run_load(_no_op) if args.no_start else ledger.run_load()
     if args.command == "consent-coverage":
         return consent_coverage.run()
     if args.command == "last-run":

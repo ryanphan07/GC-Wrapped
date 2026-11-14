@@ -282,3 +282,70 @@ models:
       - name: external_ok
         description: True only when the sender's consent in this thread is "yes".
         data_tests: [not_null]
+
+  - name: fct_message_tags
+    description: >
+      The current tag (latest written row, any model or prompt version) of each local_ok message
+      (D88, D89). A message whose sender is no longer local_ok is absent. Per-message and keyed, so
+      the reader role has no grant; use the aggregates. No message text.
+    columns:
+      - name: message_key
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_messages')
+                field: message_key
+      - name: thread_id
+        data_tests: [not_null]
+      - name: member_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: topic
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [plans, school, work, food, entertainment, sports_fitness, relationships, banter, news, other]
+      - name: sentiment
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [positive, neutral, negative]
+      - name: model_id
+        data_tests: [not_null]
+      - name: prompt_version
+        data_tests: [not_null]
+
+  - name: agg_tags_by_thread
+    description: Counts of current tags per thread, topic and sentiment. Counts only.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [thread_id, topic, sentiment]
+    columns:
+      - name: messages
+        data_tests: [not_null]
+
+  - name: agg_tags_by_sender
+    description: Counts of current tags per member, topic and sentiment. Counts only.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [member_key, topic, sentiment]
+    columns:
+      - name: member_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: messages
+        data_tests: [not_null]

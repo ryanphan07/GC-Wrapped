@@ -48,6 +48,9 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Optional tag task (D89): the compose-network URL of the llm service, e.g. http://llm:8080.
+      # Empty (the default) skips the task. The client refuses any other host.
+      GCW_LLM_URL: ${GCW_AIRFLOW_LLM_URL:-}
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
     ports:
       - "127.0.0.1:8080:8080"
@@ -81,6 +84,44 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  # Local llama.cpp server for tagging (D89, D90). CPU image pinned by digest. Behind the `llm`
+  # profile, so `make up`, `make e2e` and CI never start it; `make tag` names it explicitly. The
+  # model file is mounted read-only from GCW_MODEL_DIR (`make llm-model` puts it there) and the port is
+  # published on 127.0.0.1 only. A real-data stack sets its own GCW_LLM_PORT so two stacks can coexist.
+  # No text leaves through this server: --no-slots removes the endpoint that shows in-flight
+  # prompts, --no-webui removes the chat UI, and --props and --metrics stay off (their default).
+  # Logging stays at the default level, which does not print prompts (a local test checks the logs).
+  llm:
+    profiles: ["llm"]
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:c7d58273d753d33a352e5c41ab300c5ae040a16fa4b202231bb606478065c124
+    command:
+      - --model
+      - /models/${GCW_LLM_MODEL_FILE:-Qwen3-4B-Instruct-2507-Q4_K_M.gguf}
+      - --alias
+      - qwen3-4b-instruct-2507-q4_k_m
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "2048"
+      - --parallel
+      - "1"
+      - --threads
+      - "8"
+      - --no-slots
+      - --no-webui
+    ports:
+      - "127.0.0.1:${GCW_LLM_PORT:-8081}:8080"
+    volumes:
+      - ${GCW_MODEL_DIR:-${HOME}/.cache/gcw/models}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
 
 volumes:
   pgdata:

@@ -1,0 +1,29 @@
+version: 2
+
+unit_tests:
+  - name: tags_current_row_and_local_ok_only
+    description: >
+      D88, D89. A message with two tag rows (two prompt versions) shows only the latest; a tagged
+      message whose sender is not local_ok is absent; a "local" sender's tag is kept.
+    model: fct_message_tags
+    given:
+      - input: ref('stg_enrich__message_tags')
+        rows:
+          - {message_key: m1, topic: food, sentiment: neutral, model_id: x, prompt_version: p1, run_id: r1, tagged_at: "2026-11-01 10:00:00"}
+          - {message_key: m1, topic: plans, sentiment: positive, model_id: x, prompt_version: p2, run_id: r2, tagged_at: "2026-11-02 10:00:00"}
+          - {message_key: m2, topic: work, sentiment: negative, model_id: x, prompt_version: p2, run_id: r2, tagged_at: "2026-11-02 10:00:00"}
+          - {message_key: m3, topic: news, sentiment: neutral, model_id: x, prompt_version: p2, run_id: r2, tagged_at: "2026-11-02 10:00:00"}
+      - input: ref('fct_message_eligibility')
+        rows:
+          - {message_key: m1, local_ok: true}
+          - {message_key: m2, local_ok: false}
+          - {message_key: m3, local_ok: true}
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A}
+          - {message_key: m2, thread_id: t1, sender_name: B}
+          - {message_key: m3, thread_id: t1, sender_name: A}
+    expect:
+      rows:
+        - {message_key: m1, thread_id: t1, topic: plans, sentiment: positive, prompt_version: p2}
+        - {message_key: m3, thread_id: t1, topic: news, sentiment: neutral, prompt_version: p2}

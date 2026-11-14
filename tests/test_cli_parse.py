@@ -125,3 +125,11 @@ def test_ingest_with_no_threads_fails_before_touching_the_database(
     out = capsys.readouterr().out
     assert "no allowlisted message threads" in out
     assert "database not configured" not in out  # failed on the path, before any DB config
+
+
+def test_consent_load_accepts_no_start() -> None:
+    from gcwrapped.cli import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["consent-load", "--no-start"]).no_start is True
+    assert parser.parse_args(["consent-load"]).no_start is False

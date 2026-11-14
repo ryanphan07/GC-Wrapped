@@ -93,6 +93,7 @@ def clean_db(test_database_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterato
         row = conn.execute("SELECT current_database()").fetchone()
         assert row == (TEST_DB_NAME,), "integration tests may only reset the gcw_test database"
         conn.execute("DROP SCHEMA IF EXISTS raw CASCADE")
+        conn.execute("DROP SCHEMA IF EXISTS enrich CASCADE")  # migration 004; its FK points at raw
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
         conn.execute("DROP TABLE IF EXISTS migration_probe")
     yield url

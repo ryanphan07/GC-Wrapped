@@ -797,3 +797,19 @@ def test_makefile_targets_run_the_cli_and_are_phony() -> None:
     for command in ("consent-template", "consent-load"):
         assert f"\n{command}:\n\t@uv run gcw {command}\n" in makefile
         assert re.search(rf"^\.PHONY:.*\b{command}\b", makefile, re.MULTILINE)
+
+
+def test_consent_load_no_start_skips_the_database_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[object] = []
+
+    def fake_run_load(start_db: Callable[[], None] | None = None) -> int:
+        if start_db is not None:
+            start_db()
+        starts.append(start_db)
+        return 0
+
+    monkeypatch.setattr(ledger, "run_load", fake_run_load)
+    monkeypatch.setattr(ledger, "start_database", lambda: pytest.fail("docker was started"))
+
+    assert main(["consent-load", "--no-start"]) == 0
+    assert len(starts) == 1 and starts[0] is not None

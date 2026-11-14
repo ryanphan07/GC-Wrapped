@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: stg_enrich__message_tags
+    description: Every stored tag, for every model and prompt version.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [message_key, model_id, prompt_version]
+    columns:
+      - name: message_key
+        data_tests: [not_null]
+      - name: topic
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [plans, school, work, food, entertainment, sports_fitness, relationships, banter, news, other]
+      - name: sentiment
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [positive, neutral, negative]
+      - name: model_id
+        data_tests: [not_null]
+      - name: prompt_version
+        data_tests: [not_null]
