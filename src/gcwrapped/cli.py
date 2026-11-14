@@ -28,6 +28,7 @@ from gcwrapped.parsers.instagram import (
     parse_export_consented,
 )
 from gcwrapped.runs import latest_run
+from gcwrapped.tagging import commands as tagging
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,23 @@ def build_parser() -> argparse.ArgumentParser:
         "label-summary",
         help="aggregate counts about the labels so far (fixed lines only)",
     )
+    tag = sub.add_parser(
+        "tag",
+        help="tag local-eligible messages with the local llama.cpp model (fixed lines only)",
+    )
+    tag.add_argument(
+        "--limit", type=int, default=None, metavar="N", help="tag at most N messages this run"
+    )
+    tag.add_argument(
+        "--no-start",
+        action="store_true",
+        help="do not start compose services (the Airflow container has no docker)",
+    )
+    sub.add_parser(
+        "tag-bench",
+        help="run the synthetic labeled messages through the model (gcw_dev only, stores nothing)",
+    )
+    sub.add_parser("llm-model", help="download the pinned model file, checking its sha256")
     real = sub.add_parser(
         "real-ingest",
         help="guarded pipeline run for a real-data env file; prints allowlisted lines only",
@@ -305,6 +323,14 @@ def _run(argv: Sequence[str] | None) -> int:
         return labeling.run_label_questions()
     if args.command == "label-summary":
         return labeling.run_label_summary()
+    if args.command == "tag":
+        return tagging.run_tag(
+            limit=args.limit, start=None if args.no_start else tagging.start_services
+        )
+    if args.command == "tag-bench":
+        return tagging.run_bench()
+    if args.command == "llm-model":
+        return tagging.run_llm_model()
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

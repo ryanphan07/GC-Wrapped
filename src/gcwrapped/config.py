@@ -109,6 +109,18 @@ class LabelSettings(_HostSettings):
     gcw_label_dir: str = ""
 
 
+class TaggingSettings(_HostSettings):
+    """Where the local llama.cpp server is (D89) and where the model file lives (D90).
+
+    Plain strings, validated by `gcwrapped.tagging`. `gcw_llm_url` empty means "use the compose
+    default on this machine" for `gcw tag` and "skip" for the Airflow task.
+    """
+
+    gcw_llm_url: str = ""
+    gcw_llm_port: int = 8081
+    gcw_model_dir: str = ""
+
+
 class DatabaseSettings(_HostSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
 

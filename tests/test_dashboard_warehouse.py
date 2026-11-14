@@ -104,6 +104,7 @@ def test_unknown_thread_is_empty_not_an_error(reader_url: str) -> None:
         ("raw", "raw.messages"),
         ("staging", "staging.stg_instagram__messages"),
         ("staging", "staging.int_messages_sessionized"),
+        ("enrich", "enrich.message_tags"),
     ],
 )
 def test_reader_is_denied_the_text_bearing_schemas(
@@ -141,6 +142,17 @@ def test_reader_can_read_marts(reader_url: str) -> None:
         row = conn.execute("SELECT count(*) FROM analytics.fct_messages").fetchone()
     assert row is not None
     assert row[0] > 0
+
+
+def test_reader_reads_the_tag_aggregates_but_not_per_message_tags(reader_url: str) -> None:
+    with psycopg.connect(reader_url) as conn:
+        for mart in ("agg_tags_by_thread", "agg_tags_by_sender"):
+            assert conn.execute(f"SELECT count(*) FROM analytics.{mart}").fetchone() is not None
+    with (
+        psycopg.connect(reader_url) as conn,
+        pytest.raises(errors.InsufficientPrivilege, match="permission denied for table"),
+    ):
+        conn.execute("SELECT 1 FROM analytics.fct_message_tags LIMIT 1")
 
 
 def test_no_mart_the_reader_can_see_has_a_content_column(reader_url: str) -> None:
