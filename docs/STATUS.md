@@ -18,6 +18,7 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 - tests/conftest.py clean_db also drops schema `enrich` (after its gcw_test assertion; the isolation guard is untouched), since 004's FK points at raw.
 - `gcw tag --no-start` for the DAG (no docker there). tag-bench refuses any database but gcw_dev. dbt PASS 144 -> 175; migrations 3 -> 4.
 - CI fix (PR #39 integration): root cause src/gcwrapped/ledger.py:415 (`run_load` calls `start_database`, i.e. `docker compose up`, which the job's Postgres service container lacks; failed as `consent-load: failed at database (CalledProcessError)`). Fix: `gcw consent-load --no-start` (cli.py, default unchanged; `run_load` untouched) used by the stub-tagging step in ci.yml; 2 tests added.
+- CI fix 2 (run 43593289801 / 43593293733, same step, now `consent-load: failed at ledger (FileNotFoundError)`): root cause .github/workflows/ci.yml `make synth` step (was line ~75) + tests/synthetic/instagram.py:474 (the generator writes the gitignored ledger only if GCW_CONSENT_LEDGER is set, and CI set it only on the later tagging step). Fix: set GCW_CONSENT_LEDGER on the synth step. Also added `DROP SCHEMA enrich` to the Reset gcw_dev step (migration 004 schema survived the reset: DuplicateSchema on a non-fresh DB). No step or assertion removed or weakened.
 
 ## Checks
 - make lint: pass. make test: 722 passed (70 deselected), baseline 665. make test-integration: 69 passed, 1 skipped (llm leak test; it passed alone against the live server), baseline 50. make test-warehouse: 20 passed. Airflow image DAG tests: 5 passed. (pytest output)
@@ -26,15 +27,14 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 - make tag (gcw_dev): 193 local-eligible, tagged 193, failures 0, 365.73 s, 0.53 msg/s, p50 1.890 s, p95 2.254 s. Immediate rerun: tagged 0, already 193. No out-of-memory (~4 GiB available with db + llm up). After flipping one synthetic sender to no + consent-load: pruned 8, 185 left, tagged 0.
 
 ## Not verified
-- CI on the PR (stub-tagging step ran locally against gcw_dev: consent-load --no-start, tag 193, rerun 0, no leak; local DB was prepared by ingest/dbt build, not CI's psql reset, psql absent), including the new stub-tagging step and the DAG's skipped tag task in `airflow dags test`.
+- CI on the PR after fix 2: see the PR checks (pending at commit time). Earlier: (stub-tagging step ran locally against gcw_dev: consent-load --no-start, tag 193, rerun 0, no leak; local DB was prepared by ingest/dbt build, not CI's psql reset, psql absent; reproduced again after fix 2 with a reset and `make dbt-build`: tagged 134, rerun 0, failures 0), including the new stub-tagging step and the DAG's skipped tag task in `airflow dags test`.
 - Real data: none this session. The real tagging run is part of the real-data batch.
 
 ## Open issues and questions
 - Stop-word over-redaction (D82); glued names and nicknames: only P2-2b measures them.
 - tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled. real-ingest-synthetic run 3 ~323 s; parked.
 - Revoked consent leaves old label rows (D87); eval must drop them. Tags are pruned (D89).
-- metrics.py still reports external-eligible only; add local-eligible if wanted.
-- A real stack needs its own GCW_LLM_PORT if the dev llm is up at the same time.
+- metrics.py still reports external-eligible only; add local-eligible if wanted. A real stack needs its own GCW_LLM_PORT if the dev llm is up at the same time.
 
 ## Suggested next session
 S4: tagging eval harness on the synthetic set (win rule fixed in advance, compare with a smaller model); real eval waits for the real-data batch.

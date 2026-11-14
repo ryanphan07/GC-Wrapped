@@ -67,12 +67,18 @@ jobs:
       - name: Reset gcw_dev
         run: >
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+          -c "DROP SCHEMA IF EXISTS enrich CASCADE"
           -c "DROP SCHEMA IF EXISTS raw CASCADE"
           -c "DROP SCHEMA IF EXISTS analytics CASCADE"
           -c "DROP SCHEMA IF EXISTS staging CASCADE"
           -c "DROP TABLE IF EXISTS schema_migrations"
       - run: uv run gcw migrate
-      - run: make synth
+      # The generator writes the synthetic consent ledger only when GCW_CONSENT_LEDGER is set (it is
+      # gitignored), so the tagging step below needs it here.
+      - name: Generate synthetic exports and consent ledger
+        env:
+          GCW_CONSENT_LEDGER: ./tests/fixtures/synthetic_consent/senders.csv
+        run: make synth
       - run: uv run gcw ingest tests/fixtures/synthetic/export_a
       - run: make dbt-deps
       - run: make dbt-build
