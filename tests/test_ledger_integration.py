@@ -73,7 +73,7 @@ def _write_ledger(*lines: str) -> Path:
 GOOD = ('yes,111,"SENTINELNAME a, 🎉",5', "no,111,SENTINELNAME b,9", ",222,SENTINELNAME c,2")
 
 
-def test_the_table_only_accepts_yes_no_or_blank(warehouse: str) -> None:
+def test_the_table_only_accepts_yes_local_no_or_blank(warehouse: str) -> None:
     with psycopg.connect(warehouse) as conn, pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("INSERT INTO raw.sender_consent VALUES ('1', 'x', 'maybe')")
 
@@ -90,6 +90,7 @@ def test_load_fills_the_table_and_prints_the_counts(
         "target database: gcw_test",
         "ledger rows: 3",
         "consented (yes): 1",
+        "consented (local): 0",
         "declined (no): 1",
         "undecided (blank, treated as no): 1",
         "consent-load: ok",
@@ -180,6 +181,16 @@ def test_a_duplicate_row_inside_the_transaction_rolls_back_too(warehouse: str) -
         ledger.replace_consent(warehouse, twice)
 
     assert _table(warehouse) == before
+
+
+def test_the_table_accepts_local_and_still_rejects_anything_else(warehouse: str) -> None:
+    ledger.replace_consent(warehouse, [LedgerRow("local", "111", "SENTINELNAME b", "9")])
+    assert _table(warehouse) == [("111", "SENTINELNAME b", "local")]
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        ledger.replace_consent(warehouse, [LedgerRow("Local", "111", "SENTINELNAME b", "9")])
+
+    assert _table(warehouse) == [("111", "SENTINELNAME b", "local")]  # rolled back
 
 
 def test_load_creates_the_table_on_a_database_that_predates_the_migration(

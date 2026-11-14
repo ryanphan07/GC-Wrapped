@@ -11,7 +11,7 @@ from pathlib import Path
 import psycopg
 from pydantic import ValidationError
 
-from gcwrapped import ledger, metrics, real_ingest
+from gcwrapped import consent_coverage, ledger, metrics, real_ingest
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.labeling import commands as labeling
@@ -93,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "consent-load",
         help="validate the whole consent ledger, then load it into raw.sender_consent",
+    )
+    sub.add_parser(
+        "consent-coverage",
+        help="aggregate consent coverage (fixed lines); private priority list to GCW_LABEL_DIR",
     )
     sub.add_parser(
         "label-tags",
@@ -305,6 +309,8 @@ def _run(argv: Sequence[str] | None) -> int:
         return ledger.run_template()
     if args.command == "consent-load":
         return ledger.run_load()
+    if args.command == "consent-coverage":
+        return consent_coverage.run()
     if args.command == "last-run":
         return _last_run()
     if args.command == "migrate":

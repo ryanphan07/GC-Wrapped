@@ -258,9 +258,10 @@ models:
 
   - name: fct_message_eligibility
     description: >
-      One row per message with `external_ok`, the single definition of which messages may be sent
-      outside this machine (D69): true only when the sender is "yes" in the consent ledger for that
-      thread. Blank, "no", unlisted senders and an empty ledger are all false. No message text.
+      One row per message with `local_ok` (sender is "yes" or "local" in the consent ledger for
+      that thread: may be processed on this machine) and `external_ok` (sender is "yes": may be
+      sent outside this machine after redaction), the single definition of both (D69, D88). Blank,
+      "no", unlisted senders and an empty ledger are false for both. No message text.
     columns:
       - name: message_key
         description: Primary key, from the parser's dedup key.
@@ -274,6 +275,9 @@ models:
       - name: thread_id
         data_tests: [not_null]
       - name: sender_name
+        data_tests: [not_null]
+      - name: local_ok
+        description: True when the sender's consent in this thread is "yes" or "local".
         data_tests: [not_null]
       - name: external_ok
         description: True only when the sender's consent in this thread is "yes".

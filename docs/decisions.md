@@ -506,3 +506,9 @@ Decision:
 Alternative: show sender names; a larger or per-thread-quota pool; keep labels in SQLite; a test that hashes data/landing.
 Why: each choice keeps one definition (eligibility, schema) in one module, keeps real text out of everything but the terminal, and keeps the real-data boundary absolute.
 Tradeoff: no sender cue for sentiment; a revoked consent leaves its old label rows on disk; a hand-edited or stale data/landing is only fixed the next time `make synth` or a default-env `make e2e` runs; a non-default env file that relies on a stale landing is its owner's to refresh.
+
+## D88 — 2026-11-13 — Explicit opt-in at two levels: "yes" (local and redacted external) or "local" (this machine only); local work uses local_ok (amends D69, D85, D87)
+Decision: The consent ledger accepts yes, local, no or blank. local_ok = consent is yes or local; external_ok = consent is yes (unchanged). Blank, no, or a sender missing from the ledger is excluded from everything. fct_message_eligibility carries both columns. Labeling, tagging, embeddings, answers and profiles use local_ok; anything that leaves the machine uses external_ok and redaction (D70). This replaces "passes fct_message_eligibility" in D85 and "external_ok" in D87's definition of eligible.
+Alternative: thread-level consent for local work, with the ledger only for external calls (blank allowed locally); one level of yes covering both.
+Why: Ryan chose explicit per-person opt-in for everything, so no one is processed on silence. Two levels let someone agree to on-laptop processing without agreeing to an outside AI service, so a yes is never stretched beyond what was asked.
+Tradeoff: nothing works for a sender until they answer, so coverage depends on reply rates; answers, tags and profiles have gaps for non-responders; the ledger has one more value to validate.

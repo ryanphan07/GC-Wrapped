@@ -24,7 +24,8 @@ pytestmark = pytest.mark.integration
 
 SENTINEL = "SENTINELTEXT"
 
-# (thread, sender, content, sent minute). Thread 111: Ana consented, Bo declined, Cy undecided.
+# (thread, sender, content, sent minute). Thread 111: Ana yes, Bo no, Cy blank. Eve is "local"
+# (local_ok only, D88).
 ROWS = [
     ("111", "Ana", f"{SENTINEL} a1", 1),
     ("111", "Bo", f"{SENTINEL} declined between", 2),
@@ -38,7 +39,7 @@ ROWS = [
     ("333", "Eve", f"{SENTINEL} e1", 1),
     ("333", "Eve", f"{SENTINEL} e2", 2),
 ]
-CONSENT = [("111", "Ana", "yes"), ("111", "Bo", "no"), ("111", "Cy", ""), ("333", "Eve", "yes")]
+CONSENT = [("111", "Ana", "yes"), ("111", "Bo", "no"), ("111", "Cy", ""), ("333", "Eve", "local")]
 
 
 def _key(thread: str, n: int) -> str:
@@ -71,10 +72,11 @@ def warehouse(migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
                 "VALUES (%s, %s, %s)",
                 (thread, sender, consent),
             )
-        # Same definition as dbt/models/marts/fct_message_eligibility.sql (D69, D75).
+        # Same definition as dbt/models/marts/fct_message_eligibility.sql (D69, D75, D88).
         conn.execute(
             "CREATE VIEW analytics.fct_message_eligibility AS "
             "SELECT m.message_key, m.thread_id, m.sender_name, "
+            "coalesce(c.consent IN ('yes', 'local'), false) AS local_ok, "
             "coalesce(c.consent = 'yes', false) AS external_ok "
             "FROM raw.messages AS m LEFT JOIN raw.sender_consent AS c "
             "ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name"

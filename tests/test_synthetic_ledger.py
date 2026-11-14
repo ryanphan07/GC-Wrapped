@@ -25,7 +25,7 @@ def test_the_ledger_has_a_mix_and_the_sentinel_senders() -> None:
     rows = consent_ledger_rows()
     by_name = {r.sender_name: r.consent for r in rows}
 
-    assert {"yes", "no", ""} <= {r.consent for r in rows}
+    assert {"yes", "local", "no", ""} <= {r.consent for r in rows}
     assert by_name[SENTINEL_NO] == "no"
     assert by_name[SENTINEL_BLANK] == ""
     assert "sentinel" in SENTINEL_NO.lower() and "sentinel" in SENTINEL_BLANK.lower()
@@ -49,7 +49,7 @@ def test_the_ledger_is_valid_sorted_and_uses_only_known_consent_values(tmp_path:
     check = ledger.check_ledger(path, allowlist=frozenset(SYNTHETIC_THREAD_IDS))
 
     assert check.problems == [] and len(check.rows) == count
-    assert set(CONSENT_BY_SENDER.values()) <= {"yes", "no", ""}
+    assert set(CONSENT_BY_SENDER.values()) <= {"yes", "local", "no", ""}
     assert check.rows == sorted(
         check.rows, key=lambda r: (r.thread_id, -int(r.messages), r.sender_name)
     )

@@ -188,15 +188,38 @@ def test_names_with_commas_quotes_emoji_and_newlines_round_trip(tmp_path: Path) 
     assert [row.sender_name for row in check.rows] == names
 
 
-def test_consent_values_are_exactly_yes_no_blank(tmp_path: Path) -> None:
+def test_consent_values_are_exactly_yes_local_no_blank(tmp_path: Path) -> None:
     path = _write(
-        tmp_path / "l.csv", HEADER_LINE, "yes,111,a,1", "no,111,b,1", ",111,c,1", "yes,111,d,"
+        tmp_path / "l.csv",
+        HEADER_LINE,
+        "yes,111,a,1",
+        "no,111,b,1",
+        ",111,c,1",
+        "yes,111,d,",
+        "local,111,e,1",
     )
 
     check = check_ledger(path)
 
     assert check.problems == []
-    assert [r.consent for r in check.rows] == ["yes", "no", "", "yes"]
+    assert [r.consent for r in check.rows] == ["yes", "no", "", "yes", "local"]
+
+
+def test_count_consent_counts_each_value_separately() -> None:
+    rows = [
+        LedgerRow(c, "111", f"n{i}", "1") for i, c in enumerate(["yes", "local", "local", "no", ""])
+    ]
+
+    counts = ledger.count_consent(rows)
+
+    assert (counts.rows, counts.yes, counts.local, counts.no, counts.blank) == (5, 1, 2, 1, 1)
+
+
+@pytest.mark.parametrize("value", ["Local", "LOCAL", " local", "local ", "maybe", "y", "true"])
+def test_near_misses_of_local_are_bad_values(tmp_path: Path, value: str) -> None:
+    path = _write(tmp_path / "l.csv", HEADER_LINE, f"{value},111,a,1")
+
+    assert _problems(path) == ["ledger error: bad_value at line 2"]
 
 
 # --- Merge -----------------------------------------------------------------------------------
@@ -472,7 +495,7 @@ def test_load_prints_counts_and_loads_the_checked_rows(
         HEADER_LINE,
         "yes,111,SENTINELNAME a,5",
         "no,111,SENTINELNAME b,9",
-        ",222,SENTINELNAME c,2",
+        "local,222,SENTINELNAME c,2",
     )
     _use_ledger(monkeypatch, path)
 
@@ -483,8 +506,9 @@ def test_load_prints_counts_and_loads_the_checked_rows(
         "target database: gcw_dev",
         "ledger rows: 3",
         "consented (yes): 1",
+        "consented (local): 1",
         "declined (no): 1",
-        "undecided (blank, treated as no): 1",
+        "undecided (blank, treated as no): 0",
         "consent-load: ok",
     ]
     for line, shape in zip(out.splitlines(), ledger.LOAD_SHAPES, strict=True):
