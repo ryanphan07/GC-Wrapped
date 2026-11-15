@@ -25,6 +25,7 @@ from gcwrapped.consent import require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
 from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
+from gcwrapped.migrate import migrate
 
 COMMAND = "purge-unlisted"
 SCHEMAS = ("raw", "enrich")
@@ -95,7 +96,7 @@ def keyed_tables(conn: psycopg.Connection) -> frozenset[str]:
 
 
 def _require_coverage(conn: psycopg.Connection) -> None:
-    # A missing covered table (an unmigrated database) is refused too: the counts would be wrong.
+    # A missing covered table is refused too: the counts would be wrong. purge() migrates first.
     if keyed_tables(conn) != COVERED_TABLES:
         raise UncoveredTableError
 
@@ -116,6 +117,9 @@ def purge(url: str, allowlist: frozenset[str], *, confirm: bool) -> PurgeResult:
     Counts come from the deletes themselves.
     """
     keep = sorted(allowlist)
+    # Bring the database up to date first, as consent-load does: an unmigrated one (no enrich
+    # schema yet) would fail the coverage check below for a reason that is not a new table.
+    migrate(url)
     with psycopg.connect(url) as conn:
         _require_coverage(conn)
         in_warehouse = _threads(conn)

@@ -26,3 +26,9 @@ models:
         data_tests: [not_null]
       - name: prompt_version
         data_tests: [not_null]
+
+  - name: stg_enrich__tag_default
+    description: The promoted tagging model (D92); at most one row.
+    columns:
+      - name: model_id
+        data_tests: [not_null]

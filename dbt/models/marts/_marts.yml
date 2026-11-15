@@ -285,9 +285,9 @@ models:
 
   - name: fct_message_tags
     description: >
-      The current tag (latest written row, any model or prompt version) of each local_ok message
-      (D88, D89). A message whose sender is no longer local_ok is absent. Per-message and keyed, so
-      the reader role has no grant; use the aggregates. No message text.
+      The current tag of each local_ok message from the promoted model only (enrich.tag_default,
+      else the D90 default; its latest written row), D88, D89, D92. A message whose sender is no
+      longer local_ok is absent. Per-message and keyed, so the reader role has no grant; use the aggregates. No message text.
     columns:
       - name: message_key
         data_tests:

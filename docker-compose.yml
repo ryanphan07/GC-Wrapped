@@ -87,7 +87,9 @@ services:
 
   # Local llama.cpp server for tagging (D89, D90). CPU image pinned by digest. Behind the `llm`
   # profile, so `make up`, `make e2e` and CI never start it; `make tag` names it explicitly. The
-  # model file is mounted read-only from GCW_MODEL_DIR (`make llm-model` puts it there) and the port is
+  # model file is mounted read-only from GCW_MODEL_DIR (`make llm-model` puts it there); the file and
+  # the --alias come from GCW_LLM_MODEL_FILE and GCW_LLM_MODEL_ALIAS, which `gcw tag` and `gcw tag-eval`
+  # set per model (D93), defaulting to the D90 model. The port is
   # published on 127.0.0.1 only. A real-data stack sets its own GCW_LLM_PORT so two stacks can coexist.
   # No text leaves through this server: --no-slots removes the endpoint that shows in-flight
   # prompts, --no-webui removes the chat UI, and --props and --metrics stay off (their default).
@@ -99,7 +101,7 @@ services:
       - --model
       - /models/${GCW_LLM_MODEL_FILE:-Qwen3-4B-Instruct-2507-Q4_K_M.gguf}
       - --alias
-      - qwen3-4b-instruct-2507-q4_k_m
+      - ${GCW_LLM_MODEL_ALIAS:-qwen3-4b-instruct-2507-q4_k_m}
       - --host
       - 0.0.0.0
       - --port

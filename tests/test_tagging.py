@@ -393,10 +393,11 @@ def test_llm_service_is_pinned_local_only_and_leaks_nothing() -> None:
 def test_make_tag_passes_limit_through() -> None:
     from test_makefile_landing import _dry_run
 
-    assert _dry_run("tag") == ["uv run gcw tag "]
-    assert _dry_run("tag", LIMIT="5") == ["uv run gcw tag --limit 5"]
-    assert _dry_run("tag-bench") == ["uv run gcw tag-bench"]
-    assert _dry_run("llm-model") == ["uv run gcw llm-model"]
+    assert _dry_run("tag") == ["uv run gcw tag  "]
+    assert _dry_run("tag", LIMIT="5") == ["uv run gcw tag --limit 5 "]
+    assert _dry_run("tag", MODEL="m") == ["uv run gcw tag  --model m"]
+    assert _dry_run("llm-model") == ["uv run gcw llm-model "]
+    assert _dry_run("llm-model", MODEL="m") == ["uv run gcw llm-model --model m"]
 
 
 def test_the_dag_tag_task_skips_without_a_url_and_never_starts_docker() -> None:

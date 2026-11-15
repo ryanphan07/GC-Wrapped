@@ -23,6 +23,7 @@ def test_migrate_creates_raw_tables_and_is_idempotent(clean_db: str) -> None:
         "002_sender_consent",
         "003_consent_local",
         "004_enrich_message_tags",
+        "005_enrich_tag_default",
     ]
     assert second == []
     assert _applied(clean_db) == [
@@ -30,6 +31,7 @@ def test_migrate_creates_raw_tables_and_is_idempotent(clean_db: str) -> None:
         "002_sender_consent",
         "003_consent_local",
         "004_enrich_message_tags",
+        "005_enrich_tag_default",
     ]
     with psycopg.connect(clean_db) as conn:
         tables = {
@@ -52,7 +54,8 @@ def test_cli_migrate_is_idempotent(clean_db: str, capsys: pytest.CaptureFixture[
     assert "applied: 002_sender_consent" in first
     assert "applied: 003_consent_local" in first
     assert "applied: 004_enrich_message_tags" in first
-    assert "migrations applied: 4" in first
+    assert "applied: 005_enrich_tag_default" in first
+    assert "migrations applied: 5" in first
     assert "migrations applied: 0" in second
     assert "applied: 001" not in second
 

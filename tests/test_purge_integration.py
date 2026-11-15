@@ -6,12 +6,15 @@ output run for real. Thread, sender and title strings are sentinels that must ne
 
 import hashlib
 import re
+import shutil
+from pathlib import Path
 
 import psycopg
 import pytest
 
 from gcwrapped import purge
 from gcwrapped.config import get_database_settings
+from gcwrapped.migrate import MIGRATIONS_DIR, migrate
 
 pytestmark = pytest.mark.integration
 
@@ -254,3 +257,43 @@ def test_the_database_guard_runs_before_anything_starts(
         capsys.readouterr().out == "purge-unlisted: failed at database (UnexpectedDatabaseError)\n"
     )
     assert started == []
+
+
+def test_a_database_missing_migration_004_is_migrated_and_then_purged_normally(
+    clean_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real purge once refused with UncoveredTableError because 004 had not been applied."""
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.name < "004":
+            shutil.copy(path, old / path.name)
+    migrate(clean_db, old)
+    with psycopg.connect(clean_db) as conn:
+        assert conn.execute("SELECT to_regclass('enrich.message_tags')").fetchone() == (None,)
+        run = conn.execute(
+            "INSERT INTO raw.load_runs (roots_count) VALUES (1) RETURNING load_id"
+        ).fetchone()
+        assert run is not None
+        for n, thread in enumerate(("111", "222")):
+            conn.execute(
+                "INSERT INTO raw.messages (message_key, platform, thread_id, sender_name, "
+                "sent_at, content, media_count, source_file, load_id) VALUES "
+                "(%s, 'instagram', %s, 'SENTINELNAME a', now(), 'SENTINELTEXT', 0, 'x', %s)",
+                (_key(n), thread, run[0]),
+            )
+    monkeypatch.setenv("GCW_THREAD_ALLOWLIST", "111")
+    get_database_settings.cache_clear()
+
+    assert purge.run(confirm=True, start_db=_no_start) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert "messages: 1" in lines and "tags: 0" in lines and lines[-1] == "purge-unlisted: ok"
+    with psycopg.connect(clean_db) as conn:
+        assert conn.execute("SELECT to_regclass('enrich.message_tags')").fetchone() == (
+            "enrich.message_tags",
+        )
+        assert conn.execute("SELECT thread_id FROM raw.messages").fetchall() == [("111",)]

@@ -53,11 +53,14 @@ make metrics                    # aggregate counts report. You run it only with 
 make purge-unlisted [CONFIRM=1]  # delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (D91); dry run unless CONFIRM=1; counts only. Real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
-make llm-model                  # download the pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models)
-make tag [LIMIT=n]              # starts db + llm only; tags local-eligible messages, resumable, prunes revoked; fixed lines only. Real-data runs are Ryan's.
-make tag-bench                  # the 60 synthetic labeled messages through the real model; gcw_dev only, stores nothing, a sanity check not an eval
+make llm-model [MODEL=id]       # download a registered pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models); default is the D90 model
+make tag [LIMIT=n] [MODEL=id]   # starts db + llm only; tags local-eligible messages with the promoted model (D92) unless MODEL= is given; resumable, prunes revoked; fixed lines only. Real-data runs are Ryan's.
+make tag-eval MODEL=id [SYNTHETIC=1]      # one model over the hand labels (D92): predictions stored outside the repo (mode 0600), accuracy and macro-F1 with 95% bootstrap intervals; SYNTHETIC=1 = the committed synthetic set, gcw_dev only, temporary directory. Real-data runs are Ryan's.
+make tag-compare A=id B=id [SYNTHETIC=1]  # paired bootstrap of two stored runs, verdict under the D93 win rule, recorded in GCW_LABEL_DIR/experiments/
+make tag-promote MODEL=id       # sets enrich.tag_default; refused unless the latest tag-compare verdict names MODEL the winner
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
+Model changes follow the D93 protocol: a new default model is promoted only through `make tag-eval`, `make tag-compare` and `make tag-promote`, never by editing config.
 
 ## Burst plan
 One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10). One session per brief; the brief decides scope.

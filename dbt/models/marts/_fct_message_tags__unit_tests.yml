@@ -7,6 +7,9 @@ unit_tests:
       message whose sender is not local_ok is absent; a "local" sender's tag is kept.
     model: fct_message_tags
     given:
+      - input: ref('stg_enrich__tag_default')
+        rows:
+          - {model_id: x, promoted_at: "2026-11-01 09:00:00"}
       - input: ref('stg_enrich__message_tags')
         rows:
           - {message_key: m1, topic: food, sentiment: neutral, model_id: x, prompt_version: p1, run_id: r1, tagged_at: "2026-11-01 10:00:00"}
@@ -25,5 +28,60 @@ unit_tests:
           - {message_key: m3, thread_id: t1, sender_name: A}
     expect:
       rows:
-        - {message_key: m1, thread_id: t1, topic: plans, sentiment: positive, prompt_version: p2}
-        - {message_key: m3, thread_id: t1, topic: news, sentiment: neutral, prompt_version: p2}
+        - {message_key: m1, thread_id: t1, topic: plans, sentiment: positive, model_id: x, prompt_version: p2}
+        - {message_key: m3, thread_id: t1, topic: news, sentiment: neutral, model_id: x, prompt_version: p2}
+
+  - name: tags_only_the_promoted_models_tags_count
+    description: >
+      D92. Both models tagged m1 and a later row by the other model exists, yet only the promoted
+      model's row shows. A message tagged only by the other model is absent, even though its row is
+      the newest.
+    model: fct_message_tags
+    given:
+      - input: ref('stg_enrich__tag_default')
+        rows:
+          - {model_id: small, promoted_at: "2026-11-03 09:00:00"}
+      - input: ref('stg_enrich__message_tags')
+        rows:
+          - {message_key: m1, topic: food, sentiment: neutral, model_id: small, prompt_version: p1, run_id: r1, tagged_at: "2026-11-02 10:00:00"}
+          - {message_key: m1, topic: work, sentiment: negative, model_id: big, prompt_version: p1, run_id: r2, tagged_at: "2026-11-04 10:00:00"}
+          - {message_key: m2, topic: news, sentiment: neutral, model_id: big, prompt_version: p1, run_id: r2, tagged_at: "2026-11-04 10:00:00"}
+      - input: ref('fct_message_eligibility')
+        rows:
+          - {message_key: m1, local_ok: true}
+          - {message_key: m2, local_ok: true}
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A}
+          - {message_key: m2, thread_id: t1, sender_name: A}
+    expect:
+      rows:
+        - {message_key: m1, thread_id: t1, topic: food, sentiment: neutral, model_id: small, prompt_version: p1}
+
+  - name: tags_fall_back_to_the_default_model_when_none_is_promoted
+    description: >
+      D92. With no row in enrich.tag_default, the model named by var gcw_default_tag_model (D90) is
+      the one that counts; another model's tags do not.
+    model: fct_message_tags
+    overrides:
+      vars:
+        gcw_default_tag_model: dflt
+    given:
+      - input: ref('stg_enrich__tag_default')
+        format: sql
+        rows: "select null::text as model_id, null::timestamptz as promoted_at where false"
+      - input: ref('stg_enrich__message_tags')
+        rows:
+          - {message_key: m1, topic: food, sentiment: neutral, model_id: dflt, prompt_version: p1, run_id: r1, tagged_at: "2026-11-02 10:00:00"}
+          - {message_key: m2, topic: work, sentiment: negative, model_id: other, prompt_version: p1, run_id: r2, tagged_at: "2026-11-04 10:00:00"}
+      - input: ref('fct_message_eligibility')
+        rows:
+          - {message_key: m1, local_ok: true}
+          - {message_key: m2, local_ok: true}
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, thread_id: t1, sender_name: A}
+          - {message_key: m2, thread_id: t1, sender_name: A}
+    expect:
+      rows:
+        - {message_key: m1, thread_id: t1, topic: food, sentiment: neutral, model_id: dflt, prompt_version: p1}

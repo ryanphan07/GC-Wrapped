@@ -265,7 +265,7 @@ def test_make_tag_prints_fixed_lines_only_and_logs_no_text(
     caplog.set_level(logging.DEBUG)
     with StubLlm() as stub:
         monkeypatch.setenv("GCW_LLM_URL", stub.url)
-        assert commands.run_tag(start=None) == 0
+        assert commands.run_tag(start_db=None, start_llm=None) == 0
         out = capsys.readouterr()
         assert len(stub.requests) == ELIGIBLE
         sent = "\n".join(str(r) for r in stub.requests)
@@ -283,7 +283,7 @@ def test_make_tag_prints_fixed_lines_only_and_logs_no_text(
     # An immediate rerun tags nothing.
     with StubLlm() as stub:
         monkeypatch.setenv("GCW_LLM_URL", stub.url)
-        assert commands.run_tag(start=None) == 0
+        assert commands.run_tag(start_db=None, start_llm=None) == 0
         assert stub.requests == []
     again = capsys.readouterr().out
     assert "tagged this run: 0" in again and f"already tagged: {ELIGIBLE}" in again
@@ -294,12 +294,14 @@ def test_make_tag_failure_line_has_a_step_and_a_class_name_only(
 ) -> None:
     with StubLlm(mode="invalid") as stub:
         monkeypatch.setenv("GCW_LLM_URL", stub.url)
-        assert commands.run_tag(start=None) == 0  # failures are counted, not fatal
+        assert (
+            commands.run_tag(start_db=None, start_llm=None) == 0
+        )  # failures are counted, not fatal
     out = capsys.readouterr().out
     assert f"failures: {ELIGIBLE}" in out and "tagged this run: 0" in out
     # Nothing listening: the run fails at tagging, naming only the exception class.
     monkeypatch.setenv("GCW_LLM_URL", "http://127.0.0.1:1")
-    assert commands.run_tag(start=None) == 1
+    assert commands.run_tag(start_db=None, start_llm=None) == 1
     assert capsys.readouterr().out == "tag: failed at tagging (ProviderUnavailable)\n"
 
 
@@ -308,7 +310,12 @@ def test_make_tag_refuses_a_non_local_url_before_starting_anything(
 ) -> None:
     started: list[bool] = []
     monkeypatch.setenv("GCW_LLM_URL", "http://example.com:8081")
-    assert commands.run_tag(start=lambda: started.append(True)) == 1
+    assert (
+        commands.run_tag(
+            start_db=lambda: started.append(True), start_llm=lambda _m: started.append(True)
+        )
+        == 1
+    )
     assert capsys.readouterr().out == "tag: failed at llm url (NonLocalUrlError)\n"
     assert started == [] and _rows(warehouse) == []
 
@@ -320,7 +327,12 @@ def test_make_tag_refuses_a_database_outside_the_allowed_list(
     monkeypatch.setenv("GCW_DB_NAME", "gcw_other")
     monkeypatch.setenv("DATABASE_URL", "")
     get_database_settings.cache_clear()
-    assert commands.run_tag(start=lambda: started.append(True)) == 1
+    assert (
+        commands.run_tag(
+            start_db=lambda: started.append(True), start_llm=lambda _m: started.append(True)
+        )
+        == 1
+    )
     assert capsys.readouterr().out == "tag: failed at database (UnexpectedDatabaseError)\n"
     assert started == []
 
@@ -330,13 +342,13 @@ def test_make_tag_prunes_after_a_consent_change_through_the_command(
 ) -> None:
     with StubLlm() as stub:
         monkeypatch.setenv("GCW_LLM_URL", stub.url)
-        assert commands.run_tag(start=None) == 0
+        assert commands.run_tag(start_db=None, start_llm=None) == 0
         with psycopg.connect(warehouse, autocommit=True) as conn:
             conn.execute(
                 "UPDATE raw.sender_consent SET consent = 'no' WHERE sender_name = 'SENDERANA'"
             )
         capsys.readouterr()
-        assert commands.run_tag(start=None) == 0
+        assert commands.run_tag(start_db=None, start_llm=None) == 0
     assert "pruned: 3" in capsys.readouterr().out
     assert len(_rows(warehouse)) == 2
 
@@ -346,34 +358,3 @@ def test_the_real_client_against_the_stub_stores_valid_labels(warehouse: str) ->
         result = run_tagging(warehouse, LlamaCppProvider(stub.url, model_id="stub-model"))
     assert result.tagged == ELIGIBLE
     assert {r[3] for r in _rows(warehouse)} == {"stub-model"}
-
-
-# --- tag-bench ---------------------------------------------------------------------------------
-
-
-def test_bench_scores_against_labels_and_stores_nothing(
-    warehouse: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    class Gold(Fake):
-        def tag(self, system: str, user: str) -> Tag:
-            super().tag(system, user)
-            return (
-                Tag("food", "neutral") if "a1" in user.splitlines()[-1] else Tag("work", "neutral")
-            )
-
-    labels = {_key("111", 0): ("food", "neutral"), _key("111", 2): ("plans", "positive")}
-    result, benchmarked, topic_acc, sentiment_acc = commands.bench(warehouse, Gold(), labels)
-    assert benchmarked == 2 and result.tagged == 2 and result.failures == 0
-    assert (topic_acc, sentiment_acc) == (0.5, 0.5)
-    assert _rows(warehouse) == []
-    lines = report.render_bench("gcw_dev", result, benchmarked, topic_acc, sentiment_acc)
-    assert "synthetic topic accuracy: 0.500" in lines
-
-
-def test_bench_refuses_anything_but_gcw_dev(
-    warehouse: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    started: list[bool] = []
-    assert commands.run_bench(start=lambda: started.append(True)) == 1  # the database is gcw_test
-    assert capsys.readouterr().out == "tag-bench: failed at database (UnexpectedDatabaseError)\n"
-    assert started == []

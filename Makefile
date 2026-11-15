@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit label-tags label-questions label-summary llm-model tag tag-bench synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -179,17 +179,30 @@ label-questions:
 label-summary:
 	@uv run gcw label-summary
 
-# Local tagging (D89, D90). llm-model downloads the pinned GGUF to GCW_MODEL_DIR (default
-# ~/.cache/gcw/models) and checks its sha256; rerunning it changes nothing. tag starts only the db
-# and llm services, tags every local-eligible text message not yet tagged for this model and prompt
-# (LIMIT=n caps the run), prunes tags of messages no longer local_ok, and prints fixed lines only.
-# Safe to stop and rerun. tag-bench runs the synthetic labeled messages (gcw_dev only) and stores
-# nothing. Real-data runs are Ryan's: make tag ENV_FILE=<env file outside the repo>
+# Local tagging (D89, D90) and the model experiment (D92, D93). llm-model [MODEL=<id>] downloads a
+# registered GGUF to GCW_MODEL_DIR (default ~/.cache/gcw/models) and checks its sha256; rerunning it
+# changes nothing. tag starts only the db and llm services, tags every local-eligible text message
+# not yet tagged for the model and prompt (LIMIT=n caps the run), prunes tags of messages no longer
+# local_ok, and prints fixed lines only; it uses the promoted model unless MODEL= is given.
+# tag-eval runs one model over the hand labels (SYNTHETIC=1: the committed synthetic set, gcw_dev
+# only, temporary directory), stores predictions and prints scores with 95% intervals. tag-compare
+# applies the D93 win rule to two stored runs and records the verdict. tag-promote makes a model the
+# default, only if the latest verdict names it the winner. Real-data runs are Ryan's:
+# make tag ENV_FILE=<env file outside the repo>
 llm-model:
-	@uv run gcw llm-model
+	@uv run gcw llm-model $(if $(MODEL),--model $(MODEL))
 
 tag:
-	@uv run gcw tag $(if $(LIMIT),--limit $(LIMIT))
+	@uv run gcw tag $(if $(LIMIT),--limit $(LIMIT)) $(if $(MODEL),--model $(MODEL))
 
-tag-bench:
-	@uv run gcw tag-bench
+tag-eval:
+	@test -n "$(MODEL)" || { echo "error: set MODEL=<id> (make tag-eval MODEL=<id> [SYNTHETIC=1])"; exit 1; }
+	@uv run gcw tag-eval --model $(MODEL) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+tag-compare:
+	@test -n "$(A)" -a -n "$(B)" || { echo "error: set A=<id> and B=<id> (make tag-compare A=<id> B=<id> [SYNTHETIC=1])"; exit 1; }
+	@uv run gcw tag-compare --a $(A) --b $(B) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+tag-promote:
+	@test -n "$(MODEL)" || { echo "error: set MODEL=<id> (make tag-promote MODEL=<id>)"; exit 1; }
+	@uv run gcw tag-promote --model $(MODEL)
