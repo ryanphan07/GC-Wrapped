@@ -1,4 +1,4 @@
-"""The pinned default model (D90) and the checksum-verified download behind `make llm-model`.
+"""The registry of pinned models (D90, D93) and the checksum-verified download for llm-model.
 
 The file lives outside the repo (default ~/.cache/gcw/models) and is mounted read-only into the
 llm compose service. The URL names an exact Hugging Face commit, and the sha256 is checked before
@@ -38,6 +38,33 @@ class ModelSpec:
     file: str = MODEL_FILE
     sha256: str = MODEL_SHA256
     url: str = MODEL_URL
+
+
+# D93 arm B (Apache-2.0). The URL names an exact Hugging Face commit; sha256 is the LFS object id.
+SMALL_MODEL_ID = "qwen2.5-1.5b-instruct-q4_k_m"
+SMALL_MODEL_SPEC = ModelSpec(
+    file="qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    sha256="6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    url=(
+        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/"
+        "91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    ),
+)
+
+# model id -> file, sha256, url. The id is what the llm service's --alias, the client's request and
+# enrich.message_tags.model_id all carry. Only registered models can be fetched, served or promoted.
+REGISTRY: dict[str, ModelSpec] = {MODEL_ID: ModelSpec(), SMALL_MODEL_ID: SMALL_MODEL_SPEC}
+
+
+class UnknownModelError(ValueError):
+    """The model id is not in REGISTRY. The message omits the id."""
+
+
+def spec_for(model_id: str) -> ModelSpec:
+    try:
+        return REGISTRY[model_id]
+    except KeyError:
+        raise UnknownModelError("model id is not registered") from None
 
 
 def model_dir() -> Path:

@@ -29,6 +29,7 @@ from gcwrapped.parsers.instagram import (
 )
 from gcwrapped.runs import latest_run
 from gcwrapped.tagging import commands as tagging
+from gcwrapped.tagging.model import MODEL_ID as DEFAULT_MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -135,15 +136,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=None, metavar="N", help="tag at most N messages this run"
     )
     tag.add_argument(
+        "--model", default=None, metavar="ID", help="a registered model id (default: promoted)"
+    )
+    tag.add_argument(
         "--no-start",
         action="store_true",
         help="do not start compose services (the Airflow container has no docker)",
     )
-    sub.add_parser(
-        "tag-bench",
-        help="run the synthetic labeled messages through the model (gcw_dev only, stores nothing)",
+    tag_eval = sub.add_parser(
+        "tag-eval",
+        help="run one model over the hand labels, store predictions, score (D92)",
     )
-    sub.add_parser("llm-model", help="download the pinned model file, checking its sha256")
+    tag_eval.add_argument("--model", required=True, metavar="ID", help="a registered model id")
+    tag_eval.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic labels (gcw_dev only)"
+    )
+    tag_compare = sub.add_parser(
+        "tag-compare",
+        help="compare two models' stored predictions under the D93 win rule",
+    )
+    tag_compare.add_argument("--a", required=True, metavar="ID", help="arm A model id")
+    tag_compare.add_argument("--b", required=True, metavar="ID", help="arm B model id")
+    tag_compare.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic labels (gcw_dev only)"
+    )
+    tag_promote = sub.add_parser(
+        "tag-promote",
+        help="make a model the default; refused unless the latest verdict names it the winner",
+    )
+    tag_promote.add_argument("--model", required=True, metavar="ID", help="a registered model id")
+    llm_model = sub.add_parser(
+        "llm-model", help="download a registered model file, checking its sha256"
+    )
+    llm_model.add_argument(
+        "--model", default=DEFAULT_MODEL_ID, metavar="ID", help="a registered model id"
+    )
     real = sub.add_parser(
         "real-ingest",
         help="guarded pipeline run for a real-data env file; prints allowlisted lines only",
@@ -340,13 +367,19 @@ def _run(argv: Sequence[str] | None) -> int:
     if args.command == "label-summary":
         return labeling.run_label_summary()
     if args.command == "tag":
-        return tagging.run_tag(
-            limit=args.limit, start=None if args.no_start else tagging.start_services
-        )
-    if args.command == "tag-bench":
-        return tagging.run_bench()
+        if args.no_start:
+            return tagging.run_tag(
+                limit=args.limit, model_id=args.model, start_db=None, start_llm=None
+            )
+        return tagging.run_tag(limit=args.limit, model_id=args.model)
+    if args.command == "tag-eval":
+        return tagging.run_tag_eval(args.model, synthetic=args.synthetic)
+    if args.command == "tag-compare":
+        return tagging.run_tag_compare(args.a, args.b, synthetic=args.synthetic)
+    if args.command == "tag-promote":
+        return tagging.run_tag_promote(args.model)
     if args.command == "llm-model":
-        return tagging.run_llm_model()
+        return tagging.run_llm_model(args.model)
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

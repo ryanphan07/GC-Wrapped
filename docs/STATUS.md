@@ -1,36 +1,40 @@
 # Status
-Last session: 2026-11-14 — P2-3c: purge threads removed from the allowlist (D91)
+Last session: 2026-11-15 — P2-5 (S4): tagging eval harness, model comparison under a fixed win rule, promoted model (D92, D93)
 
 ## Phase & state
 Phase 2 (Enrichment + evals); burst plan in CLAUDE.md. P2-2b (NER gate) is needed only before a hosted provider (D84).
-consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] synthetic labeled sets [x] consent replies (Ryan, collecting) real labels [ ] tagging pipeline [x synthetic] purge unlisted threads [x synthetic] eval harness + CI eval [ ] real eval [ ] profiles [ ]
+consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] synthetic labeled sets [x] consent replies (Ryan, collecting) real labels [ ] tagging pipeline [x synthetic] purge unlisted threads [x] eval harness [x synthetic] CI eval (S4b) [ ] real eval + 4B vs 1.5B comparison [ ] profiles [ ]
 
 ## Done this session
-- docs/decisions.md: D91 verbatim. CLAUDE.md: `make purge-unlisted [CONFIRM=1]` under Commands; end-of-session step 6 (watch CI, at most 2 fixes). README: one privacy bullet.
-- src/gcwrapped/purge.py (new), cli.py, Makefile: `purge-unlisted`. Guards: ALLOWED_DATABASES, non-empty allowlist, and a catalog check that refuses if raw/enrich has a message_key/thread_id table it does not cover. One transaction deletes tags, consent rows, messages (reactions are a jsonb column of raw.messages); dry run runs the same deletes and rolls back. Fixed, shape-checked lines.
-- src/gcwrapped/ledger.py: consent-load skips well-formed rows of non-allowlisted threads and prints `rows skipped (thread not allowlisted): N`. `unknown_thread` error kind removed (no longer produced).
-- Tests: tests/test_purge_integration.py (new, 9), test_ledger.py and test_ledger_integration.py adapted and extended.
+- docs/decisions.md: D92, D93 verbatim. CLAUDE.md: commands for tag-eval/compare/promote, `llm-model MODEL=`, `tag MODEL=`; tag-bench removed; D93 protocol line. METRICS.md: the three real-data rows, SHA 5cafcc0 (#40).
+- src/gcwrapped/tagging/model.py: registry (D90 model + Qwen2.5-1.5B-Instruct Q4_K_M, pinned commit and sha256). scoring.py (new, pure): accuracy, per-class F1, macro-F1, percentile bootstrap (2000, seed 20261114), `decide` = D93. evaluation.py (new): predictions CSV and verdict JSON (0600, refused inside the repo), compare, promote. commands.py, report.py, cli.py, Makefile: the new targets; tag-bench removed. `tag` resolves the promoted model.
+- docker-compose.yml: llm file and --alias from GCW_LLM_MODEL_FILE / GCW_LLM_MODEL_ALIAS. migrations/005 `enrich.tag_default`. dbt: stg_enrich__tag_default, fct_message_tags filtered to the promoted model (var gcw_default_tag_model fallback), 2 new unit tests.
+- src/gcwrapped/purge.py: runs migrate before the coverage check (addendum). Tests: test_tag_eval.py (66), test_tag_eval_integration.py (19), purge test for a database missing 004.
 
 ## Deviations from brief
-- Acceptance run on gcw_dev used `ENV_FILE=.env` with `GCW_THREAD_ALLOWLIST=<4 of 5 IDs>` on the make command line, not a temporary env file: CLAUDE.md forbids any non-.env ENV_FILE. Afterwards `make e2e` + `make consent-load` restored gcw_dev; its 88 tags (S3) are not restored.
-- The brief's "reactions" table does not exist: reactions are a jsonb column on raw.messages, so they are counted from the deleted messages.
-- Tag rows are deleted explicitly (children first) though the FK already cascades, so the tags count is reported.
+- Addendum purge fix: purge() migrates first (dry run too, as consent-load does); the coverage check is unchanged.
+- Synthetic runs share one temporary directory `<tmp>/gcw-synthetic-eval-<uid>` (0700, refused inside the repo) so tag-compare can find tag-eval's predictions across commands.
+- Predictions files are named `<model_id>__<prompt_version>.csv`, so a compare always pairs runs of the current prompt.
+- tag-eval throughput is attempted messages over summed per-message seconds, not wall clock.
+- make tag with the llm service: `start` was split into start_db and start_llm(model_id), since the promoted model is read from the database before the llm starts.
 
 ## Checks
-- make lint: pass. make test: 723 passed (80 deselected), baseline 722. make test-integration: 79 passed, 1 skipped (llm server not up), baseline 69. make test-warehouse: 20 passed. (pytest output)
-- dbt build on gcw_dev with the 4-ID allowlist after the purge: PASS=175 WARN=0 ERROR=0 (dbt output).
-- gcw_dev purge: dry run 1 thread, 120 messages, 55 reactions, 88 tags, 3 consent rows, nothing deleted (repeated dry run identical); CONFIRM=1 deleted those; second run 0; empty allowlist refused (`failed at allowlist (AllowlistError)`).
+- make lint: pass. make test: 789 passed (98 deselected), baseline 723. make test-integration: 97 passed, 1 skipped (llm server not up), baseline 79. make test-warehouse: 20 passed. (pytest)
+- dbt build on gcw_dev: PASS=179 WARN=0 ERROR=0 TOTAL=179, 9 unit tests (baseline 175). (dbt output)
+- SYNTHETIC, not a real result, nothing promoted (enrich.tag_default has 0 rows; gcw_dev, 60 labels, 0 dropped, 0 failures, prompt 5b3245c5c605). `make tag-eval SYNTHETIC=1`:
+  A qwen3-4b-instruct-2507-q4_k_m: topic acc 0.883 [0.800, 0.950], F1 0.885; sentiment acc 0.817 [0.717, 0.900], F1 0.814; 0.47 msg/s.
+  B qwen2.5-1.5b-instruct-q4_k_m: topic acc 0.767 [0.650, 0.867], F1 0.766; sentiment acc 0.700 [0.583, 0.817], F1 0.707; 1.05 msg/s.
+- SYNTHETIC `make tag-compare`: 60 messages; topic B minus A -0.117 [-0.233, 0.000]; sentiment -0.117 [-0.250, 0.017]; speedup 2.23; checks speedup pass, topic fail, sentiment fail; winner A (D93 keeps the 4B model). (command output)
 
 ## Not verified
-- CI on this PR: see the PR checks (watched at commit time).
-- Real data: Ryan's step below. Run: back up real.env, remove IDs, dry run, paste; after planning confirms, CONFIRM=1 then real-ingest; paste fixed lines.
+- CI on this PR: watched at commit time (see the PR checks).
+- Real data: nothing to run now. The real comparison runs in the real-data batch once labels exist: tag-eval for each arm, tag-compare, record in METRICS.md, then tag-promote only if B wins.
 
 ## Open issues and questions
-- Stop-word over-redaction (D82); glued names and nicknames: only P2-2b measures them.
-- tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled. real-ingest-synthetic run ~323 s; parked.
-- Revoked consent leaves old label rows (D87); eval must drop them. Tags are pruned (D89).
-- Label files under GCW_LABEL_DIR for a purged thread are outside the warehouse and stay (Ryan's to delete).
+- The `gcw tag --no-start` path (Airflow DAG) records the promoted model's id, but nothing checks that the running llm server serves that model; `make tag` always restarts it with the right one. A `/v1/models` check would close it.
+- Stop-word over-redaction (D82); glued names and nicknames: only P2-2b measures them. tests/isolation_guard.py check_database_url: libpq multi-host URLs unhandled. real-ingest-synthetic run ~323 s; parked.
+- Revoked consent leaves old label rows (D87); the eval drops them. Tags are pruned (D89). Label files of a purged thread stay (Ryan's to delete).
 - metrics.py still reports external-eligible only. A real stack needs its own GCW_LLM_PORT if the dev llm is up at the same time.
 
 ## Suggested next session
-S4: tagging eval harness on the synthetic set (win rule fixed in advance, compare with a smaller model); real eval waits for the real-data batch.
+S4b: a CI eval with a tiny real model (Ryan's choice, 2026-11-14); then S5 embeddings + retrieval.
