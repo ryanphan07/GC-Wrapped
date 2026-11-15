@@ -524,3 +524,9 @@ Decision: The default model is Qwen3-4B-Instruct-2507 as a Q4_K_M GGUF (exact fi
 Alternative: a 7-8B model; a 1-2B model; a larger context.
 Why: at 4 bits a 4B model needs roughly 2.5 GB, which leaves room for Postgres in 7.6 GiB, and it is about the largest size that keeps CPU tagging near 1-2 s per message. S4 compares it with a smaller model under a win rule fixed in advance.
 Tradeoff: lower quality than 7B+ models. If the pinned model or its GGUF is unavailable, the closest permissively licensed ~4B instruct model replaces it, recorded under Deviations from brief.
+
+## D91 — 2026-11-14 — Removing a thread from the allowlist purges its data
+Decision: make purge-unlisted deletes every warehouse row whose thread is not in GCW_THREAD_ALLOWLIST: raw messages and everything keyed to them (reactions, enrich.message_tags and any other table that references a message or a thread), and that thread's raw.sender_consent rows. dbt marts drop the thread on their next build. It dry-runs by default and prints counts only; it deletes only with CONFIRM=1, in one transaction. consent-load skips ledger rows whose thread is not allowlisted and reports how many it skipped; the ledger CSV itself stays Ryan's to edit.
+Alternative: keep the rows and filter them out in dbt; delete by hand in psql.
+Why: the allowlist is the ingestion consent gate, so a thread that leaves it should leave the warehouse, not linger behind a filter. Dry run then confirm makes a destructive step reviewable, and a make target keeps Ryan out of ad hoc SQL on real data.
+Tradeoff: deletion from the warehouse is permanent (re-adding the ID and running real-ingest restores it from the export, which still holds the chat); one more step to remember.

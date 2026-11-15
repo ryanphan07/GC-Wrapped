@@ -11,7 +11,7 @@ from pathlib import Path
 import psycopg
 from pydantic import ValidationError
 
-from gcwrapped import consent_coverage, ledger, metrics, real_ingest
+from gcwrapped import consent_coverage, ledger, metrics, purge, real_ingest
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.labeling import commands as labeling
@@ -103,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-start",
         action="store_true",
         help="do not start compose services (the database is already running, as in CI)",
+    )
+    purge_cmd = sub.add_parser(
+        "purge-unlisted",
+        help="delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (dry run by default)",
+    )
+    purge_cmd.add_argument(
+        "--confirm", action="store_true", help="actually delete, in one transaction"
     )
     sub.add_parser(
         "consent-coverage",
@@ -344,6 +351,8 @@ def _run(argv: Sequence[str] | None) -> int:
         return ledger.run_template()
     if args.command == "consent-load":
         return ledger.run_load(_no_op) if args.no_start else ledger.run_load()
+    if args.command == "purge-unlisted":
+        return purge.run(confirm=args.confirm)
     if args.command == "consent-coverage":
         return consent_coverage.run()
     if args.command == "last-run":

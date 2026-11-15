@@ -89,6 +89,7 @@ def test_load_fills_the_table_and_prints_the_counts(
     assert out.splitlines() == [
         "target database: gcw_test",
         "ledger rows: 3",
+        "rows skipped (thread not allowlisted): 0",
         "consented (yes): 1",
         "consented (local): 0",
         "declined (no): 1",
@@ -134,7 +135,6 @@ def test_a_changed_ledger_replaces_the_table_including_yes_to_no(warehouse: str)
     "bad_row",
     [
         "maybe,111,SENTINELNAME b,9",
-        "yes,333,SENTINELNAME b,9",
         "yes,111,SENTINELNAME nobody,9",
         "yes,111,SENTINELNAME b,9\nno,111,SENTINELNAME b,9",
         "yes,222,SENTINELNAME reactor,0",  # in the warehouse, but sent nothing
@@ -155,6 +155,18 @@ def test_a_bad_ledger_loads_nothing_and_keeps_the_previous_table(
     assert out.splitlines()[-1] == "consent-load: failed"
     assert "sentinel" not in out.lower()
     assert _table(warehouse) == before
+
+
+def test_load_skips_a_thread_outside_the_allowlist(
+    warehouse: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_ledger(*GOOD, "yes,333,SENTINELNAME gone,9")
+
+    assert ledger.run_load(_no_start) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:3] == ["ledger rows: 3", "rows skipped (thread not allowlisted): 1"]
+    assert {thread for thread, _, _ in _table(warehouse)} == {"111", "222"}
 
 
 def test_a_failure_inside_the_transaction_rolls_back_the_delete(warehouse: str) -> None:

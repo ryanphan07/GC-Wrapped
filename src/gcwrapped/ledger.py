@@ -38,7 +38,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 KIND_BAD_HEADER = "bad_header"
 KIND_BAD_VALUE = "bad_value"
 KIND_DUPLICATE = "duplicate"
-KIND_UNKNOWN_THREAD = "unknown_thread"
 KIND_UNKNOWN_SENDER = "unknown_sender"
 
 STEP_LEDGER_PATH = "ledger path"
@@ -63,6 +62,7 @@ TEMPLATE_SHAPES = (
 LOAD_SHAPES = (
     _DB,
     r"ledger rows: \d+",
+    r"rows skipped \(thread not allowlisted\): \d+",
     r"consented \(yes\): \d+",
     r"consented \(local\): \d+",
     r"declined \(no\): \d+",
@@ -70,9 +70,7 @@ LOAD_SHAPES = (
     r"consent-load: ok",
 )
 # Failure lines, for both commands. Step names and exception type names only.
-ERROR_LINE_SHAPE = (
-    r"ledger error: (bad_header|bad_value|duplicate|unknown_thread|unknown_sender) at line \d+"
-)
+ERROR_LINE_SHAPE = r"ledger error: (bad_header|bad_value|duplicate|unknown_sender) at line \d+"
 ERROR_COUNT_SHAPE = r"ledger errors: \d+"
 FAILED_SHAPE = r"consent-(template|load): failed"
 FAILED_AT_SHAPE = (
@@ -123,6 +121,7 @@ class Problem:
 class LedgerCheck:
     rows: list[LedgerRow]  # rows without a problem
     problems: list[Problem]  # one per bad row at most, in file order
+    skipped: int = 0  # well-formed rows of a thread outside the allowlist (D91); never loaded
 
 
 @dataclass(frozen=True)
@@ -155,8 +154,12 @@ def check_ledger(
     members: Members | None = None,
 ) -> LedgerCheck:
     """Read the whole file and report every problem; a row gets at most one, in this order:
-    bad_value, duplicate, unknown_thread (when `allowlist` is given), unknown_sender (when
-    `members` is given). A wrong header or an undecodable file is a single bad_header at line 1.
+    bad_value, duplicate, unknown_sender (when `members` is given).
+
+    When `allowlist` is given, a well-formed row of a thread outside it is skipped and counted,
+    not loaded and not looked up in `members` (D91: the thread left the allowlist, and the ledger
+    CSV stays the owner's to edit). A wrong header or an undecodable file is a single bad_header
+    at line 1.
 
     Raises OSError if the file cannot be opened; callers print the type name only.
     """
@@ -172,6 +175,7 @@ def check_ledger(
     rows: list[LedgerRow] = []
     problems: list[Problem] = []
     seen: set[tuple[str, str]] = set()
+    skipped = 0
     for line, record in records[1:]:
         if not record:  # a blank line
             continue
@@ -181,8 +185,11 @@ def check_ledger(
             continue
         row = LedgerRow(*record)
         seen.add(row.key)
+        if allowlist is not None and row.thread_id not in allowlist:
+            skipped += 1
+            continue
         rows.append(row)
-    return LedgerCheck(rows, problems)
+    return LedgerCheck(rows, problems, skipped)
 
 
 def _row_problem(
@@ -199,7 +206,7 @@ def _row_problem(
     if (thread_id, sender_name) in seen:
         return KIND_DUPLICATE
     if allowlist is not None and thread_id not in allowlist:
-        return KIND_UNKNOWN_THREAD
+        return None  # skipped by the caller, so its sender is not looked up in the warehouse
     if members is not None and (thread_id, sender_name) not in members:
         return KIND_UNKNOWN_SENDER
     return None
@@ -435,6 +442,7 @@ def run_load(start_db: Callable[[], None] = start_database) -> int:
         lines = [
             f"target database: {database}",
             f"ledger rows: {counts.rows}",
+            f"rows skipped (thread not allowlisted): {check.skipped}",
             f"consented (yes): {counts.yes}",
             f"consented (local): {counts.local}",
             f"declined (no): {counts.no}",

@@ -127,11 +127,31 @@ def test_duplicate_reports_the_second_occurrence(tmp_path: Path) -> None:
     assert _problems(path) == ["ledger error: duplicate at line 4"]
 
 
-def test_unknown_thread_needs_the_allowlist(tmp_path: Path) -> None:
-    path = _write(tmp_path / "l.csv", HEADER_LINE, "yes,333,a,1", "yes,111,a,1")
+def test_a_row_of_a_thread_outside_the_allowlist_is_skipped_and_counted(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "l.csv",
+        HEADER_LINE,
+        "yes,333,a,1",
+        "yes,111,SENTINELNAME a,1",
+        "no,444,SENTINELNAME q,2",
+    )
 
-    assert _problems(path, allowlist=ALLOWLIST) == ["ledger error: unknown_thread at line 2"]
-    assert _problems(path) == []  # not checked without an allowlist (consent-template)
+    check = check_ledger(path, allowlist=ALLOWLIST, members=MEMBERS)
+
+    assert check.problems == []  # skipped rows are not looked up among the warehouse's members
+    assert [r.thread_id for r in check.rows] == ["111"]
+    assert check.skipped == 2
+    assert check_ledger(path).skipped == 0  # no allowlist (consent-template): nothing is skipped
+    assert len(check_ledger(path).rows) == 3
+
+
+def test_a_malformed_row_of_an_unlisted_thread_is_still_an_error(tmp_path: Path) -> None:
+    path = _write(tmp_path / "l.csv", HEADER_LINE, "maybe,333,a,1", "yes,333,b,1", "no,333,b,1")
+
+    assert _problems(path, ALLOWLIST) == [
+        "ledger error: bad_value at line 2",
+        "ledger error: duplicate at line 4",
+    ]
 
 
 def test_unknown_sender_needs_the_warehouse(tmp_path: Path) -> None:
@@ -164,16 +184,14 @@ def test_every_problem_is_reported_in_file_order_and_blank_lines_are_skipped(
         "",
         "bad,111,SENTINELNAME a,1",
         "yes,111,SENTINELNAME a,1",
-        "yes,333,SENTINELNAME a,1",
         "yes,111,SENTINELNAME zz,1",
         "yes,111,SENTINELNAME a,1",
     )
 
     assert _problems(path, ALLOWLIST, MEMBERS) == [
         "ledger error: bad_value at line 3",
-        "ledger error: unknown_thread at line 5",
-        "ledger error: unknown_sender at line 6",
-        "ledger error: duplicate at line 7",
+        "ledger error: unknown_sender at line 5",
+        "ledger error: duplicate at line 6",
     ]
 
 
@@ -505,6 +523,7 @@ def test_load_prints_counts_and_loads_the_checked_rows(
     assert out.splitlines() == [
         "target database: gcw_dev",
         "ledger rows: 3",
+        "rows skipped (thread not allowlisted): 0",
         "consented (yes): 1",
         "consented (local): 1",
         "declined (no): 1",
@@ -517,12 +536,40 @@ def test_load_prints_counts_and_loads_the_checked_rows(
     assert [len(rows) for rows in calls.loaded] == [3]
 
 
+def test_load_skips_rows_of_a_thread_outside_the_allowlist_and_counts_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    calls: Calls,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _write(
+        tmp_path / "SENTINELDIR" / "l.csv",
+        HEADER_LINE,
+        "yes,111,SENTINELNAME a,5",
+        "yes,999,SENTINELNAME gone,1",
+        "local,999,SENTINELNAME gone too,1",
+    )
+    _use_ledger(monkeypatch, path)
+
+    assert ledger.run_load(calls.start) == 0
+
+    out = capsys.readouterr().out
+    assert out.splitlines()[1:3] == [
+        "ledger rows: 1",
+        "rows skipped (thread not allowlisted): 2",
+    ]
+    for line, shape in zip(out.splitlines(), ledger.LOAD_SHAPES, strict=True):
+        assert re.fullmatch(shape, line)
+    assert _no_sentinel(out)
+    assert [[r.thread_id for r in rows] for rows in calls.loaded] == [["111"]]
+    assert "999" in path.read_text(encoding="utf-8")  # the ledger file itself is untouched
+
+
 @pytest.mark.parametrize(
     ("rows", "expected"),
     [
         (["Yes,111,SENTINELNAME a,1"], "bad_value at line 2"),
         (["yes,111,SENTINELNAME a,1", "no,111,SENTINELNAME a,1"], "duplicate at line 3"),
-        (["yes,999,SENTINELNAME a,1"], "unknown_thread at line 2"),
         (["yes,111,SENTINELNAME nobody,1"], "unknown_sender at line 2"),
     ],
 )

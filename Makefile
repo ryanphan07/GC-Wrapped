@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load consent-coverage redaction-audit label-tags label-questions label-summary llm-model tag tag-bench synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit label-tags label-questions label-summary llm-model tag tag-bench synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -144,6 +144,12 @@ consent-template:
 
 consent-load:
 	@uv run gcw consent-load
+
+# Purge threads removed from GCW_THREAD_ALLOWLIST (D91): deletes every warehouse row of a thread not
+# listed (messages, reactions, tags, that thread's consent rows). Dry run unless CONFIRM=1; prints
+# counts only. Starts only the db service. Real-data runs are Ryan's.
+purge-unlisted:
+	@uv run gcw purge-unlisted $(if $(filter 1,$(CONFIRM)),--confirm,)
 
 # Consent coverage (D88): fixed aggregate lines, safe to paste. Also writes consent_priorities.csv
 # (senders ranked by text messages, with names) to GCW_LABEL_DIR, which must exist outside the
