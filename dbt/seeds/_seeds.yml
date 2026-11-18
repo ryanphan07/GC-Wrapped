@@ -1,0 +1,13 @@
+version: 2
+
+seeds:
+  - name: instagram_placeholder_patterns
+    description: >
+      Instagram's auto-generated message text (D95). `pattern` is a case-insensitive Postgres
+      regex; fct_message_text anchors it to the whole message, so write only the middle. A name
+      is `.+`, an emoji `\S+`. A new template is a new row, not a code change.
+    columns:
+      - name: pattern_id
+        data_tests: [unique, not_null]
+      - name: pattern
+        data_tests: [not_null]

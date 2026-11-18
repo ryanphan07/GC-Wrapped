@@ -21,6 +21,7 @@ from gcwrapped.tagging.llamacpp import LlamaCppProvider
 from gcwrapped.tagging.prompt import PROMPT_VERSION
 from gcwrapped.tagging.provider import ProviderUnavailable, Tag, TagFailure
 from gcwrapped.tagging.runner import run_tagging
+from placeholder_support import create_text_view, drop_text_view
 from tagging_stub import StubLlm
 
 pytestmark = pytest.mark.integration
@@ -39,6 +40,9 @@ ROWS = [
     ("222", "SENDERDEE", f"{SENTINEL} unlisted", 1),
     ("333", "SENDEREVE", f"{SENTINEL} e1", 1),
     ("333", "SENDEREVE", f"{SENTINEL} e2", 2),
+    # Instagram placeholders (D95) from consented senders: never sent to a model, never tagged.
+    ("111", "SENDERANA", "SENDERANA liked a message", 8),
+    ("333", "SENDEREVE", "Reacted 😂 to your message", 3),
 ]
 CONSENT = [
     ("111", "SENDERANA", "yes"),
@@ -58,6 +62,7 @@ def warehouse(migrated_db: str) -> Iterator[str]:
     get_database_settings.cache_clear()
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         conn.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        drop_text_view(conn)
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
         run = conn.execute(
             "INSERT INTO raw.load_runs (roots_count) VALUES (1) RETURNING load_id"
@@ -85,8 +90,10 @@ def warehouse(migrated_db: str) -> Iterator[str]:
             "FROM raw.messages AS m LEFT JOIN raw.sender_consent AS c "
             "ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name"
         )
+        create_text_view(conn)
     yield migrated_db
     with psycopg.connect(migrated_db, autocommit=True) as conn:
+        drop_text_view(conn)
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
 
 
@@ -138,8 +145,8 @@ def test_declined_blank_unlisted_and_textless_messages_are_never_sent_or_tagged(
     fake = Fake()
     run_tagging(warehouse, fake)
     sent = "\n".join(user for _, user in fake.prompts)
-    for excluded in ("declined", "undecided", "unlisted"):
-        assert excluded not in sent
+    for excluded in ("declined", "undecided", "unlisted", "liked a message", "Reacted"):
+        assert excluded not in sent  # the last two are placeholders (D95)
     assert len(fake.prompts) == ELIGIBLE
     tagged = {r[0] for r in _rows(warehouse)}
     assert tagged == {
@@ -232,6 +239,21 @@ def test_revoking_a_senders_consent_prunes_their_tags(warehouse: str) -> None:
         )
     back = run_tagging(warehouse, Fake("model-b"))
     assert (back.pruned, back.tagged) == (0, 2)
+
+
+def test_a_tag_on_a_message_that_becomes_a_placeholder_is_pruned(warehouse: str) -> None:
+    run_tagging(warehouse, Fake("model-a"), prompt_version="p1")
+    run_tagging(warehouse, Fake("model-b"))
+    assert len(_rows(warehouse)) == 2 * ELIGIBLE
+    with psycopg.connect(warehouse, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE raw.messages SET content = 'SENDERANA liked a message' WHERE message_key = %s",
+            (_key("111", 0),),
+        )
+    result = run_tagging(warehouse, Fake("model-b"))
+    assert result.pruned == 2  # a1, under both models
+    assert (result.eligible, result.tagged) == (ELIGIBLE - 1, 0)
+    assert _key("111", 0) not in {r[0] for r in _rows(warehouse)}
 
 
 def test_the_table_rejects_an_invalid_label(warehouse: str) -> None:

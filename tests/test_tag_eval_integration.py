@@ -143,6 +143,20 @@ def test_labels_of_messages_that_stop_being_local_ok_are_dropped_at_scoring_time
     assert both.messages == 2
 
 
+def test_a_label_on_a_message_that_is_a_placeholder_is_dropped_at_scoring_time(
+    warehouse: str,
+) -> None:
+    placeholder = ID[10]  # "SENDERANA liked a message", from a consented sender
+    labels = _labels() | {placeholder: ("food", "neutral")}
+    index = load_eligible(warehouse)
+    assert placeholder not in index
+    ids, dropped = evaluation.split_labels(labels, index)
+    assert (len(ids), dropped) == (ELIGIBLE, len(NOT_OK) + 1)
+    rows = {r.message_id: r for r in evaluation.run_model(Fake(), index, ids)}
+    result = evaluation.evaluate(labels, rows, index)
+    assert (result.labels, result.dropped, result.scored) == (9, 4, 5)
+
+
 # --- the commands, end to end through the real client and the stub server ----------------------
 
 

@@ -349,3 +349,28 @@ models:
                 field: member_key
       - name: messages
         data_tests: [not_null]
+
+  - name: fct_message_text
+    description: >
+      One row per message with `has_user_text`: the content is non-blank and does not fully match
+      any Instagram placeholder pattern in the `instagram_placeholder_patterns` seed (D95). The one
+      definition behind labeling, tagging and embeddings (with `local_ok`). `placeholder_pattern_id`
+      names the first matching pattern, null when none. No message text.
+    columns:
+      - name: message_key
+        description: Primary key, from the parser's dedup key.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_messages')
+                field: message_key
+      - name: has_user_text
+        data_tests: [not_null]
+      - name: placeholder_pattern_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('instagram_placeholder_patterns')
+                field: pattern_id

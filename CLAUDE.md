@@ -28,7 +28,7 @@ Not yet in scope: analysis of image/video content, a second platform, any hosted
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
 - No external API calls from pipeline code. Hosted providers fail closed unless the D76 NER gate (P2-2b) has passed (D84); a local model needs no API call.
-- Every piece of work needs the sender's explicit opt-in in the consent ledger, at two levels (D88): `yes` (local work and redacted external calls) or `local` (this machine only). Local work (labeling, tagging, embeddings, answers, profiles) uses `local_ok`; no message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages `external_ok` (consent yes, D69). Blank, `no` and missing senders are excluded from everything. Claude Code never reads, creates or edits the real ledger.
+- Every piece of work needs the sender's explicit opt-in in the consent ledger, at two levels (D88): `yes` (local work and redacted external calls) or `local` (this machine only). Local work (labeling, tagging, embeddings, answers, profiles) uses `local_ok` AND `has_user_text` (D95: non-blank and not an Instagram placeholder); no message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages `external_ok` (consent yes, D69). Blank, `no` and missing senders are excluded from everything. Claude Code never reads, creates or edits the real ledger.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 
 ## Stack
@@ -51,6 +51,7 @@ make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_L
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 make purge-unlisted [CONFIRM=1]  # delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (D91); dry run unless CONFIRM=1; counts only. Real-data runs are Ryan's.
+make text-audit                 # aggregate counts per Instagram placeholder pattern and of the remaining user text (D95); never text. Real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
 make llm-model [MODEL=id]       # download a registered pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models); default is the D90 model

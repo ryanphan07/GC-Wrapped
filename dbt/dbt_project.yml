@@ -19,6 +19,16 @@ vars:
   # test keeps it equal to gcwrapped.tagging.model.MODEL_ID.
   gcw_default_tag_model: qwen3-4b-instruct-2507-q4_k_m
 
+# The placeholder patterns (D95) are data, not text: the seed lives in analytics with no reader grant.
+seeds:
+  gcwrapped:
+    +schema: analytics
+    instagram_placeholder_patterns:
+      +column_types:
+        pattern_id: text
+        pattern: text
+        description: text
+
 # staging and intermediate = views; marts = tables, except fct_message_eligibility (a view, D75).
 # No incremental models.
 models:
@@ -51,6 +61,7 @@ models:
       fct_sessions: *reader_grant
       # fct_message_tags: per-message labels with keys, deliberately absent (aggregates only).
       # fct_message_eligibility: a view (set in the model), deliberately absent from this list.
+      # fct_message_text: per-message flags with keys, deliberately absent (no reader access).
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
 # analytics only; the reader is never granted anything on staging. Idempotent, safe every build.

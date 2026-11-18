@@ -28,7 +28,7 @@ from synthetic.eval_set import EVAL_MESSAGES, EVAL_QUESTIONS
 from synthetic.instagram import (
     CONSENT_BY_SENDER,
     EVAL_FOLDER,
-    SYNTHETIC_THREAD_IDS,
+    EVAL_THREAD_ID,
     THREADS,
     _histories,
     consent_ledger_rows,
@@ -86,17 +86,18 @@ def test_every_labeled_message_is_in_a_thread_of_yes_senders() -> None:
     """The eval thread's senders all consented, so every labeled message is eligible (D85)."""
     participants = next(p for folder, _, p, _ in THREADS if folder == EVAL_FOLDER)
     assert {CONSENT_BY_SENDER[name] for name in participants} == {"yes"}
-    rows = [r for r in consent_ledger_rows() if r.thread_id == SYNTHETIC_THREAD_IDS[-1]]
+    rows = [r for r in consent_ledger_rows() if r.thread_id == EVAL_THREAD_ID]
     assert rows
     assert {r.consent for r in rows} == {"yes"}
 
 
 def test_eval_thread_is_appended_without_changing_earlier_threads() -> None:
-    assert THREADS[-1][0] == EVAL_FOLDER
+    eval_index = [t[0] for t in THREADS].index(EVAL_FOLDER)
+    assert eval_index == len(THREADS) - 2  # only the placeholder thread (D95) comes after it
     histories = _histories(1234)
     assert len(histories) == len(THREADS)
     digest = hashlib.sha256(
-        json.dumps(histories[:-1], sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(histories[:eval_index], sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
     assert digest == EARLIER_THREADS_DIGEST
 

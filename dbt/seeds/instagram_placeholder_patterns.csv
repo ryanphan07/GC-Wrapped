@@ -1,0 +1,20 @@
+pattern_id,pattern,description
+liked_message,"(.+ )?liked a message\.?",A like on a message
+reacted_message,"(.+ )?reacted \S+ to (your|a) message\.?",An emoji reaction notice
+sent_attachment,"(.+ )?sent an attachment\.?",A photo or file with no caption
+shared_story,"(.+ )?shared a story\.?",A shared story
+mentioned_story,"(.+ )?mentioned you in their story\.?",A story mention
+video_chat_started,"(.+ )?started a video chat\.?",A video chat start
+video_chat_ended,"the video chat ended\.?",A video chat end
+video_chat_missed,"(.+ )?missed (your|a) video chat\.?|you missed a video chat with .+",A missed video chat
+audio_call_started,"(.+ )?started an audio call\.?",An audio call start
+audio_call_ended,"the audio call ended\.?",An audio call end
+audio_call_missed,"(.+ )?missed (your|an) audio call\.?|you missed an audio call with .+",A missed audio call
+group_photo_changed,".+ changed the group photo\.?",A group photo change
+group_named,".+ named the group .+",A group rename
+group_member_added,".+ added .+ to the group\.?",A member added
+group_member_removed,".+ removed .+ from the group\.?",A member removed
+group_member_left,".+ left the group\.?",A member left
+message_unsent,"(.+ )?unsent a message\.?",An unsent message
+poll_created,".+ created a poll(: .*)?\.?",A poll created
+poll_voted,".+ voted (in|on) (a|the) poll\.?",A poll vote

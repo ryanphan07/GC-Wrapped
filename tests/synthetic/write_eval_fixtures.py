@@ -26,7 +26,7 @@ from gcwrapped.labeling.schema import (
 )
 from gcwrapped.parsers.instagram import parse_export_consented
 from synthetic.eval_set import EVAL_MESSAGES, EVAL_QUESTIONS
-from synthetic.instagram import EVAL_FOLDER, SYNTHETIC_THREAD_IDS, generate_pair
+from synthetic.instagram import EVAL_FOLDER, EVAL_THREAD_ID, generate_pair
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "eval"
 LABELED_AT = "2026-11-10T00:00:00+00:00"
@@ -36,7 +36,7 @@ DEFAULT_SEED = 1234
 
 def eval_message_ids(seed: int = DEFAULT_SEED) -> list[str]:
     """message_key of each EVAL_MESSAGES entry, in order. Raises if any text is missing or twice."""
-    thread_id = SYNTHETIC_THREAD_IDS[-1]
+    thread_id = EVAL_THREAD_ID
     assert EVAL_FOLDER.endswith(thread_id)
     with tempfile.TemporaryDirectory() as tmp:
         root_a, root_b = generate_pair(Path(tmp), seed)

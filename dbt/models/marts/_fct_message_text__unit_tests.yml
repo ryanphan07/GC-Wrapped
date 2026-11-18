@@ -1,0 +1,40 @@
+version: 2
+
+unit_tests:
+  - name: user_text_excludes_fully_matching_placeholders
+    description: >
+      D95. A placeholder is matched fully, case-insensitively and on trimmed content, with names as
+      wildcards; a real sentence that merely contains a template, a blank, an empty and a missing
+      content are not placeholders (the last three are not user text either); an emoji-only message
+      stays user text; when two patterns match, the first id is reported.
+    model: fct_message_text
+    given:
+      - input: ref('instagram_placeholder_patterns')
+        rows:
+          - {pattern_id: liked_message, pattern: "(.+ )?liked a message\\.?", description: x}
+          - {pattern_id: group_left, pattern: ".+ left the group\\.?", description: x}
+          - {pattern_id: liked_any, pattern: ".+ a message", description: x}
+      - input: ref('stg_instagram__messages')
+        rows:
+          - {message_key: m1, content: "Ana liked a message", has_content: true}
+          - {message_key: m2, content: "  LIKED A MESSAGE.  ", has_content: true}
+          - {message_key: m3, content: "i liked a message you sent yesterday", has_content: true}
+          - {message_key: m4, content: "Sam Lee left the group.", has_content: true}
+          - {message_key: m5, content: "he left the group chat", has_content: true}
+          - {message_key: m6, content: "   ", has_content: false}
+          - {message_key: m7, content: "", has_content: false}
+          - {message_key: m8, content: "😂", has_content: true}
+          - {message_key: m9, has_content: false}
+          - {message_key: m10, content: "lol", has_content: true}
+    expect:
+      rows:
+        - {message_key: m1, has_user_text: false, placeholder_pattern_id: liked_any}
+        - {message_key: m2, has_user_text: false, placeholder_pattern_id: liked_message}
+        - {message_key: m3, has_user_text: true, placeholder_pattern_id: null}
+        - {message_key: m4, has_user_text: false, placeholder_pattern_id: group_left}
+        - {message_key: m5, has_user_text: true, placeholder_pattern_id: null}
+        - {message_key: m6, has_user_text: false, placeholder_pattern_id: null}
+        - {message_key: m7, has_user_text: false, placeholder_pattern_id: null}
+        - {message_key: m8, has_user_text: true, placeholder_pattern_id: null}
+        - {message_key: m9, has_user_text: false, placeholder_pattern_id: null}
+        - {message_key: m10, has_user_text: true, placeholder_pattern_id: null}
