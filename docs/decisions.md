@@ -548,3 +548,9 @@ Decision: A message counts as user text only if its content is non-blank and doe
 Alternative: label placeholders as other/neutral; filter in Python only; drop all short messages.
 Why: placeholders carry no words a person wrote, so labeling, tagging or retrieving them measures nothing and inflates "other" and profile counts. One definition in dbt keeps labeling, tagging and search consistent, and seed patterns are reviewable and extendable without code changes. Short real messages ("lol", an emoji) are kept, because they are real banter.
 Tradeoff: patterns are English-export specific and can miss a template nobody has listed (the audit's residual counts are how a miss shows up); an over-broad pattern could drop real text, so every pattern is fully anchored and unit-tested.
+
+## D96 — 2026-11-18 — No cross-session memory for Claude Code beyond the repo docs
+Decision: No cross-session memory for Claude Code beyond the repo docs: no claude-mem plugin, and Serena's onboarding and memory tools are denied in .claude/settings.json.
+Alternative: claude-mem (captures every tool call, compresses it with Claude via the Agent SDK, injects a memory index at session start) or Serena's memories in .serena/memories.
+Why: CLAUDE.md, docs/STATUS.md and docs/decisions.md are the only source of truth between sessions and are reviewed in every PR; a second memory can inject stale context that contradicts them, Serena's sits in a gitignored folder no review sees, and claude-mem's compression spends Pro usage every session.
+Tradeoff: each session re-reads the repo docs instead of getting an automatic history index.

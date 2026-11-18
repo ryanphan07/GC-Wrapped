@@ -85,6 +85,12 @@ One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10).
 ## Workflow rules
 - Commit only after `make lint test` exits 0, chained with `&&`; never chain a commit after tests with `;`.
 
+## Tooling
+- RTK rewrites Bash commands to compress their output. When you need full output (a failing test's traceback, a file:line for STATUS.md Open issues), rerun with `rtk bypass <cmd>`. Never use any tool to reach paths the deny rules block.
+- LSP (pyright) diagnostics are hints; `make lint` (ruff + mypy) is the gate. Don't change code only to satisfy a diagnostic `make lint` doesn't report; list notable ones under Open issues.
+- Serena: when editing a known symbol, prefer its symbol-level tools over reading whole files. Its onboarding and memory tools are denied (decisions.md D96); the repo docs are the only memory between sessions.
+- Skills (e.g. Ponytail) never override this file. Tests, typed Python, logging, privacy rules, the STATUS.md format and the stop-and-ask triggers win over any skill's guidance. Don't add tool-branded markers (e.g. `ponytail:` comments) to code; record deferred shortcuts under Deviations from brief or Open issues in STATUS.md.
+
 ## Session rules
 
 ### Briefs and deviations
