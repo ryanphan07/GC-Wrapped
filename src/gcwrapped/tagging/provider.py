@@ -43,12 +43,20 @@ class HostedProvider:
         raise ExternalCallBlocked
 
 
-def make_provider(kind: str, *, llm_url: str, model_id: str) -> TagProvider:
+def make_provider(
+    kind: str,
+    *,
+    llm_url: str,
+    model_id: str,
+    chat_template_kwargs: dict[str, bool] | None = None,
+) -> TagProvider:
     """ "llamacpp" gives the local client; "hosted" gives the stub; anything else is an error."""
     if kind == "llamacpp":
         from gcwrapped.tagging.llamacpp import LlamaCppProvider
 
-        return LlamaCppProvider(llm_url, model_id=model_id)
+        return LlamaCppProvider(
+            llm_url, model_id=model_id, chat_template_kwargs=chat_template_kwargs
+        )
     if kind == "hosted":
         return HostedProvider()
     raise ValueError("unknown provider kind")

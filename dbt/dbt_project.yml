@@ -15,9 +15,9 @@ vars:
   gcw_timezone: "{{ env_var('CHAT_TIMEZONE', 'America/Los_Angeles') }}"
   # A gap longer than this between consecutive messages in a thread starts a new session.
   session_gap_minutes: 60
-  # The D90 model: fct_message_tags falls back to it while enrich.tag_default is empty (D92). A
+  # The D98 default model: fct_message_tags falls back to it while enrich.tag_default is empty (D92). A
   # test keeps it equal to gcwrapped.tagging.model.MODEL_ID.
-  gcw_default_tag_model: qwen3-4b-instruct-2507-q4_k_m
+  gcw_default_tag_model: qwen3.5-4b-q4_k_m
 
 # The placeholder patterns (D95) are data, not text: the seed lives in analytics with no reader grant.
 seeds:

@@ -21,7 +21,7 @@ from gcwrapped.labeling.schema import TagLabel
 from gcwrapped.labeling.source import load_eligible
 from gcwrapped.ledger import REPO_ROOT
 from gcwrapped.tagging import commands, evaluation, model, report
-from gcwrapped.tagging.prompt import PROMPT_VERSION
+from gcwrapped.tagging.prompt import prompt_version_for
 from tagging_stub import StubLlm
 from test_tagging_integration import (
     ELIGIBLE,
@@ -31,6 +31,9 @@ from test_tagging_integration import (
     _key,
 )
 from test_tagging_integration import warehouse as tagging_warehouse  # noqa: F401  (a fixture)
+
+# Both Qwen3.5 arms send the same thinking-off setting, so they share one prompt version (D98).
+PROMPT_VERSION = prompt_version_for(model.REGISTRY[model.MODEL_ID].chat_template_kwargs)
 
 pytestmark = pytest.mark.integration
 

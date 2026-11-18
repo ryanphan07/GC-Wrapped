@@ -16,13 +16,16 @@ import pytest
 
 from gcwrapped.config import get_database_settings
 from gcwrapped.labeling.source import load_eligible
-from gcwrapped.tagging import commands, report
+from gcwrapped.tagging import commands, model, report
 from gcwrapped.tagging.llamacpp import LlamaCppProvider
-from gcwrapped.tagging.prompt import PROMPT_VERSION
+from gcwrapped.tagging.prompt import prompt_version_for
 from gcwrapped.tagging.provider import ProviderUnavailable, Tag, TagFailure
 from gcwrapped.tagging.runner import run_tagging
 from placeholder_support import create_text_view, drop_text_view
 from tagging_stub import StubLlm
+
+# Both Qwen3.5 arms send the same thinking-off setting, so they share one prompt version (D98).
+PROMPT_VERSION = prompt_version_for(model.REGISTRY[model.MODEL_ID].chat_template_kwargs)
 
 pytestmark = pytest.mark.integration
 

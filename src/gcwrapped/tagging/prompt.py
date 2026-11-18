@@ -6,8 +6,9 @@ labeler never saw them either. Redaction applies only to external calls (D70), a
 ever goes to a localhost server.
 
 The system prompt is identical for every request so the server's prompt cache reuses its prefix.
-`prompt_version` is a hash of everything that shapes the request (system prompt, user template and
-JSON schema), so any edit makes old and new tags distinguishable (D89).
+`prompt_version` is a hash of everything that shapes the request (system prompt, user template,
+JSON schema and the model's per-request template setting, D98), so any edit makes old and new
+tags distinguishable (D89).
 """
 
 import hashlib
@@ -89,6 +90,18 @@ def _template_fingerprint() -> str:
 
 
 PROMPT_VERSION = _template_fingerprint()[:12]
+
+
+def prompt_version_for(chat_template_kwargs: dict[str, bool] | None) -> str:
+    """The version for a model whose requests carry `chat_template_kwargs` (D98).
+
+    No setting gives PROMPT_VERSION itself, so tags and predictions made before the setting existed
+    keep their version; any setting changes it, so thinking on and off never share a version.
+    """
+    if not chat_template_kwargs:
+        return PROMPT_VERSION
+    material = json.dumps([_template_fingerprint(), chat_template_kwargs], sort_keys=True)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
 def messages_for(index: EligibleIndex, message: Message) -> tuple[str, str]:

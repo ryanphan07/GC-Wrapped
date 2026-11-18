@@ -27,7 +27,7 @@ from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.migrate import migrate
 from gcwrapped.tagging import evaluation, model, report
 from gcwrapped.tagging.llamacpp import check_local_url
-from gcwrapped.tagging.prompt import PROMPT_VERSION
+from gcwrapped.tagging.prompt import prompt_version_for
 from gcwrapped.tagging.provider import TagProvider, make_provider
 from gcwrapped.tagging.runner import run_tagging
 
@@ -96,7 +96,15 @@ StartLlm = Callable[[str], None] | None
 
 
 def _provider(model_id: str) -> TagProvider:
-    return make_provider("llamacpp", llm_url=llm_url(), model_id=model_id)
+    kwargs = model.spec_for(model_id).chat_template_kwargs
+    return make_provider(
+        "llamacpp", llm_url=llm_url(), model_id=model_id, chat_template_kwargs=kwargs
+    )
+
+
+def _version(model_id: str) -> str:
+    """The prompt version of this model's requests, including its template setting (D98)."""
+    return prompt_version_for(model.spec_for(model_id).chat_template_kwargs)
 
 
 def run_tag(
@@ -128,7 +136,7 @@ def run_tag(
         if start_llm is not None:
             start_llm(chosen)
         step = STEP_TAGGING
-        result = run_tagging(url, provider, limit=limit)
+        result = run_tagging(url, provider, limit=limit, prompt_version=_version(chosen))
         step = STEP_RENDER
         lines = report.render_tag(database, result)
     except Exception as exc:  # type name only: driver and OS messages can echo values
@@ -225,11 +233,12 @@ def run_tag_eval(
         step = STEP_TAGGING
         rows = evaluation.run_model(provider, index, ids)
         step = STEP_PREDICTIONS
-        evaluation.write_predictions(target.root, model_id, PROMPT_VERSION, rows)
+        version = _version(model_id)
+        evaluation.write_predictions(target.root, model_id, version, rows)
         step = STEP_SCORING
         result = evaluation.evaluate(labels, {r.message_id: r for r in rows}, index)
         step = STEP_RENDER
-        lines = report.render_eval(target.database, target.source, model_id, PROMPT_VERSION, result)
+        lines = report.render_eval(target.database, target.source, model_id, version, result)
     except Exception as exc:
         print(report.failure_line("tag-eval", step, exc))
         return 1
@@ -254,8 +263,11 @@ def run_tag_compare(
         step = STEP_LABELS
         labels = _read_labels(target.labels)
         step = STEP_PREDICTIONS
-        rows_a = evaluation.read_predictions(target.root, a_id, PROMPT_VERSION)
-        rows_b = evaluation.read_predictions(target.root, b_id, PROMPT_VERSION)
+        version = _version(a_id)
+        if _version(b_id) != version:
+            raise ValueError("A and B must run the same prompt version")
+        rows_a = evaluation.read_predictions(target.root, a_id, version)
+        rows_b = evaluation.read_predictions(target.root, b_id, version)
         step = STEP_DOCKER
         if start_db is not None:
             start_db()
@@ -264,11 +276,9 @@ def run_tag_compare(
         step = STEP_SCORING
         result = evaluation.compare(labels, rows_a, rows_b, index)
         step = STEP_RENDER
-        lines = report.render_compare(
-            target.database, target.source, PROMPT_VERSION, a_id, b_id, result
-        )
+        lines = report.render_compare(target.database, target.source, version, a_id, b_id, result)
         step = STEP_VERDICT
-        evaluation.write_verdict(target.root, a_id, b_id, PROMPT_VERSION, result)
+        evaluation.write_verdict(target.root, a_id, b_id, version, result)
     except Exception as exc:
         print(report.failure_line("tag-compare", step, exc))
         return 1
