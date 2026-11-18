@@ -32,3 +32,6 @@ tests/fixtures/sentinel/
 
 # Synthetic consent ledger (make synth writes it; dev GCW_CONSENT_LEDGER points here)
 tests/fixtures/synthetic_consent/
+
+# Serena (Claude Code tooling) local state
+.serena/
