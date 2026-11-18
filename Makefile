@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -164,6 +164,13 @@ consent-coverage:
 #   make redaction-audit ENV_FILE=<env file outside the repo>
 redaction-audit:
 	@uv run gcw redaction-audit
+
+# User text vs Instagram placeholders (D95): fixed aggregate lines (counts per placeholder pattern id
+# and user text by shape), never text. Needs the dbt objects built (make dbt-build / real-ingest).
+# Refuses a database outside ALLOWED_DATABASES. Real-data runs are Ryan's:
+#   make text-audit ENV_FILE=<env file outside the repo>
+text-audit:
+	@uv run gcw text-audit
 
 # Local hand labeling (D85, D86). Interactive: shows real messages in THIS terminal only and writes
 # labels to GCW_LABEL_DIR (must exist, outside the repo). Both refuse a database outside

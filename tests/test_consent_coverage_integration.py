@@ -17,6 +17,7 @@ import pytest
 
 from gcwrapped import consent_coverage as cc
 from gcwrapped.config import get_database_settings
+from placeholder_support import create_text_view, drop_text_view
 
 pytestmark = pytest.mark.integration
 
@@ -36,6 +37,10 @@ ROWS = [
     ("222", "Title Two", "Fay", f"{SENTINEL} 9"),
     ("222", "Title Two", "Fay", f"{SENTINEL} 10"),
     ("333", "Title Three", "Gus", None),
+    # Placeholders (D95) are not text messages: they change none of the counts below.
+    ("111", "Title One", "Ana", "Ana liked a message"),
+    ("222", "Title Two", "Fay", "Reacted 😂 to your message"),
+    ("111", "Title One", "Bo", "Bo sent an attachment."),
 ]
 CONSENT = [
     ("111", "Ana", "yes"),
@@ -57,6 +62,7 @@ def warehouse(migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         conn.execute("CREATE SCHEMA IF NOT EXISTS analytics")
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
         conn.execute("DROP VIEW IF EXISTS analytics.dim_members")
+        drop_text_view(conn)
         run = conn.execute(
             "INSERT INTO raw.load_runs (roots_count) VALUES (1) RETURNING load_id"
         ).fetchone()
@@ -95,8 +101,10 @@ def warehouse(migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             "SELECT thread_id, sender_name AS member_name, count(*)::int AS message_count "
             "FROM raw.messages GROUP BY thread_id, sender_name"
         )
+        create_text_view(conn)
     yield migrated_db
     with psycopg.connect(migrated_db, autocommit=True) as conn:
+        drop_text_view(conn)
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
         conn.execute("DROP VIEW IF EXISTS analytics.dim_members")
 

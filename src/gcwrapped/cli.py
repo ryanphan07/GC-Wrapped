@@ -93,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="redact every ingested message in memory and print aggregate counts only",
     )
     sub.add_parser(
+        "text-audit",
+        help="count user text and Instagram placeholders per pattern (aggregate counts only)",
+    )
+    sub.add_parser(
         "consent-template",
         help="create or extend the per-sender consent ledger from the warehouse (counts only)",
     )
@@ -360,6 +364,10 @@ def _run(argv: Sequence[str] | None) -> int:
         from gcwrapped import redaction_audit
 
         return redaction_audit.run()
+    if args.command == "text-audit":
+        from gcwrapped import text_audit
+
+        return text_audit.run()
     if args.command == "label-tags":
         return labeling.run_label_tags()
     if args.command == "label-questions":

@@ -114,12 +114,25 @@ THREADS: list[tuple[str, str, list[str], int]] = [
         ["Ana Ruiz", "Sam Lee", "Priya Raman"],
         160,
     ),
+    # Instagram placeholders mixed with real text (D95): only "yes" senders. Appended after the eval
+    # thread, so every earlier thread's history (one shared rng) is unchanged.
+    (
+        "placeholders_70192837465019283",
+        "Placeholders",
+        ["Ana Ruiz", "Sam Lee", "Priya Raman"],
+        80,
+    ),
 ]
-EVAL_FOLDER = THREADS[-1][0]
+EVAL_FOLDER = "evalset_61827394501827364"
+PLACEHOLDER_FOLDER = THREADS[-1][0]
 
 # The numeric thread IDs of THREADS: what GCW_THREAD_ALLOWLIST must list for synthetic data.
 # .env.example and CI list the same IDs (tests/test_consent.py keeps them in sync).
 SYNTHETIC_THREAD_IDS: list[str] = [m.group(1) for t in THREADS if (m := re.search(r"(\d+)$", t[0]))]
+
+# The eval thread's and the placeholder thread's numeric IDs.
+EVAL_THREAD_ID = SYNTHETIC_THREAD_IDS[[t[0] for t in THREADS].index(EVAL_FOLDER)]
+PLACEHOLDER_THREAD_ID = SYNTHETIC_THREAD_IDS[-1]
 
 # Folder renames applied in export b: the name part changes, the digits (the thread_id) do not.
 RENAMED_IN_B = {THREADS[1][0]: "samantha_293847561029384"}
@@ -143,6 +156,31 @@ _TEXTS = [
     "lol",
     "xin chào bạn ơi, hôm nay Hương đến muộn nhé",
     "Nguyễn nói tối nay ăn phở ở Đà Nẵng 🍜",
+]
+# Instagram's auto-generated message text (interface text, no message content), mixed with real
+# banter in the placeholder thread. Each template is one of the dbt seed patterns (D95).
+_PLACEHOLDER_TEXTS = [
+    "Ana Ruiz liked a message",
+    "Reacted 😂 to your message",
+    "Sam Lee sent an attachment.",
+    "Priya Raman shared a story.",
+    "Priya Raman started a video chat.",
+    "The video chat ended.",
+    "Sam Lee changed the group photo.",
+    "Ana Ruiz named the group Synthetic Crew.",
+    "Priya Raman added Sam Lee to the group.",
+    "Sam Lee left the group.",
+    "Ana Ruiz unsent a message",
+    "Ana Ruiz created a poll: tacos?",
+]
+_PLACEHOLDER_THREAD_TEXTS = [
+    *_PLACEHOLDER_TEXTS,
+    "lol",
+    "😂",
+    "see you at 7",
+    "that was so good",
+    "I liked a message you sent yesterday",
+    "ok",
 ]
 _EMOJIS = ["❤️", "😂", "👍", "😮"]
 _IDENTICAL_TEXT = "same message 👍"
@@ -353,6 +391,9 @@ def _histories(seed: int) -> list[list[Message]]:
     for folder, _, participants, count in THREADS:
         if folder == EVAL_FOLDER:
             histories.append(build_conversation(rng, participants, count, EVAL_TEXTS, True))
+        elif folder == PLACEHOLDER_FOLDER:
+            texts = _PLACEHOLDER_THREAD_TEXTS
+            histories.append(build_conversation(rng, participants, count, texts))
         else:
             texts = _DECORATED_TEXTS if DECORATED_TM in participants else _TEXTS
             histories.append(build_conversation(rng, participants, count, texts))

@@ -9,8 +9,9 @@ Two outputs with different privacy levels:
   its contents are never printed.
 
 It reads the loaded ledger (raw.sender_consent) and the eligibility view, not the CSV, so it shows
-what the pipeline will actually use. "Text message" means non-blank content, the same rule as the
-labeling source. A sender is a (thread, display name) pair, because the ledger is per thread.
+what the pipeline will actually use. "Text message" means user text (non-blank, not an Instagram
+placeholder, D95), the same rule as the labeling source. A sender is a (thread, display name) pair,
+because the ledger is per thread.
 """
 
 import csv
@@ -83,9 +84,10 @@ SELECT m.thread_id,
        max(c.consent)
 FROM raw.messages AS m
 LEFT JOIN analytics.fct_message_eligibility AS e USING (message_key)
+JOIN analytics.fct_message_text AS t USING (message_key)
 LEFT JOIN raw.sender_consent AS c
     ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name
-WHERE coalesce(m.content ~ '\\S', false)
+WHERE t.has_user_text
 GROUP BY m.thread_id, m.sender_name
 """
 
@@ -191,7 +193,8 @@ def build_coverage(url: str, database: str) -> Coverage:
         local_threads_row = conn.execute(
             "SELECT count(DISTINCT m.thread_id) FROM raw.messages AS m "
             "JOIN analytics.fct_message_eligibility AS e USING (message_key) "
-            "WHERE e.local_ok AND coalesce(m.content ~ '\\S', false)"
+            "JOIN analytics.fct_message_text AS t USING (message_key) "
+            "WHERE e.local_ok AND t.has_user_text"
         ).fetchone()
     if threads_row is None or local_threads_row is None:
         raise ShapeError

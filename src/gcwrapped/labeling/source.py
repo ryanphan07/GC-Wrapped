@@ -1,6 +1,7 @@
 """The labelable messages and their context (D85).
 
-One definition of "eligible": a message with text whose sender opted in ("yes" or "local") in the
+One definition of "eligible": a message a person typed (`analytics.fct_message_text.has_user_text`:
+non-blank and not an Instagram placeholder, D95) whose sender opted in ("yes" or "local") in the
 consent ledger for that thread, i.e. `analytics.fct_message_eligibility.local_ok` (D69, D75, D88).
 The labeler samples from it, shows context from it and the tagger (S3) will tag and embed from it,
 so a revoked consent removes a message everywhere at once. Context is the neighbours in the same
@@ -20,7 +21,8 @@ ELIGIBLE_SQL = """
 SELECT m.thread_id, m.message_key, m.content
 FROM raw.messages AS m
 JOIN analytics.fct_message_eligibility AS e USING (message_key)
-WHERE e.local_ok AND coalesce(m.content ~ '\\S', false)
+JOIN analytics.fct_message_text AS t USING (message_key)
+WHERE e.local_ok AND t.has_user_text
 ORDER BY m.thread_id, m.sent_at, m.message_key
 """
 

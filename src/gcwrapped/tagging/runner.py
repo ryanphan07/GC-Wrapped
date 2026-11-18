@@ -4,8 +4,9 @@ Safe to stop and rerun: rows are committed every BATCH_SIZE tagged messages and 
 any error or Ctrl-C, and a rerun skips every message that already has a row for this model and
 prompt version. A message the model could not tag (a failure) gets no row, so a rerun retries it.
 
-Pruning runs first: a tag whose message is no longer local_ok (consent revoked, D88) is deleted
-for every model and prompt version, so revoking consent removes derived data, not just hides it.
+Pruning runs first: a tag whose message is no longer local_ok (consent revoked, D88) or no longer
+user text (a placeholder pattern now matches it, D95) is deleted for every model and prompt
+version, so revoking consent removes derived data, not just hides it.
 """
 
 import time
@@ -26,7 +27,8 @@ PRUNE_SQL = """
 DELETE FROM enrich.message_tags AS t
 WHERE NOT EXISTS (
     SELECT 1 FROM analytics.fct_message_eligibility AS e
-    WHERE e.message_key = t.message_key AND e.local_ok
+    JOIN analytics.fct_message_text AS x USING (message_key)
+    WHERE e.message_key = t.message_key AND e.local_ok AND x.has_user_text
 )
 """
 TAGGED_SQL = (

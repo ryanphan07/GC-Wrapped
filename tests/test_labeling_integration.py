@@ -19,6 +19,7 @@ from gcwrapped.labeling.files import read_questions, read_tags
 from gcwrapped.labeling.source import load_eligible
 from gcwrapped.labeling.summary import LINE_SHAPES
 from labeling_support import Scripted, StepClock
+from placeholder_support import create_text_view, drop_text_view
 
 pytestmark = pytest.mark.integration
 
@@ -38,6 +39,9 @@ ROWS = [
     ("222", "Dee", f"{SENTINEL} d1", 1),  # sender missing from the ledger
     ("333", "Eve", f"{SENTINEL} e1", 1),
     ("333", "Eve", f"{SENTINEL} e2", 2),
+    # Instagram placeholders (D95) from consented senders: never labeled, shown or counted.
+    ("111", "Ana", "Ana liked a message", 9),
+    ("333", "Eve", "Reacted 😂 to your message", 3),
 ]
 CONSENT = [("111", "Ana", "yes"), ("111", "Bo", "no"), ("111", "Cy", ""), ("333", "Eve", "local")]
 
@@ -53,6 +57,7 @@ def warehouse(migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("GCW_LABEL_DIR", str(labels))
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         conn.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        drop_text_view(conn)
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
         run = conn.execute(
             "INSERT INTO raw.load_runs (roots_count) VALUES (1) RETURNING load_id"
@@ -81,8 +86,10 @@ def warehouse(migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             "FROM raw.messages AS m LEFT JOIN raw.sender_consent AS c "
             "ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name"
         )
+        create_text_view(conn)
     yield migrated_db
     with psycopg.connect(migrated_db, autocommit=True) as conn:
+        drop_text_view(conn)
         conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
 
 
@@ -95,6 +102,16 @@ def test_only_consented_messages_with_text_are_eligible(warehouse: str) -> None:
     texts = {m.text for t in index.ids_by_thread().values() for m in map(index.get, t)}
     assert texts == {f"{SENTINEL} {s}" for s in ("a1", "a2", "a3", "a4", "e1", "e2")}
     assert set(index.ids_by_thread()) == {"111", "333"}  # 222's sender is not in the ledger
+
+
+def test_placeholders_from_consented_senders_are_not_in_the_index(warehouse: str) -> None:
+    index = load_eligible(warehouse)
+    placeholders = [_key("111", 11), _key("333", 12)]  # rows 11 and 12 of ROWS
+    assert placeholders[0] not in index and placeholders[1] not in index
+    assert len(index) == 6
+    # Not shown as context either: the placeholder is sent right after a4, which has no neighbour.
+    a4 = _key("111", 7)
+    assert index.after(a4, 1) == []
 
 
 def test_context_in_sql_order_skips_declined_and_undecided_senders(warehouse: str) -> None:
