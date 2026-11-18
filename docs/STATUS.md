@@ -7,7 +7,7 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 
 ## Done this session
 - docs/decisions.md: D95 verbatim. CLAUDE.md: eligibility line (has_user_text), `make text-audit`. README: one sentence in the labeling bullet.
-- dbt: seed `instagram_placeholder_patterns` (19 patterns, schema analytics, no reader grant); view `fct_message_text` (has_user_text, placeholder_pattern_id; wraps every pattern in ^(?:...)$, `~*` on trimmed content); 1 unit test.
+- dbt: seed `instagram_placeholder_patterns` (19 patterns, schema analytics, no reader grant); table `fct_message_text` (has_user_text, placeholder_pattern_id; wraps every pattern in ^(?:...)$, `~*` on trimmed content); 1 unit test.
 - src/gcwrapped: labeling/source.py (ELIGIBLE_SQL joins fct_message_text, so the tagger and tag-eval follow), tagging/runner.py (prune also drops tags of non-user-text), consent_coverage.py (text messages = user text), text_audit.py (new), cli.py, Makefile `text-audit`.
 - tests: placeholder_support.py (stand-in view over the real seed), test_placeholder_patterns_integration.py (every template matches only its own pattern, 12 near misses do not), test_text_audit.py and _integration.py (fixed lines, sentinels), placeholder rows in the labeling, tagging, coverage and tag-eval integration tests (not in the index, never sent to the stub, prune on becoming a placeholder, eval drops the label).
 - Synthetic: appended thread `placeholders_70192837465019283` (80 messages, one rng, append only; EVAL_THREAD_ID added). ID added to .env.example and the three ci.yml allowlist lines. test_consent.py counts and the earlier-threads digest test updated for the new thread.
@@ -15,11 +15,12 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 ## Deviations from brief
 - The brief's "Ryan's observed templates" section was an unfilled placeholder ("RYAN'S OBSERVED TEMPLATES GO HERE"), so the seed holds only the brief's list. Templates in it are my recollection of the English export, not checked against real data (docs/formats/instagram-schema.md documents none). Add rows from the audit's residuals.
 - Prefix "NAME " is optional on liked/reacted/attachment/story/unsent/call patterns, required on group and poll events.
+- fct_message_text is a table, not a view: CI's e2e asserts fct_message_eligibility is the only view in analytics, and the flags depend on content and the seed, not consent. A changed seed row applies at the next dbt build.
 - Acceptance e2e ran with `make e2e GCW_THREAD_ALLOWLIST=<six ids>` because the dev .env is Ryan's to edit.
 
 ## Checks
 - make lint: pass. make test: 795 passed (138 deselected), baseline 789 (#41). make test-integration: 137 passed, 1 skipped (llm server not up), baseline 97. make test-warehouse: 20 passed. (pytest)
-- dbt build on gcw_dev via make e2e: PASS=190 WARN=0 ERROR=0 TOTAL=190, baseline 179 (dbt output). First e2e failed on my unit test (uneven expected columns); fixed.
+- dbt build on gcw_dev via make e2e: PASS=190 WARN=0 ERROR=0 TOTAL=190, baseline 179 (dbt output). First e2e failed on my unit test (uneven expected columns); fixed. CI e2e failed once on the only-view check (fct_message_text was a view); fixed by making it a table.
 - make text-audit on gcw_dev (synthetic): messages 440, non-blank 307, placeholders 24 (12 of 19 patterns nonzero), user text 283 (1-3 chars 40, 4-10 48, 11+ 195), emoji-only 12, URL-only 0; text-audit: ok. (command output)
 
 ## Not verified

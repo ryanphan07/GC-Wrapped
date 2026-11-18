@@ -60,8 +60,8 @@ models:
       fct_reactions: *reader_grant
       fct_sessions: *reader_grant
       # fct_message_tags: per-message labels with keys, deliberately absent (aggregates only).
-      # fct_message_eligibility, fct_message_text: views (set in the models), deliberately absent
-      # from this list.
+      # fct_message_eligibility: a view (set in the model), deliberately absent from this list.
+      # fct_message_text: per-message flags with keys, deliberately absent (no reader access).
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
 # analytics only; the reader is never granted anything on staging. Idempotent, safe every build.

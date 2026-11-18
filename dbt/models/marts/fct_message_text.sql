@@ -1,4 +1,4 @@
-{{ config(materialized='view') }}
+{{ config(materialized='table') }}
 
 -- The one definition of "a person typed this" (D95, amends D85 and D87). A message has user text
 -- when its content is non-blank and does not fully match any Instagram placeholder pattern in the
@@ -6,7 +6,9 @@
 -- mistake, and matching is case-insensitive on the trimmed decoded content. placeholder_pattern_id
 -- is the first matching pattern by id (null when none), so per-pattern counts add up to the
 -- placeholder total. Labeling, tagging and the coming embeddings select local_ok AND has_user_text.
--- A view; no message text in the output. gcw_reader gets no SELECT (see dbt_project.yml).
+-- A table (the regexes run once per build, and it depends on content and the seed, not on consent, so
+-- it needs no view semantics like fct_message_eligibility): a changed seed row applies at the next
+-- dbt build. No message text in the output. gcw_reader gets no SELECT (see dbt_project.yml).
 with patterns as (
 
     select
