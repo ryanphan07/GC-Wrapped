@@ -56,9 +56,9 @@ make consent-coverage            # aggregate consent coverage; private priority 
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
 make llm-model [MODEL=id]       # download a registered pinned GGUF (sha256-checked, idempotent) to GCW_MODEL_DIR (default ~/.cache/gcw/models); default is the D98 model (Qwen3.5-4B)
 make tag [LIMIT=n] [MODEL=id]   # starts db + llm only; tags local-eligible messages with the promoted model (D92) unless MODEL= is given; resumable, prunes revoked; fixed lines only. Real-data runs are Ryan's.
-make tag-eval MODEL=qwen3.5-4b-q4_k_m [SYNTHETIC=1]      # one model over the hand labels (D92): predictions stored outside the repo (mode 0600), accuracy and macro-F1 with 95% bootstrap intervals; SYNTHETIC=1 = the committed synthetic set, gcw_dev only, temporary directory. Real-data runs are Ryan's.
-make tag-compare A=qwen3.5-4b-q4_k_m B=qwen3.5-2b-q4_k_m [SYNTHETIC=1]  # paired bootstrap of two stored runs, verdict under the D93 win rule, recorded in GCW_LABEL_DIR/experiments/
-make tag-promote MODEL=qwen3.5-2b-q4_k_m       # sets enrich.tag_default; refused unless the latest tag-compare verdict names MODEL the winner
+make tag-eval MODEL=id [SYNTHETIC=1]      # one model over the hand labels (D92): predictions stored outside the repo (mode 0600), accuracy and macro-F1 with 95% bootstrap intervals; SYNTHETIC=1 = the committed synthetic set, gcw_dev only, temporary directory. Real-data runs are Ryan's.
+make tag-compare A=id B=id [SYNTHETIC=1]  # paired bootstrap of two stored runs, verdict under the D93 win rule, recorded in GCW_LABEL_DIR/experiments/
+make tag-promote MODEL=id       # sets enrich.tag_default; refused unless the latest tag-compare verdict names MODEL the winner
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
 Model changes follow the D93 protocol (arms per D98: A Qwen3.5-4B, B Qwen3.5-2B; Qwen3-4B-Instruct-2507 is a reference, never compared or promoted): a new default model is promoted only through `make tag-eval`, `make tag-compare` and `make tag-promote`, never by editing config.

@@ -246,6 +246,10 @@ def run_tag_eval(
     return 0
 
 
+class PromptVersionMismatch(Exception):
+    """The two arms of a tag-compare send different prompts (D98); not comparable."""
+
+
 def run_tag_compare(
     a_id: str, b_id: str, synthetic: bool = False, start_db: StartDb = start_database
 ) -> int:
@@ -265,7 +269,7 @@ def run_tag_compare(
         step = STEP_PREDICTIONS
         version = _version(a_id)
         if _version(b_id) != version:
-            raise ValueError("A and B must run the same prompt version")
+            raise PromptVersionMismatch
         rows_a = evaluation.read_predictions(target.root, a_id, version)
         rows_b = evaluation.read_predictions(target.root, b_id, version)
         step = STEP_DOCKER
