@@ -19,6 +19,7 @@ from gcwrapped.labeling.schema import SENTIMENTS, TOPICS
 from gcwrapped.ledger import REPO_ROOT
 from gcwrapped.tagging import commands, evaluation, model, report, scoring
 from gcwrapped.tagging.evaluation import PredictionRow
+from tagging_stub import StubLlm
 
 REPO = Path(__file__).resolve().parents[1]
 PROMPT = "0123456789ab"
@@ -493,6 +494,20 @@ def test_commands_refuse_an_unregistered_model_before_anything_else(
         "llm-model: failed at model (UnknownModelError)",
     ]
     assert started == []
+
+
+def test_the_provider_sends_chat_template_kwargs_exactly_when_the_entry_sets_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for model_id, spec in model.REGISTRY.items():
+        with StubLlm() as stub:
+            monkeypatch.setenv("GCW_LLM_URL", stub.url)
+            commands._provider(model_id).tag("system", "user")
+        (body,) = stub.requests
+        if spec.enable_thinking is None:
+            assert "chat_template_kwargs" not in body, model_id
+        else:
+            assert body["chat_template_kwargs"] == {"enable_thinking": spec.enable_thinking}
 
 
 # --- registry, compose, dbt var, Makefile ------------------------------------------------------

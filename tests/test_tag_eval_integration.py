@@ -329,6 +329,21 @@ def test_tag_compare_without_stored_predictions_fails_at_predictions(
     assert not (label_dir / "experiments").exists()
 
 
+def test_tag_compare_refuses_arms_with_different_prompt_versions(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ref = model.REFERENCE_MODEL_ID
+    ref_version = prompt_version_for(model.REGISTRY[ref].chat_template_kwargs)
+    assert ref_version != PROMPT_VERSION
+    evaluation.write_predictions(label_dir, A_ID, PROMPT_VERSION, _predictions(A_ID, 1.0))
+    evaluation.write_predictions(label_dir, ref, ref_version, _predictions(ref, 1.0))
+
+    assert commands.run_tag_compare(A_ID, ref, start_db=None) == 1
+
+    assert capsys.readouterr().out == "tag-compare: failed at predictions (PromptVersionMismatch)\n"
+    assert not (label_dir / "experiments").exists()
+
+
 # --- promotion ---------------------------------------------------------------------------------
 
 
