@@ -554,3 +554,9 @@ Decision: No cross-session memory for Claude Code beyond the repo docs: no claud
 Alternative: claude-mem (captures every tool call, compresses it with Claude via the Agent SDK, injects a memory index at session start) or Serena's memories in .serena/memories.
 Why: CLAUDE.md, docs/STATUS.md and docs/decisions.md are the only source of truth between sessions and are reviewed in every PR; a second memory can inject stale context that contradicts them, Serena's sits in a gitignored folder no review sees, and claude-mem's compression spends Pro usage every session.
 Tradeoff: each session re-reads the repo docs instead of getting an automatic history index.
+
+## D97 — 2026-11-18 — Removed the Serena MCP server
+Decision: Removed the Serena MCP server (user-scope MCP entry, the serena-agent uv tool, ~/.serena). The mcp__serena__* deny entries in .claude/settings.json and the .serena/ line in .gitignore stay, so a reinstall stays safe under D96.
+Alternative: debug why Serena 2.1.0 (claude-code context, --project-from-cwd) exposed only initial_instructions and no symbol tools.
+Why: the repo is small enough that Claude Code's own Read/Grep plus pyright-lsp diagnostics cover navigation and type errors; a server that loads but provides no usable tools adds startup cost and config for nothing. Its deny entries stay so a reinstall stays safe under D96.
+Tradeoff: no symbol-level edits; revisit if whole-file reads become a visible cost as the repo grows.
