@@ -78,14 +78,16 @@ class LlamaCppProvider:
         *,
         model_id: str,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
+        chat_template_kwargs: dict[str, bool] | None = None,
     ) -> None:
         self._base = check_local_url(base_url)
         self.model_id = model_id
         self._timeout = timeout
+        self._chat_template_kwargs = chat_template_kwargs  # from the registry entry (D98)
         self._opener = _opener()
 
     def _request(self, system: str, user: str) -> object:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": [
                 {"role": "system", "content": system},
@@ -99,6 +101,8 @@ class LlamaCppProvider:
                 "json_schema": {"name": "tag", "strict": True, "schema": RESPONSE_SCHEMA},
             },
         }
+        if self._chat_template_kwargs:
+            payload["chat_template_kwargs"] = self._chat_template_kwargs
         request = urllib.request.Request(
             f"{self._base}/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),

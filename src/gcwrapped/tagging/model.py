@@ -14,15 +14,15 @@ from pathlib import Path
 
 from gcwrapped.config import TaggingSettings
 
-# D90. MODEL_ID is what enrich.message_tags.model_id records and what the server is told to call
+# D98. MODEL_ID is what enrich.message_tags.model_id records and what the server is told to call
 # itself; the compose default for the file name must equal MODEL_FILE (a test checks it).
-MODEL_ID = "qwen3-4b-instruct-2507-q4_k_m"
-MODEL_FILE = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-MODEL_SHA256 = "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
-MODEL_BYTES = 2_497_281_120
+MODEL_ID = "qwen3.5-4b-q4_k_m"
+MODEL_FILE = "Qwen3.5-4B-Q4_K_M.gguf"
+MODEL_SHA256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+MODEL_BYTES = 2_740_937_888
 MODEL_URL = (
-    "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/"
-    "a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/"
+    "e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf"
 )
 DEFAULT_MODEL_DIR = "~/.cache/gcw/models"
 CHUNK_BYTES = 1 << 20
@@ -35,25 +35,53 @@ class ChecksumMismatchError(Exception):
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """One pinned model. `enable_thinking` is the per-model request setting (D98): None sends
+    nothing (the model has no thinking mode); False sends chat_template_kwargs enable_thinking
+    false on every request. It comes from here, never from matching the model's name."""
+
     file: str = MODEL_FILE
     sha256: str = MODEL_SHA256
     url: str = MODEL_URL
+    enable_thinking: bool | None = False
+
+    @property
+    def chat_template_kwargs(self) -> dict[str, bool] | None:
+        if self.enable_thinking is None:
+            return None
+        return {"enable_thinking": self.enable_thinking}
 
 
-# D93 arm B (Apache-2.0). The URL names an exact Hugging Face commit; sha256 is the LFS object id.
-SMALL_MODEL_ID = "qwen2.5-1.5b-instruct-q4_k_m"
+# D98 arm B (Apache-2.0). The URL names an exact Hugging Face commit; sha256 is the LFS object id.
+SMALL_MODEL_ID = "qwen3.5-2b-q4_k_m"
 SMALL_MODEL_SPEC = ModelSpec(
-    file="qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    sha256="6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    file="Qwen3.5-2B-Q4_K_M.gguf",
+    sha256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
     url=(
-        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/"
-        "91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+        "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/"
+        "f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
     ),
+)
+
+# D90 model, kept as a reference (D98): evaluated with tag-eval for the record, never an arm. It
+# has no thinking mode, so its requests carry no template setting (and keep its old prompt version).
+REFERENCE_MODEL_ID = "qwen3-4b-instruct-2507-q4_k_m"
+REFERENCE_MODEL_SPEC = ModelSpec(
+    file="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+    sha256="3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+    url=(
+        "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/"
+        "a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    ),
+    enable_thinking=None,
 )
 
 # model id -> file, sha256, url. The id is what the llm service's --alias, the client's request and
 # enrich.message_tags.model_id all carry. Only registered models can be fetched, served or promoted.
-REGISTRY: dict[str, ModelSpec] = {MODEL_ID: ModelSpec(), SMALL_MODEL_ID: SMALL_MODEL_SPEC}
+REGISTRY: dict[str, ModelSpec] = {
+    MODEL_ID: ModelSpec(),
+    SMALL_MODEL_ID: SMALL_MODEL_SPEC,
+    REFERENCE_MODEL_ID: REFERENCE_MODEL_SPEC,
+}
 
 
 class UnknownModelError(ValueError):

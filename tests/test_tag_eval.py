@@ -498,12 +498,13 @@ def test_commands_refuse_an_unregistered_model_before_anything_else(
 # --- registry, compose, dbt var, Makefile ------------------------------------------------------
 
 
-def test_the_registry_pins_two_distinct_models_with_checked_downloads() -> None:
-    assert set(model.REGISTRY) == {A_ID, B_ID}
-    assert model.REGISTRY[A_ID] == model.ModelSpec()  # the D90 default
-    assert B_ID == "qwen2.5-1.5b-instruct-q4_k_m"
-    files = {spec.file for spec in model.REGISTRY.values()}
-    assert len(files) == 2
+def test_the_registry_pins_three_distinct_models_with_checked_downloads() -> None:
+    assert set(model.REGISTRY) == {A_ID, B_ID, model.REFERENCE_MODEL_ID}
+    assert model.REGISTRY[A_ID] == model.ModelSpec()  # the D98 default
+    assert (A_ID, B_ID) == ("qwen3.5-4b-q4_k_m", "qwen3.5-2b-q4_k_m")
+    assert model.REFERENCE_MODEL_ID == "qwen3-4b-instruct-2507-q4_k_m"
+    assert len({spec.file for spec in model.REGISTRY.values()}) == 3
+    assert len({spec.sha256 for spec in model.REGISTRY.values()}) == 3
     for model_id, spec in model.REGISTRY.items():
         assert re.fullmatch(r"[A-Za-z0-9._-]+", model_id)
         assert re.fullmatch(r"[0-9a-f]{64}", spec.sha256)

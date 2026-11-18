@@ -355,10 +355,36 @@ def test_plain_http_model_urls_are_refused(tmp_path: Path) -> None:
 
 
 def test_the_pinned_model_is_the_one_in_the_decision() -> None:
-    assert model.MODEL_FILE == "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    assert model.MODEL_FILE == "Qwen3.5-4B-Q4_K_M.gguf"
     assert re.fullmatch(r"[0-9a-f]{64}", model.MODEL_SHA256)
     assert model.MODEL_URL.startswith("https://") and model.MODEL_FILE in model.MODEL_URL
     assert re.search(r"/resolve/[0-9a-f]{40}/", model.MODEL_URL)  # an exact commit, not "main"
+
+
+def test_the_request_carries_enable_thinking_false_exactly_for_models_whose_entry_says_so() -> None:
+    for model_id, spec in model.REGISTRY.items():
+        with StubLlm() as stub:
+            LlamaCppProvider(
+                stub.url, model_id=model_id, chat_template_kwargs=spec.chat_template_kwargs
+            ).tag("S", "U")
+        (body,) = stub.requests
+        if spec.enable_thinking is False:
+            assert body["chat_template_kwargs"] == {"enable_thinking": False}, model_id
+        else:
+            assert "chat_template_kwargs" not in body, model_id
+    assert model.REGISTRY[model.MODEL_ID].enable_thinking is False
+    assert model.REGISTRY[model.SMALL_MODEL_ID].enable_thinking is False
+    assert model.REGISTRY[model.REFERENCE_MODEL_ID].enable_thinking is None
+
+
+def test_the_prompt_version_changes_with_the_thinking_setting() -> None:
+    off = prompt.prompt_version_for(model.REGISTRY[model.MODEL_ID].chat_template_kwargs)
+    reference = prompt.prompt_version_for(
+        model.REGISTRY[model.REFERENCE_MODEL_ID].chat_template_kwargs
+    )
+    assert reference == prompt.PROMPT_VERSION  # no setting: the old version, old tags stay valid
+    assert off != reference and re.fullmatch(r"[0-9a-f]{12}", off)
+    assert off != prompt.prompt_version_for({"enable_thinking": True})
 
 
 # --- compose and Makefile ------------------------------------------------------------------------
