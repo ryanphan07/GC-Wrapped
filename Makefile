@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -171,6 +171,13 @@ redaction-audit:
 #   make text-audit ENV_FILE=<env file outside the repo>
 text-audit:
 	@uv run gcw text-audit
+
+# Remove everything derived from messages that are no longer eligible (D101): tag rows, hand-label rows,
+# question gold references and stored predictions in GCW_LABEL_DIR. Run consent-load first so the
+# revocation is in the warehouse. Dry run unless APPLY=1; counts only. Real-data runs are Ryan's:
+#   make consent-prune ENV_FILE=<env file outside the repo> [APPLY=1]
+consent-prune:
+	@uv run gcw consent-prune $(if $(filter 1,$(APPLY)),--apply)
 
 # Local hand labeling (D85, D86). Interactive: shows real messages in THIS terminal only and writes
 # labels to GCW_LABEL_DIR (must exist, outside the repo). Both refuse a database outside

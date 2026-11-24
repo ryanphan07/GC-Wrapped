@@ -416,7 +416,7 @@ def _eval_result() -> evaluation.EvalResult:
 
 def test_the_eval_lines_have_the_fixed_shape() -> None:
     lines = report.render_eval("gcw_dev", "synthetic", A_ID, PROMPT, _eval_result())
-    report.check_lines(lines, report.EVAL_SHAPES)
+    report.check_eval_lines(lines)
     assert lines[:4] == [
         "target database: gcw_dev",
         "labels source: synthetic",
@@ -429,6 +429,45 @@ def test_the_eval_lines_have_the_fixed_shape() -> None:
     )
     # a class that appears in neither the labels nor the predictions has no F1
     assert "topic F1 (banter): n/a" in lines
+
+
+def test_the_baseline_is_the_most_common_gold_share() -> None:
+    assert scoring.majority_baseline(["a", "a", "b", "c"]) == 0.5
+    assert scoring.majority_baseline(["a"]) == 1.0
+
+
+def test_the_confusion_table_counts_gold_by_predicted_with_failures_apart() -> None:
+    table = scoring.confusion(["a", "a", "b", "b", "c"], ["a", "b", "b", None, "c"])
+    assert table == {"a": {"a": 1, "b": 1}, "b": {"b": 1, "failed": 1}, "c": {"c": 1}}
+
+
+def test_the_eval_lines_carry_baselines_and_one_confusion_line_per_gold_class() -> None:
+    lines = report.render_eval("gcw_dev", "synthetic", A_ID, PROMPT, _eval_result())
+    assert "topic majority baseline accuracy: 0.500" in lines
+    assert "sentiment majority baseline accuracy: 0.500" in lines
+    assert "topic confusion plans: plans=8 other=2" in lines
+    assert "topic confusion school: school=7 other=2 failed=1" in lines
+    assert "sentiment confusion positive: positive=10" in lines
+    assert "sentiment confusion neutral: neutral=9 failed=1" in lines
+    # only gold classes that occur get a line, and they sit right before the final line
+    assert len([ln for ln in lines if " confusion " in ln]) == 4
+    assert lines[-5:-1] == [ln for ln in lines if " confusion " in ln]
+
+
+def test_a_confusion_line_with_anything_but_schema_names_fails_the_shape_check() -> None:
+    lines = report.render_eval("gcw_dev", "synthetic", A_ID, PROMPT, _eval_result())
+    at = next(i for i, ln in enumerate(lines) if ln.startswith("topic confusion plans"))
+    for bad in (
+        "topic confusion plans: SENTINELTEXT=3",
+        "topic confusion SENTINELNAME: plans=3",
+        "topic confusion plans: plans=3 school",
+        "topic confusion plans: ",
+    ):
+        tampered = [*lines[:at], bad, *lines[at + 1 :]]
+        with pytest.raises(report.ShapeError):
+            report.check_eval_lines(tampered)
+    with pytest.raises(report.ShapeError):  # a confusion line out of place
+        report.check_eval_lines([lines[at], *lines[:at], *lines[at + 1 :]])
 
 
 def test_the_compare_lines_have_the_fixed_shape_and_name_the_winner() -> None:
@@ -460,9 +499,9 @@ def test_a_line_that_could_carry_text_does_not_pass_the_shape_check() -> None:
     ):
         tampered = [bad if ln.split(":")[0] == bad.split(":")[0] else ln for ln in lines]
         with pytest.raises(report.ShapeError):
-            report.check_lines(tampered, report.EVAL_SHAPES)
+            report.check_eval_lines(tampered)
     with pytest.raises(report.ShapeError):
-        report.check_lines(lines[:-1], report.EVAL_SHAPES)
+        report.check_eval_lines(lines[:-1])
 
 
 def test_failure_lines_name_a_step_and_a_class_only() -> None:
@@ -513,13 +552,13 @@ def test_the_provider_sends_chat_template_kwargs_exactly_when_the_entry_sets_thi
 # --- registry, compose, dbt var, Makefile ------------------------------------------------------
 
 
-def test_the_registry_pins_three_distinct_models_with_checked_downloads() -> None:
-    assert set(model.REGISTRY) == {A_ID, B_ID, model.REFERENCE_MODEL_ID}
+def test_the_registry_pins_four_distinct_models_with_checked_downloads() -> None:
+    assert set(model.REGISTRY) == {A_ID, B_ID, model.TINY_MODEL_ID, model.REFERENCE_MODEL_ID}
     assert model.REGISTRY[A_ID] == model.ModelSpec()  # the D98 default
     assert (A_ID, B_ID) == ("qwen3.5-4b-q4_k_m", "qwen3.5-2b-q4_k_m")
     assert model.REFERENCE_MODEL_ID == "qwen3-4b-instruct-2507-q4_k_m"
-    assert len({spec.file for spec in model.REGISTRY.values()}) == 3
-    assert len({spec.sha256 for spec in model.REGISTRY.values()}) == 3
+    assert len({spec.file for spec in model.REGISTRY.values()}) == 4
+    assert len({spec.sha256 for spec in model.REGISTRY.values()}) == 4
     for model_id, spec in model.REGISTRY.items():
         assert re.fullmatch(r"[A-Za-z0-9._-]+", model_id)
         assert re.fullmatch(r"[0-9a-f]{64}", spec.sha256)

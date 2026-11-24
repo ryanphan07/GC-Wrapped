@@ -1,0 +1,5 @@
+{
+  "model": "qwen3.5-0.8b-q4_k_m",
+  "topic_accuracy": 0.55,
+  "sentiment_accuracy": 0.60
+}

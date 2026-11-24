@@ -15,7 +15,8 @@ import pytest
 from gcwrapped import cli
 from gcwrapped.config import get_database_settings
 from gcwrapped.labeling import commands, summary
-from gcwrapped.labeling.files import read_questions, read_tags
+from gcwrapped.labeling.files import read_questions, read_tags, write_tags
+from gcwrapped.labeling.sampling import read_frozen
 from gcwrapped.labeling.schema import (
     QUESTION_CANDIDATE_POOL,
     QUESTION_CANDIDATES_FILE,
@@ -23,6 +24,7 @@ from gcwrapped.labeling.schema import (
     TAG_SAMPLE_FILE,
     TAG_SAMPLE_SIZE,
     TOPICS,
+    TagLabel,
 )
 from gcwrapped.labeling.source import EligibleIndex
 from gcwrapped.ledger import REPO_ROOT
@@ -222,6 +224,8 @@ def test_a_scripted_end_to_end_run_labels_resumes_and_summarizes(
     assert commands.run_label_summary(_ok_docker) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[1] == f"tags labeled: 4 of {TAG_SAMPLE_SIZE}"
+    assert lines[2] == f"tags labels in current sample: 4 of {TAG_SAMPLE_SIZE}"
+    assert lines[3] == "tags labels outside current sample: 0"
     assert "topic plans: 1" in lines and "sentiment negative: 1" in lines
     assert "questions answered: 1 of 100" in lines and "questions skipped: 1" in lines
     assert "mean gold messages per question: 1.00" in lines
@@ -258,12 +262,33 @@ def test_summary_prints_only_the_fixed_lines(
     ]
 
 
+def test_labels_outside_the_current_sample_are_counted_apart(
+    label_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """How a summary shows more labels than the sample holds ("201 of 200"): a label whose message
+    is not in the frozen sample (e.g. made under an earlier draw) still counts as labeled."""
+    monkeypatch.setattr(summary, "count_threads", lambda url, ids: 1)
+    commands.run_label_tags(Scripted("1g2nq"), _ok_docker, StepClock())
+    tags = read_tags(label_dir / "tag_labels.csv")
+    frozen = read_frozen(label_dir / TAG_SAMPLE_FILE)
+    stray = TagLabel("f" * 64, "food", "neutral", tags[0].labeled_at)
+    assert stray.message_id not in frozen
+    write_tags(label_dir / "tag_labels.csv", [*tags, stray])
+    lines = _summary(label_dir, capsys)
+    total = len(frozen)
+    assert f"tags labeled: 3 of {total}" in lines
+    assert f"tags labels in current sample: 2 of {total}" in lines
+    assert "tags labels outside current sample: 1" in lines
+
+
 def test_summary_with_nothing_labeled_is_all_zeros(
     label_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(summary, "count_threads", lambda url, ids: 0)
     lines = _summary(label_dir, capsys)
     assert f"tags labeled: 0 of {TAG_SAMPLE_SIZE}" in lines
+    assert f"tags labels in current sample: 0 of {TAG_SAMPLE_SIZE}" in lines
+    assert "tags labels outside current sample: 0" in lines
     assert "mean gold messages per question: 0.00" in lines
     assert "threads covered: 0" in lines
 

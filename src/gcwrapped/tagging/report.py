@@ -67,7 +67,16 @@ EVAL_SHAPES = (
     rf"p95 seconds per message: {_MAYBE}",
     *(rf"topic F1 \({t}\): {_MAYBE}" for t in TOPICS),
     *(rf"sentiment F1 \({s}\): {_MAYBE}" for s in SENTIMENTS),
+    rf"topic majority baseline accuracy: {_NUM}",
+    rf"sentiment majority baseline accuracy: {_NUM}",
+    # one line per gold class that occurs: the number of lines varies, so these are checked apart
     r"tag-eval: ok",
+)
+_PREDICTED = rf"({{classes}}|{scoring.FAILED})=\d+"
+CONFUSION_SHAPES = tuple(
+    rf"{name} confusion ({classes}): {_PREDICTED.format(classes=classes)}"
+    rf"( {_PREDICTED.format(classes=classes)})*"
+    for name, classes in (("topic", _TOPICS), ("sentiment", _SENTIMENTS))
 )
 COMPARE_SHAPES = (
     rf"target database: ({_DATABASES})",
@@ -118,6 +127,33 @@ class ShapeError(Exception):
 
 def _maybe(value: float | None, places: int) -> str:
     return "n/a" if value is None else f"{value:.{places}f}"
+
+
+def _confusion_lines(
+    name: str, classes: tuple[str, ...], table: Mapping[str, Mapping[str, int]]
+) -> list[str]:
+    """One line per gold class that occurs: nonzero predicted counts, schema names only."""
+    order = (*classes, scoring.FAILED)
+    return [
+        f"{name} confusion {gold}: "
+        + " ".join(f"{p}={table[gold][p]}" for p in order if table[gold].get(p))
+        for gold in classes
+        if gold in table
+    ]
+
+
+def check_eval_lines(lines: list[str]) -> list[str]:
+    """Shape-check a tag-eval output: the fixed lines in order, the confusion lines between the
+    baselines and the final line (each matching its own shape), nothing else."""
+    confusion = [line for line in lines if " confusion " in line]
+    for line in confusion:
+        if not any(re.fullmatch(shape, line) for shape in CONFUSION_SHAPES):
+            raise ShapeError
+    fixed = [line for line in lines if " confusion " not in line]
+    check_lines(fixed, EVAL_SHAPES)
+    if lines[len(fixed) - 1 : len(fixed) - 1 + len(confusion)] != confusion:
+        raise ShapeError  # confusion lines must sit right before the final line
+    return lines
 
 
 def check_lines(lines: list[str], shapes: tuple[str, ...]) -> list[str]:
@@ -200,9 +236,14 @@ def render_eval(
         f"p95 seconds per message: {_maybe(timings.percentile(95), 3)}",
         *_f1_lines("topic", TOPICS, result.topic.class_f1),
         *_f1_lines("sentiment", SENTIMENTS, result.sentiment.class_f1),
-        "tag-eval: ok",
+        f"topic majority baseline accuracy: {_f(result.topic.baseline)}",
+        f"sentiment majority baseline accuracy: {_f(result.sentiment.baseline)}",
     ]
-    return check_lines(lines, EVAL_SHAPES)
+    confusion = [
+        *_confusion_lines("topic", TOPICS, result.topic.confusion),
+        *_confusion_lines("sentiment", SENTIMENTS, result.sentiment.confusion),
+    ]
+    return check_eval_lines([*lines, *confusion, "tag-eval: ok"])
 
 
 def render_compare(

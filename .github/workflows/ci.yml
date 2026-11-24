@@ -297,6 +297,70 @@ jobs:
         if: failure()
         run: docker compose --env-file "$ENV_FILE" logs --no-color --tail=80 db dashboard
 
+  # D100: the production prompt and client score the committed synthetic labels with the smallest
+  # Qwen3.5 model on every PR; the job fails if topic or sentiment accuracy is below the committed
+  # floors (tests/fixtures/eval/gate_floors.json). A separate job, so a model download failure is
+  # distinguishable from a test failure. Synthetic data only; the stub-server tests stay in `integration`.
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dbt
+      - name: Write the env file
+        run: |
+          echo "ENV_FILE=$RUNNER_TEMP/eval.env" >> "$GITHUB_ENV"
+          echo "GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/eval.env" <<EOF
+          COMPOSE_PROJECT_NAME=gc-wrapped-ci-eval
+          GCW_DB_NAME=gcw_dev
+          GCW_THREAD_ALLOWLIST=1784563920183746,293847561029384,48271936502817364,51928374650192837,61827394501827364,70192837465019283
+          POSTGRES_USER=gcw
+          POSTGRES_PASSWORD=ci-password
+          POSTGRES_HOST=localhost
+          POSTGRES_PORT=5432
+          GCW_READER_PASSWORD=ci-reader-password
+          GCW_LANDING_HOST_DIR=$RUNNER_TEMP/unused-landing
+          GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv
+          GCW_MODEL_DIR=$RUNNER_TEMP/models
+          EOF
+      - name: Pinned model id and sha256 (the cache key)
+        id: model
+        run: echo "sha256=$(uv run python -c 'from gcwrapped.tagging import model; print(model.REGISTRY[model.TINY_MODEL_ID].sha256)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/models
+          key: eval-model-${{ steps.model.outputs.sha256 }}
+      - name: Download the model (sha256-checked)
+        run: make llm-model MODEL=qwen3.5-0.8b-q4_k_m
+      - name: Database, synthetic export, dbt models and consent ledger
+        run: |
+          docker compose --env-file "$ENV_FILE" up -d --wait db
+          uv run gcw migrate
+          uv run python tests/synthetic/instagram.py
+          uv run gcw ingest tests/fixtures/synthetic/export_a
+          make dbt-deps
+          make dbt-build
+          uv run gcw consent-load --no-start
+      - name: tag-eval on the synthetic labels
+        run: |
+          start=$SECONDS
+          make tag-eval MODEL=qwen3.5-0.8b-q4_k_m SYNTHETIC=1 2>&1 | tee eval.log
+          test "${PIPESTATUS[0]}" -eq 0
+          echo "tag-eval step seconds: $((SECONDS - start))"
+          if grep -qi sentinel eval.log; then echo "sentinel string in tag-eval output"; exit 1; fi
+      - name: Gate against the committed floors
+        run: python3 scripts/eval_gate.py eval.log
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose --env-file "$ENV_FILE" --profile llm logs --no-color --tail=40 db llm
+      - name: Stop the stack
+        if: always()
+        run: docker compose --env-file "$ENV_FILE" --profile llm down -v
+
   # `make real-ingest` is never run locally by the coding assistant (decisions.md, 2026-11-05), so
   # this job is its end-to-end test. Same command as a real run, on the synthetic sentinel landing:
   # its own compose project, ports and database (gcw_ci), and a log dir outside the workspace.

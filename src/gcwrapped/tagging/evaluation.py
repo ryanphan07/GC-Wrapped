@@ -193,6 +193,8 @@ class Metric:
     macro_f1: float
     macro_f1_interval: tuple[float, float]
     class_f1: Mapping[str, float]
+    baseline: float  # accuracy of always predicting the most common gold label
+    confusion: Mapping[str, Mapping[str, int]]  # gold -> predicted (or "failed") -> count
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,8 @@ def _metric(gold: Sequence[str], pred: scoring.Predictions) -> Metric:
         macro_f1=scoring.macro_f1(gold, pred),
         macro_f1_interval=scoring.bootstrap_interval(lambda i: scoring.macro_f1(gold, pred, i), n),
         class_f1=scoring.class_f1(gold, pred),
+        baseline=scoring.majority_baseline(gold),
+        confusion=scoring.confusion(gold, pred),
     )
 
 
