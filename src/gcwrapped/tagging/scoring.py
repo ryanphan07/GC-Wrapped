@@ -11,6 +11,7 @@ indices to both models (the statistic is a difference), which removes most of th
 """
 
 import random
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -58,6 +59,23 @@ def class_f1(
             fn.setdefault(p, 0)
             fp[p] = fp.get(p, 0) + 1
     return {c: 2 * tp[c] / (2 * tp[c] + fp.get(c, 0) + fn[c]) for c in tp}
+
+
+def majority_baseline(gold: Sequence[str]) -> float:
+    """Accuracy of always predicting the most common gold label (needs >= 1 item)."""
+    return max(Counter(gold).values()) / len(gold)
+
+
+FAILED = "failed"  # the confusion column for a message the model failed on
+
+
+def confusion(gold: Sequence[str], pred: Predictions) -> dict[str, dict[str, int]]:
+    """gold class -> predicted class (or FAILED) -> count, for the gold classes that occur."""
+    table: dict[str, dict[str, int]] = {}
+    for g, p in zip(gold, pred, strict=True):
+        row = table.setdefault(g, {})
+        row[p or FAILED] = row.get(p or FAILED, 0) + 1
+    return table
 
 
 def macro_f1(gold: Sequence[str], pred: Predictions, indices: Sequence[int] | None = None) -> float:

@@ -177,7 +177,7 @@ def test_tag_eval_prints_fixed_lines_and_stores_private_predictions_without_text
         out = capsys.readouterr()
         assert len(stub.requests) == ELIGIBLE and {r["model"] for r in stub.requests} == {A_ID}
     lines = out.out.splitlines()
-    report.check_lines(lines, report.EVAL_SHAPES)
+    report.check_eval_lines(lines)
     assert lines[:2] == ["target database: gcw_test", "labels source: real"]
     assert f"prompt version: {PROMPT_VERSION}" in lines
     assert "labels: 8" in lines and "labels dropped (not local-eligible): 3" in lines

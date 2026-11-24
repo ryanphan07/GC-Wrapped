@@ -31,6 +31,8 @@ _DATABASES = "|".join(sorted(ALLOWED_DATABASES))
 LINE_SHAPES = (
     rf"target database: ({_DATABASES})",
     r"tags labeled: \d+ of \d+",
+    r"tags labels in current sample: \d+ of \d+",
+    r"tags labels outside current sample: \d+",
     *(rf"topic {t}: \d+" for t in TOPICS),
     *(rf"sentiment {s}: \d+" for s in SENTIMENTS),
     r"questions answered: \d+ of \d+",
@@ -50,6 +52,7 @@ class Summary:
     database: str
     tags_labeled: int
     tags_target: int
+    tags_in_sample: int  # labels whose message is in the current frozen sample
     topics: dict[str, int]
     sentiments: dict[str, int]
     questions_answered: int
@@ -77,7 +80,8 @@ def build_summary(label_dir: Path, database: str, url: str) -> Summary:
     questions = read_questions(label_dir / QUESTIONS_FILE)
     skips = read_skips(label_dir / SKIPS_FILE)
     tag_sample = label_dir / TAG_SAMPLE_FILE
-    tags_target = len(read_frozen(tag_sample)) if tag_sample.exists() else TAG_SAMPLE_SIZE
+    frozen = set(read_frozen(tag_sample)) if tag_sample.exists() else set()
+    tags_target = len(frozen) if tag_sample.exists() else TAG_SAMPLE_SIZE
     topics = Counter(t.topic for t in tags)
     sentiments = Counter(t.sentiment for t in tags)
     gold_total = sum(len(q.gold_message_ids) for q in questions)
@@ -86,6 +90,7 @@ def build_summary(label_dir: Path, database: str, url: str) -> Summary:
         database=database,
         tags_labeled=len(tags),
         tags_target=tags_target,
+        tags_in_sample=sum(1 for t in tags if t.message_id in frozen),
         topics={t: topics[t] for t in TOPICS},
         sentiments={s: sentiments[s] for s in SENTIMENTS},
         questions_answered=len(questions),
@@ -100,6 +105,8 @@ def render(summary: Summary) -> list[str]:
     lines = [
         f"target database: {summary.database}",
         f"tags labeled: {summary.tags_labeled} of {summary.tags_target}",
+        f"tags labels in current sample: {summary.tags_in_sample} of {summary.tags_target}",
+        f"tags labels outside current sample: {summary.tags_labeled - summary.tags_in_sample}",
         *(f"topic {t}: {summary.topics[t]}" for t in TOPICS),
         *(f"sentiment {s}: {summary.sentiments[s]}" for s in SENTIMENTS),
         f"questions answered: {summary.questions_answered} of {summary.questions_target}",

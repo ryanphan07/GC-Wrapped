@@ -62,6 +62,19 @@ SMALL_MODEL_SPEC = ModelSpec(
     ),
 )
 
+# D100: the smallest Qwen3.5 (Apache-2.0), used only by the CI eval gate on free runners. Same
+# family and thinking-off setting as the arms, so the production prompt and client run unchanged.
+# Never an experiment arm and never promoted. The URL names an exact commit; sha256 is the LFS id.
+TINY_MODEL_ID = "qwen3.5-0.8b-q4_k_m"
+TINY_MODEL_SPEC = ModelSpec(
+    file="Qwen3.5-0.8B-Q4_K_M.gguf",
+    sha256="bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
+    url=(
+        "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/"
+        "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_K_M.gguf"
+    ),
+)
+
 # D90 model, kept as a reference (D98): evaluated with tag-eval for the record, never an arm. It
 # has no thinking mode, so its requests carry no template setting (and keep its old prompt version).
 REFERENCE_MODEL_ID = "qwen3-4b-instruct-2507-q4_k_m"
@@ -80,6 +93,7 @@ REFERENCE_MODEL_SPEC = ModelSpec(
 REGISTRY: dict[str, ModelSpec] = {
     MODEL_ID: ModelSpec(),
     SMALL_MODEL_ID: SMALL_MODEL_SPEC,
+    TINY_MODEL_ID: TINY_MODEL_SPEC,
     REFERENCE_MODEL_ID: REFERENCE_MODEL_SPEC,
 }
 

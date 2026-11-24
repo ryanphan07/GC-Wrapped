@@ -374,7 +374,18 @@ def test_the_request_carries_enable_thinking_false_exactly_for_models_whose_entr
             assert "chat_template_kwargs" not in body, model_id
     assert model.REGISTRY[model.MODEL_ID].enable_thinking is False
     assert model.REGISTRY[model.SMALL_MODEL_ID].enable_thinking is False
+    assert model.REGISTRY[model.TINY_MODEL_ID].enable_thinking is False  # D100
     assert model.REGISTRY[model.REFERENCE_MODEL_ID].enable_thinking is None
+
+
+def test_the_production_prompt_version_is_pinned() -> None:
+    """D100: the CI gate and the real runs must keep scoring the same prompt. A deliberate prompt
+    change updates these two values together with a new decisions entry and a re-tag."""
+    assert prompt.PROMPT_VERSION == "5b3245c5c605"  # no template setting (the reference model)
+    thinking_off = model.REGISTRY[model.MODEL_ID].chat_template_kwargs
+    assert prompt.prompt_version_for(thinking_off) == "11ac16d16643"  # Qwen3.5, thinking off
+    for model_id in (model.SMALL_MODEL_ID, model.TINY_MODEL_ID):
+        assert model.REGISTRY[model_id].chat_template_kwargs == thinking_off
 
 
 def test_the_prompt_version_changes_with_the_thinking_setting() -> None:
