@@ -25,7 +25,7 @@ consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] syntheti
 - Gate bites, local, not committed: (1) topic definitions rotated against names: topic 0.633, sentiment 0.767, gate ok; (2) names rotated: 0.600 / 0.733, gate ok; (3) topic and sentiment lists removed from the system prompt: topic 0.500, sentiment 0.717, gate FAILED (topic below 0.55), exit 1. The gate catches gross breakage, not subtle drift.
 - consent-prune on gcw_dev (one sender set to no, consent-load, temp label dir): dry run ineligible 54, tags 54, label rows 32, gold refs 13, no-gold questions 12, prediction rows 32; APPLY=1 same counts; reruns all 0; files 0600. Ledger restored and retagged after.
 - Tag-label sampler (labeling/sampling.py): stratified by thread (floor per thread, the rest proportional, seeded). "201 of 200" compared the label-file rows with the frozen sample size, so one label is for a message outside the current sample, likely made under an earlier draw (the flow offers only sample messages); new lines show it. Not verifiable here.
-- CI eval-gate job: PENDING.
+- CI eval-gate job (PR #47, run 45500020093): pass, 2m34s job time, tag-eval step 94 s; topic accuracy 0.650 (floor 0.55), sentiment 0.750 (floor 0.60), majority baselines 0.100 / 0.367, "eval-gate: ok". It differs from the local 0.683 / 0.733 (CPU nondeterminism), so margins are about 0.10 and 0.15. All 6 CI jobs pass.
 
 ## Not verified
 - Real-data steps below (Ryan). The eval-gate floors have run only on this laptop and one CI run.
