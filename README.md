@@ -1,137 +1,201 @@
 # GC Wrapped
 
-Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
-
-Status: Phase 3 (RAG + privacy + deploy) is in progress: local embeddings, retrieval and answers with citations are built and run on synthetic data. Phase 1 (parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e`) and Phase 2 (enrichment + evals) are done. The per-sender consent ledger is in. See [docs/STATUS.md](docs/STATUS.md).
+GC Wrapped turns an Instagram group-chat export into a Postgres warehouse (dbt), tags messages by topic and sentiment, answers questions about the chat with citations to the source messages, and shows the result in a Streamlit dashboard: chat activity, a per-member "Wrapped" card and an Ask page. All model work runs on one machine with llama.cpp, work on message text needs each sender's opt-in, and model and retrieval choices are measured against eval rules written down before the runs. It is a local application: nothing is deployed, and the quickstart runs on synthetic data.
 
 ## Architecture
 
-TBD. Planned flow: export file → parser → Postgres `raw` schema → dbt models → Airflow landing-zone DAG → dashboard. Design rationale lives in [docs/decisions.md](docs/decisions.md).
+```mermaid
+flowchart TB
+  subgraph ci["GitHub Actions: lint, tests, dbt build, end-to-end runs and eval gates on synthetic data"]
+    src["Instagram JSON export"]
+    subgraph airflow["Airflow DAG"]
+      parser["Parser with thread allowlist"]
+      raw[("Postgres: raw schema")]
+      dbt["dbt: staging, intermediate, marts"]
+    end
+    ledger["Per-sender consent ledger"]
+    tagger["Tagging: local llama.cpp"]
+    embedder["Embeddings: local llama.cpp"]
+    enrich[("Postgres: enrich schema, pgvector")]
+    retrieval["Retrieval: vector or hybrid"]
+    answers["Answers with citations: local llama.cpp"]
+    dashboard["Streamlit dashboard: Activity, Wrapped, Ask"]
 
-## Quickstart
+    src --> parser --> raw --> dbt
+    ledger --> raw
+    dbt --> tagger --> enrich
+    dbt --> embedder --> enrich
+    enrich -->|"tags, via dbt"| dbt
+    enrich --> retrieval --> answers --> dashboard
+    dbt --> dashboard
+  end
+```
 
-Requires Docker with compose, make, and (for the synthetic data generator and tests) [uv](https://docs.astral.sh/uv/). Everything below uses synthetic data in the `gcw_dev` database.
+Business logic lives in the `gcwrapped` Python package. Airflow tasks only call its `gcw` CLI and dbt, so everything also runs and is tested without Airflow. The Airflow image keeps `gcwrapped` and dbt in their own virtualenv, built from `uv.lock`, so their dependencies cannot conflict with Airflow's pins. The reasons behind each design choice are in [docs/decisions.md](docs/decisions.md); the `D<n>` references below point there.
+
+## Pipeline
+
+1. **Parse.** The parser reads Meta's "Download your information" JSON export ([format spec](docs/formats/instagram-schema.md)). It repairs Meta's text encoding and otherwise stays faithful to the source; cleaning happens in dbt. Only threads on the allowlist are opened.
+2. **Load.** SQL migrations create the schema. Messages are bulk-copied into `raw.messages` in one transaction, keyed by a hash of fields that do not change between exports. Re-ingesting the same or an overlapping export inserts only new messages, and every run is recorded in `raw.load_runs`.
+3. **Model.** dbt builds staging views, an intermediate model for conversation sessions, turns and reply time, and the marts, with data tests and unit tests. The marts hold no message text. The dashboard's read-only role is granted selected mart relations only.
+4. **Orchestrate.** The `gcw_pipeline` DAG runs `check_landing`, `migrate`, `ingest`, `dbt_deps_and_build` and `summarize` over a landing folder with one subfolder per export. An optional tagging task runs after the dbt build when a local model URL is configured. `make e2e` starts the database and dashboard and runs the DAG once.
+
+## Enrichment and evals
+
+**Tagging.** Each consented, user-typed message gets one topic and one sentiment from fixed lists. The local model sees the message and a little preceding context, and its output is constrained by a JSON schema (D85, D89). Placeholders that Instagram generates itself, such as "liked a message", are filtered out by one dbt model whose patterns are a seed (D95).
+
+**Tag eval.** `make tag-eval` runs one model over a hand-labeled set (one annotator), stores its predictions without message text, and reports accuracy and macro-F1 with bootstrap confidence intervals. `make tag-compare` applies a non-inferiority rule: a faster challenger replaces the default only if it is faster by a set factor and the paired interval shows it is not worse than a set margin on either task (D92, D93, D98). `make tag-promote` refuses a model the latest verdict did not name.
+
+**CI gates.** Every push and pull request runs the production prompt and client with a very small Qwen3.5 model over committed synthetic labels, and the production window builder, embedding model and vector search over committed synthetic questions. The build fails if a score drops below the floor committed in `tests/fixtures/eval/`, or if a retrieval question is dropped (D100, D108). A pass shows that the pipeline works, not that quality on real chats holds.
+
+**Pre-registered win rules.** Both rules were written before the runs they judge, and both keep the baseline unless the variant clears every condition. Either way the verdict is recorded, and the matching promote command refuses anything the latest verdict did not name.
+
+- Retrieval (D104): hybrid replaces vector only if the paired bootstrap interval of the per-question recall@k difference lies entirely above zero and hybrid's tail latency stays under a fixed limit.
+- Answer prompt (D121): the one variant prompt replaces the baseline only if the paired bootstrap interval of the citation-hit difference lies entirely above zero and its failure rate and tail latency stay within fixed margins of the baseline's.
+
+**Intervals.** Single rates over questions (recall@k, citation hit, abstentions, failures and so on) use Wilson score intervals, which do not collapse to a point when every question passes or fails. MRR and the paired comparisons use the bootstrap (D117).
+
+**Hand grading.** The automatic answer eval can tell whether an answer cites a correct source message, not whether the answer is right. `make grade-answers` shows regenerated answers and their citations in the terminal, in a fixed seeded order; the grader marks each correct, partial or wrong, and whether the citations support it. Only grades, IDs and numbers are saved. `make grade-summary` reports accuracy, precision and support with Wilson intervals (D120).
+
+`make eval-all` runs the retrieval and answer evals and comparisons in order and stops at the first failure; on real data it also promotes the winners (D122).
+
+## RAG
+
+- **Message windows.** Each eligible message gets one vector, computed from that message plus its eligible neighbors in the same thread and conversation session, one `sender: text` line each (D103). Short replies carry little meaning alone, and one vector per message keeps eval gold and citations at message level. A local Qwen3 embedding model produces the vectors, stored in pgvector and searched exactly, with no approximate index.
+- **Vector and hybrid.** Vector search ranks windows by cosine distance. Hybrid fuses that ranking with a Postgres full-text ranking over the same window text by reciprocal rank fusion (D104). Vector is the default unless a comparison promotes hybrid (D110).
+- **Consent at query time.** A stored vector is searchable only if its message and every message in its window are eligible now, so a revocation applies before anything is deleted.
+- **Grammar-constrained citations.** The messages of the top results are read again, grouped into excerpts and numbered. llama.cpp compiles a JSON schema into a grammar, so the model can only cite numbers it was shown, and it must decide whether it can answer and what it cites before writing the text. The code rejects an answer with no citations or with a marker that is not in its citation list; an abstention prints "not in the chat" (D111). The grammar does not guarantee that a cited message supports the claim, which is what hand grading checks.
+- **Chat text as data.** The prompt marks excerpts as quoted data, each message is flattened to one numbered line, and chat-template tokens in messages are broken up. This limits prompt injection; the grammar bounds the shape of whatever the model writes.
+- **Corpus guard.** The retrieval and answer evals refuse to run unless every eligible message has a current vector. Stored runs carry a hash of the searchable corpus, and comparisons refuse two runs over different corpora (D109).
+
+## Privacy
+
+- **Thread allowlist.** Ingestion is deny by default. It loads only thread IDs listed in `GCW_THREAD_ALLOWLIST`, fails if the list is empty, and has no bypass. Threads are selected by folder name before any file inside is opened. The format survey tools (`make inspect`, `make parse-check`) are the exception: they read a whole export, print aggregates and store nothing.
+- **Per-sender consent ledger.** A CSV outside the repo holds one row per thread and sender: `yes` (local work, and redacted external calls), `local` (this machine only), `no` or blank. Blank or missing means no (D69, D88). One dbt view, `fct_message_eligibility`, is the single definition, and it gates labeling, tagging, embeddings, answers and Wrapped cards. It does not gate the Activity marts: message counts, reply times, reaction emoji and member names there cover every sender in an allowlisted thread.
+- **Local models only.** The llama.cpp services publish on `127.0.0.1`. The client accepts only local hosts and compose service names, ignores proxy settings and follows no redirect.
+- **Redaction gate before any hosted API.** `gcwrapped.redaction` is the only allowed route for message text to leave the machine: member names become pseudonyms, identifiers such as phone numbers, emails and URLs become placeholders, and a pinned spaCy model looks for other names (D70, D77). The quality gate that name detection must pass before a hosted provider is enabled is not built (D76, D84), so no message text is sent anywhere and the hosted provider is a stub that always raises. Known gap: nicknames and misspellings outside the member directory can slip through. `make redaction-audit` redacts every ingested message in memory and prints counts only.
+- **Fixed-line outputs.** The ingestion, eval, consent and maintenance commands print counts and fixed labels, never message text or sender names, and an unhandled `gcw` error prints its exception type only. A real-data pipeline run goes through `make real-ingest`, which writes the full output to a private log and prints only lines that match fixed patterns. The places that show chat text do so on purpose and on the local screen: the labeling tools, `make ask`, `make grade-answers` and the Ask page. Generated answers are not stored (D112).
+- **Sentinel-leak tests.** Tests plant marker strings in synthetic names and messages and fail if one appears in a command's output.
+- **Dashboard access.** The dashboard is bound to `127.0.0.1`. Activity and Wrapped connect as `gcw_reader`, which cannot read `raw` or staging. Ask needs message text, so it uses the pipeline's database credentials in a session set read-only (D124).
+- **Coding-assistant boundary.** The AI coding assistant used on this repo is a third-party API. It works on synthetic data only; real-data commands are run by the repo owner, who shares aggregate numbers.
+
+### Deleting data
+
+There is no self-service deletion. A member asks, and the owner runs the commands (D119):
+
+```
+# 1. set the sender's rows in the consent ledger to "no"
+make consent-load ENV_FILE=<env file>
+make consent-prune ENV_FILE=<env file>              # dry run: counts only
+make consent-prune ENV_FILE=<env file> APPLY=1      # delete
+make real-ingest ENV_FILE=<env file>                # rebuilds the dbt tables
+```
+
+After `consent-load`, search, answers, new tagging runs and Wrapped cards already exclude the sender. `consent-prune` requires `GCW_LABEL_DIR`. It also removes the vectors of other senders' messages whose window included one of the ineligible messages; `make embed` recreates them without it. On the synthetic stack, rebuild with `make dbt-build` instead of `make real-ingest`.
+
+| | `consent-prune APPLY=1` (D101, D105) | `purge-unlisted CONFIRM=1` (D91, D106) |
+|---|---|---|
+| Applies to | messages that are no longer eligible | threads no longer on the allowlist |
+| Deletes | tag rows; embedding rows whose window includes such a message; and, in `GCW_LABEL_DIR`, the hand tag labels, question gold references (and questions left without gold or source), stored tag, retrieval and answer eval rows, and hand grades that refer to one | raw messages with their reactions, tag rows, embedding rows and consent rows of those threads |
+| Keeps | the raw messages and reactions; the Activity marts; the consent ledger; ID-only sample and skip files; experiment verdicts; the consent priority list | load-run records; the consent ledger CSV; everything in `GCW_LABEL_DIR`; the export files |
+
+- An old-format retrieval or answer eval file that refers to an ineligible message is deleted whole (D118).
+- Neither command rebuilds dbt tables. Until the next dbt build, tables such as the tag aggregates still hold what they were last built from.
+- After `purge-unlisted`, run `consent-prune` to clear the private files, then rebuild the dbt tables.
+
+## Results
+
+Measured results, each with its date, commit and dataset, are in [METRICS.md](METRICS.md). Current project state is in [docs/STATUS.md](docs/STATUS.md).
+
+## Quickstart on synthetic data
+
+Requires Docker with compose, make, git and [uv](https://docs.astral.sh/uv/). Models run on the CPU; the model downloads are large, and the tagging and eval steps are slow.
 
 ```
 git clone https://github.com/ryanphan07/GC-Wrapped.git && cd GC-Wrapped
-cp .env.example .env                  # then change POSTGRES_PASSWORD and GCW_READER_PASSWORD
-make sync                             # uv sync --group dbt --group dashboard
-make synth                           # synthetic exports; replaces data/landing every run (`make e2e` does it too)
-make e2e                              # db + dashboard up, Airflow DAG once, counts printed
-# open http://localhost:8501
+cp .env.example .env        # then change POSTGRES_PASSWORD and GCW_READER_PASSWORD
+make sync                   # uv sync --group dbt --group dashboard
+
+make e2e                    # synthetic exports and ledger, database, dashboard, one DAG run
+make consent-load           # load the synthetic consent ledger
+
+make llm-model                                     # tagging and answer model
+make llm-model MODEL=qwen3-embedding-0.6b-q8_0     # embedding model
+
+make embed SYNTHETIC=1      # one vector per eligible message
+make tag                    # topic and sentiment per eligible message
+make dbt-deps
+make dbt-build              # brings the new tags into the marts
+
+make dashboard-up           # starts the model services and the dashboard
 ```
 
-`make e2e` starts Postgres and the dashboard with compose and waits until both are healthy, then runs the Airflow DAG once inside the Airflow container (`check_landing → migrate → ingest → dbt build → summarize`). It prints the target database name, the counts from `gcw last-run` and the dashboard URL, and exits non-zero on any failure. Running it again is safe: ingest is idempotent, so a second run inserts 0 rows. CI runs this exact command twice on synthetic data and asserts the second run inserted nothing.
+Open <http://localhost:8501> (Activity), <http://localhost:8501/wrapped> and <http://localhost:8501/ask>.
 
-`make e2e` reads the env file named by `ENV_FILE` (default `.env`). **`GCW_DB_NAME` is the single variable that decides the target database** for gcw, dbt and the dashboard. `DATABASE_URL` is optional; if set, it must name the same database or gcw refuses to start. See `.env.example` for every variable.
+- With the default `.env`, `make e2e` regenerates `data/landing` and writes the synthetic consent ledger named by `GCW_CONSENT_LEDGER`, so a separate `make synth` is not needed. It does not load the ledger, download models, tag or embed. Until consent is loaded, no sender is eligible and there are no Wrapped cards.
+- If a default port is taken, set it in `.env`: `POSTGRES_HOST_PORT` together with `POSTGRES_PORT`, `DASHBOARD_PORT`, `GCW_LLM_PORT` (default 8081) or `GCW_EMBED_PORT` (default 8082).
+- `GCW_DB_NAME` alone decides which database gcw, dbt and the dashboard use. `.env.example` documents every variable.
 
-![GC Wrapped dashboard on synthetic data](docs/images/dashboard-synthetic.png)
+Terminal questions and evals (try questions from `tests/fixtures/eval/questions.csv`):
 
-*The dashboard on the synthetic export (`gcw_dev`). All names, threads and counts are generated; no real chat data.*
+```
+make ask SYNTHETIC=1            # interactive; a blank line ends it
+make eval-all SYNTHETIC=1       # retrieval and answer evals and comparisons; promotes nothing
+make grade-answers SYNTHETIC=1  # optional hand grading
+make grade-summary SYNTHETIC=1
+make tag-eval MODEL=qwen3.5-4b-q4_k_m SYNTHETIC=1
+make down                       # stop every service
+```
 
-Development:
+Optional Airflow UI: `make airflow-up`, open <http://localhost:8080>, then unpause and trigger `gcw_pipeline`.
+
+### Development
 
 ```
 uv sync --all-groups
 make lint test
-make test-integration       # needs the db container up; resets raw in gcw_dev
-make e2e                    # rebuild the marts after test-integration, then:
-make test-warehouse         # needs the marts from a fresh e2e
+make e2e                    # database up and gcw_dev marts built
+make test-integration       # uses a separate gcw_test database
+make test-warehouse         # reads the gcw_dev marts
 make dbt-debug
 ```
 
-## Usage
+Integration tests that need the model servers are skipped when those servers are not running.
 
-These commands connect to the database named by `GCW_DB_NAME` (with `POSTGRES_USER` / `POSTGRES_PASSWORD`, from the environment or `.env`), and print the target database name first so you can see where you are writing.
+### Running on real data
 
-```
-gcw migrate                 # create/upgrade the raw schema (idempotent)
-gcw ingest PATH [PATH ...]  # parse export root(s) and load them into raw.messages
-gcw parse PATH [PATH ...]   # parse only, print counts; no database needed
-```
+Real data gets its own compose project, with its own containers, Postgres volume and superuser password, so the dev credentials cannot reach it. Exports and the env file live outside the repo, and the file is passed as `ENV_FILE`; host-side commands read settings from that file (plus the process environment), so it must be complete. It sets:
 
-- **`gcw migrate`** applies the numbered files in `migrations/` that are not yet recorded in `schema_migrations`, in order, each in its own transaction. Running it again applies nothing. Run it once per database before the first `ingest`.
-- **`gcw ingest`** parses one or more export roots, then loads them in a single transaction. It prints counts only: rows parsed, rows inserted, duplicates skipped, elapsed seconds. Re-ingesting a file, or an export that overlaps an earlier one, inserts only the new messages (first write wins). Every run is recorded in `raw.load_runs` with its status and counts; a failed run leaves no partial messages.
-
-## Airflow
-
-A daily DAG, `gcw_pipeline`, runs `check_landing → migrate → ingest → dbt_deps_and_build → summarize` over a landing directory. Each export is one subfolder of that directory. Tasks only call the `gcw` CLI and dbt, and both log counts, never message content.
-
-Run it locally (Docker needed; the DAG itself is verified in CI):
-
-```
-mkdir -p data/landing                    # drop export folders in here, one subfolder per export
-make airflow-up                          # builds airflow/Dockerfile, starts db + Airflow
-# open http://localhost:8080, unpause gcw_pipeline, trigger it
-```
-
-- `GCW_LANDING_HOST_DIR` chooses which host folder is mounted (read-only) at `GCW_LANDING_DIR` in the container; it defaults to `data/landing`.
-- The database comes from `GCW_DB_NAME` in the container's environment (set from the env file), not from Airflow connections; dbt reads the same variable.
-- To run it once without the UI, use `make e2e`.
-- CI builds the image, runs the DAG tests inside it, runs `airflow dags test gcw_pipeline` against a Postgres service, and runs `make e2e` twice in a separate `e2e` job.
-
-**Why Airflow and dbt use separate environments.** Airflow pins a large set of dependencies with a constraints file, and dbt's own dependencies often conflict with those pins. The image therefore keeps Airflow in its own Python environment and installs `gcwrapped` and dbt into a second virtualenv, `/opt/gcw-venv`, built from `uv.lock`. Tasks run that venv's `gcw` and `dbt` binaries as subprocesses, so neither side can break the other when it upgrades.
-
-## Dashboard
-
-A Streamlit app shows activity from the `analytics` marts: KPIs, messages per day, a member leaderboard and an hour-of-day chart, per thread. It connects as `gcw_reader`, a read-only role that can read mart tables in `analytics` and has no access to the `raw` or `staging` schemas (staging and intermediate models), so message text cannot reach it.
-
-```
-# .env needs GCW_READER_PASSWORD (the role is created on first `make up`, from docker/postgres/init/02-reader-role.sh)
-# Run the pipeline first so the marts exist (ingest + dbt build); dbt grants the role its access.
-make dashboard-up           # http://localhost:8501 (`make e2e` also starts it)
-make test-warehouse         # query tests, permission-denied checks, Streamlit AppTest (after dbt build)
-```
-
-If your Postgres volume already existed before this change, the init script will not rerun: run `bash docker/postgres/init/02-reader-role.sh` inside the db container once.
-
-## Running on real data
-
-Real data gets its **own compose project**: its own containers, its own Postgres volume and its own superuser password, so the dev credentials in the repo's `.env` cannot reach it. Real exports and the real-data env file live outside the repo; you pass the file as `ENV_FILE`. The env file sets:
-
-- `COMPOSE_PROJECT_NAME=gc-wrapped-real` (overrides the pinned `name: gc-wrapped`; every make target passes `--env-file "$(ENV_FILE)"`, and make also reads that file instead of `.env`)
-- `GCW_DB_NAME=gcw_real`
-- its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`, different from `.env`
-- `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export (mounted read-only into the Airflow container as `GCW_LANDING_DIR`)
-- `POSTGRES_HOST_PORT` and `DASHBOARD_PORT`, different from the dev stack's (5432 and 8501); `make real-ingest` requires this
-- `GCW_THREAD_ALLOWLIST`: the numeric thread IDs you have consent to ingest (ingest fails without it)
-- `GCW_LOG_DIR`: an existing directory outside the repo for the private full log (written by the host-side `make real-ingest`; not passed to containers)
+- `COMPOSE_PROJECT_NAME=gc-wrapped-real` and `GCW_DB_NAME=gcw_real`
+- its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`
+- `POSTGRES_HOST_PORT` and `DASHBOARD_PORT` that differ from the dev stack's (`make real-ingest` requires this), with `POSTGRES_PORT` equal to the former
+- `GCW_LLM_PORT` and `GCW_EMBED_PORT`, different from the dev stack's if both stacks run at once
+- `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export
+- `GCW_THREAD_ALLOWLIST`: the thread IDs you have consent to ingest
+- `GCW_LOG_DIR`, `GCW_CONSENT_LEDGER` and `GCW_LABEL_DIR`: paths outside the repo for the private run log, the ledger, and labels and eval files
 
 Run these in your own terminal, never through a coding assistant:
 
 ```
-make check-landing ENV_FILE=<ENV_FILE>   # counts only: folders by shape, allowlisted IDs found
-make real-ingest ENV_FILE=<ENV_FILE>     # guards, check-landing, e2e; allowlisted summary lines only
-# ...look at the dashboard, then stop the real stack:
-make down ENV_FILE=<ENV_FILE>
+make check-landing ENV_FILE=<env file>     # counts only
+make real-ingest ENV_FILE=<env file>       # guards, then e2e; prints summary lines only
+make consent-template ENV_FILE=<env file>  # then fill in the ledger
+make consent-load ENV_FILE=<env file>
+make down ENV_FILE=<env file>              # stop the real stack when done
 ```
 
-Host-side `gcw` commands read settings from the file named by `ENV_FILE` only (plus the process environment), never from the repo's `.env` unless that is the file named. An env file must therefore be complete.
+`make real-ingest` refuses a dev env file, the dev project name, ports or database, an invalid or empty allowlist, and a log directory that is missing or inside the repo. The model, tagging, embedding, eval and dashboard commands above take the same `ENV_FILE`, without `SYNTHETIC=1`. The real evals need hand labels first (`make label-tags`, `make label-questions`), and new tags reach the marts at the next `make real-ingest`.
 
-`make real-ingest` refuses to start unless the env file is not `.env`/`.env.example`, names its own compose project and ports, sets `GCW_DB_NAME` to something other than `gcw_dev`, has a valid non-empty allowlist, and has an existing `GCW_LOG_DIR` outside the repo. The terminal output has a `== step: ... ==` header per step; a few lines (such as `rows inserted` or `elapsed seconds`) appear twice because the Airflow task log and the plain command each print them, which is expected. `make e2e ENV_FILE=<ENV_FILE>` still works for the pipeline alone, with the same allowlist requirement but without the guards or the filtered output.
+## Screenshots
 
-The real stack is started only for a run and stopped afterward. A fresh volume runs the reader-role init script itself, so no manual step is needed. Output is counts and the database name only. Re-running after adding a newer export to the landing folder loads just the new messages.
+![Activity page](docs/img/dashboard.png)
 
-## Privacy
+*Activity: counts and timings per thread. Synthetic data.*
 
-Real chat data is sensitive, and the AI coding assistant used on this repo is a third-party API. The rules:
+![Wrapped page](docs/img/wrapped.png)
 
-- **Consent.** Only chats whose members have agreed to be analysed go through the pipeline. Anything shown to someone other than the repo owner needs the same agreement.
-- **Consent allowlist.** Ingestion is deny by default. It loads only threads whose numeric thread ID is listed in `GCW_THREAD_ALLOWLIST`, and fails if the list is unset or empty. Threads are picked by folder name before any file inside is opened, so a chat that is not on the list is never read into memory. There is no bypass switch: dev, CI and real env files all list their IDs. `make check-landing` shows, as counts only, how many folders match.
-- **Survey tools read every thread.** `make inspect` and `make parse-check` read the whole local export to validate the format, print aggregates only and store nothing. They are not gated by the allowlist, so non-consented chats are read locally, in memory, for counts. Anything that loads data is gated.
-- **Private real-run logs.** `make real-ingest ENV_FILE=<path>` writes the full pipeline output to `GCW_LOG_DIR` (outside the repo, mode 0600) and prints only lines that fully match a fixed set of label-and-number patterns. The log is never pasted anywhere.
-- **The thread allowlist and a two-level opt-in, both deny by default.** The thread allowlist above gates *ingestion*. A per-sender consent ledger gates *everything else*, at two levels ([D88](docs/decisions.md)): `yes` means the sender's text may be processed on this machine and, redacted, by an outside service; `local` means this machine only. It is a CSV outside the repo (`GCW_CONSENT_LEDGER`) with one row per (thread, sender display name) and a consent of `yes`, `local`, `no` or blank. A blank means no, and a sender missing from the ledger means no, so nobody is processed on silence. `make consent-template` creates or extends the ledger from the warehouse (new rows start blank; existing answers are never changed or deleted). `make consent-load` validates the whole file and loads it all-or-nothing into `raw.sender_consent`. One dbt model, `fct_message_eligibility`, is the single definition: `local_ok` (consent `yes` or `local`) gates labeling, tagging, embeddings, answers and profiles; `external_ok` (consent `yes`) gates anything that leaves the machine. `make consent-coverage` prints fixed aggregate lines and writes a private priority list of whose reply matters most to the label directory. Every target prints fixed labels and counts, never a name or the ledger path.
-- **Removing a thread from the allowlist deletes its data.** `make purge-unlisted` removes every warehouse row of a thread that is no longer listed (messages, reactions, tags, its consent rows); it is a dry run until `CONFIRM=1`, and prints counts only ([D91](docs/decisions.md)).
-- **Redaction comes before any API call.** No message text leaves the machine except through `gcwrapped.redaction` (decisions D70, D77), and only for messages that pass the consent gate. The module is built and tested: member names (every sender and reactor, in any case, with or without accents) become per-thread `<PERSON_n>` pseudonyms, and phone numbers, emails, URLs, @handles, street addresses, cards, SSNs, IPs and IBANs become typed placeholders; people who are not members are caught by a pinned spaCy NER model. Member names, phone numbers and emails are covered by example and property tests, the other deterministic types by example tests; the committed zero-miss sets and the CI gate for them arrive in P2-2b (D76). The NER part is probabilistic and its quality gate (D76) arrives in P2-2b. Known gap: nicknames and misspellings that are not in the member directory depend on NER and can leak. Words are taken under two rules (raw boundaries and boundaries after folding) and every check uses both (D83). Replacement never leaves part of a word behind: overlapping spans merge into their union (typed by the best-ranked one), spans that stop inside a word are extended to the word's edge, and a final fail-closed pass replaces any member-name token still present (and raises if it cannot), with its count reported by the audit; on synthetic data that count must be 0. Nothing calls an external API yet. `make redaction-audit` redacts every ingested message in memory and prints aggregate counts only, failing if any member-name token survives.
-- **Hand labeling stays on this machine.** The labeling tool (`make label-tags`, `make label-questions`, `make label-summary`; [D86](docs/decisions.md)) shows real messages only in the owner's terminal and writes labels, as message IDs plus the owner's own questions, to a directory that must exist outside the repo (`GCW_LABEL_DIR`); it refuses to run if that directory is inside the repo or the database is not a known one. It only ever shows messages from senders who opted in and that a person actually typed (Instagram's auto-generated placeholders such as "liked a message" are excluded by one dbt model whose patterns are a seed, [D95](docs/decisions.md); `make text-audit` prints the aggregate counts), and its summary prints fixed aggregate lines, never a message. CI uses committed synthetic labeled sets instead.
-- **Tagging stays on this machine too.** `make tag` ([D89](docs/decisions.md), [D90](docs/decisions.md)) asks a llama.cpp server running as a local compose service (published on 127.0.0.1 only, model fetched by `make llm-model`) for one topic and one sentiment per opted-in message, with schema-constrained output. The client refuses any host except localhost and the compose service name, takes no proxy and follows no redirect, and a hosted provider exists only as a stub that always raises. Tags are stored with model and prompt provenance, a rerun skips what is tagged, and a revoked consent deletes that sender's tags. It prints fixed lines and counts only; CI exercises it against a stub server, never a model.
-- **Text never leaves staging.** Message text exists only in `raw` and the staging models. The marts the dashboard reads carry counts and timestamps, no content.
-- **Reader role.** The dashboard connects as `gcw_reader`, a read-only Postgres role with `SELECT` on mart tables only (not `fct_message_eligibility`, a view over staging). CI asserts permission-denied on `raw`, staging and that view.
-- **Content-free logs and errors.** Logs, CLI output and stored error summaries carry counts, IDs, durations, file hashes and exception class names, never message text, sender names, phone numbers or emails. Sentinel tests enforce this.
-- **Coding-agent isolation.** The assistant never reads, prints, searches, or lists anything under `data/` or the real env file, and only connects to `gcw_dev` (synthetic data). `gcw_real` is for the repo owner alone; real-data commands are run in the owner's terminal and only aggregate numbers are shared back.
-- **Unhandled errors.** `gcw` prints `gcw: failed: <ExceptionTypeName>` and exits 1, never the message or a traceback. `GCW_TRACEBACK=1` restores the traceback: dev only; never set on real-data runs.
-- Chat data, media, `.env` files, and `members.yaml` are never committed. `data/` is git-ignored.
+*Wrapped: one member's card. Synthetic data.*
 
-## Metrics
+![Ask page](docs/img/ask.png)
 
-See [METRICS.md](METRICS.md). Every number there comes from a recorded run, with its source and date.
+*Ask: an answer with the messages it cites. Synthetic data.*

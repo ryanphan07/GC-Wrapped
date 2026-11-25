@@ -264,6 +264,11 @@ def _insert_profiles(conn: psycopg.Connection) -> None:
     )
 
 
+def _card(at: AppTest) -> list[str]:
+    """The lines on the page's card: the name, then one line per field."""
+    return [line for element in _shown(at) for line in element.split("\n")]
+
+
 def test_the_wrapped_page_shows_one_card_for_the_picked_member(
     profiles: psycopg.Connection,
 ) -> None:
@@ -272,13 +277,13 @@ def test_the_wrapped_page_shows_one_card_for_the_picked_member(
     assert not at.exception and not at.error
     (picker,) = at.selectbox
     assert picker.options == ["SynthAna", "SynthBo"]  # only members in the mart
-    assert _shown(at)[:2] == ["SynthAna", "Messages sent: 1,234"]
-    assert "Most active: Tuesdays at 10 pm" in _shown(at)
-    assert "Typical reply time: 3 minutes" in _shown(at)
+    assert _card(at)[:2] == ["SynthAna", "Messages sent: 1,234"]
+    assert "Most active: Tuesdays at 10 pm" in _card(at)
+    assert "Typical reply time: 3 minutes" in _card(at)
     assert wrapped.CARD_NOTE in [c.value for c in at.caption]
 
     other = picker.set_value(1).run()
-    shown = _shown(other)
+    shown = _card(other)
     assert shown[0] == "SynthBo" and "SynthAna" not in shown
     assert "Typical reply time: no replies yet" in shown
     assert "Top topics: not tagged yet" in shown and "Mood: not tagged yet" in shown

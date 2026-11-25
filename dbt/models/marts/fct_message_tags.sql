@@ -2,8 +2,9 @@
 -- enrich.tag_default, or the D90 default (var gcw_default_tag_model) while that table is empty. Per
 -- message, that model's most recently written row, so a newer prompt version replaces an older one.
 -- Tags of any other model stay in enrich.message_tags for comparison but never reach profiles.
--- Joining the eligibility view (D75) means a message whose sender is no longer local_ok drops out
--- at once, even before `gcw tag` prunes the row (D88).
+-- Joining the eligibility view (D75) means a message whose sender is no longer local_ok is left
+-- out of the next build, even before `gcw tag` prunes the row (D88). This is a table: until that
+-- build it holds what it was last built from.
 -- Per-message labels with keys: no reader grant (see dbt_project.yml); the aggregates below are
 -- what the dashboard role sees. No message text here.
 with promoted as (

@@ -36,7 +36,5 @@ chosen = st.selectbox("Member", range(len(profiles)), format_func=labels.__getit
 profile = profiles[chosen]
 with st.container(border=True):
     st.text(safe_text(str(profile["member_name"])))
-    st.divider()
-    for line in card_lines(profile):
-        st.text(line)
+    st.text("\n".join(card_lines(profile)))
 st.caption(CARD_NOTE)

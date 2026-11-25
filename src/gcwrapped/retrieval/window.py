@@ -7,8 +7,10 @@ the centre and for every neighbour, so an ineligible message is skipped and the 
 of the session takes its place. The session is the dbt one (`analytics.fct_messages.session_id`),
 computed over all messages, eligible or not.
 
-Message text lives only in memory here and in the request to the local embedding server. It is
-never written anywhere; the warehouse keeps the member IDs, from which the text can be rebuilt.
+Message text lives only in memory here and in the request to the local embedding server. The
+window text itself is never stored: the warehouse keeps the member IDs, from which it can be
+rebuilt, and its full-text lexemes (`window_tsv`, migration 006), which pruning deletes with the
+row.
 """
 
 import hashlib
