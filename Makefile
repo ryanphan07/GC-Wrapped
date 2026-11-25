@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -270,3 +270,10 @@ answer-compare:
 answer-promote:
 	@test -n "$(VARIANT)" || { echo "error: set VARIANT=a|b (make answer-promote VARIANT=a)"; exit 1; }
 	@uv run gcw answer-promote --variant $(VARIANT)
+
+# Every eval in order, stopping at the first failure (D122): embed, both retrieval evals, compare,
+# promote, answer-eval with prompt a and b, answer-compare, answer-promote. SYNTHETIC=1 skips both
+# promotes. Unattended and long on real data. Real-data runs are Ryan's:
+# make eval-all ENV_FILE=<env file outside the repo>
+eval-all:
+	@uv run gcw eval-all $(if $(filter 1,$(SYNTHETIC)),--synthetic)
