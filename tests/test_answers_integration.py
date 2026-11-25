@@ -21,7 +21,7 @@ import psycopg
 import pytest
 
 from gcwrapped import consent_prune
-from gcwrapped.answers import commands, evaluation, report
+from gcwrapped.answers import commands, comparison, evaluation, report
 from gcwrapped.answers.excerpts import load_excerpts
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
@@ -31,7 +31,7 @@ from gcwrapped.answers.pipeline import (
     Answer,
     AnswerPipeline,
 )
-from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for
+from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for, system_prompt
 from gcwrapped.config import get_database_settings
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
@@ -112,7 +112,7 @@ def _answer(url: str, stub: Any, llm: StubLlm, question: str, method: str = "vec
     with psycopg.connect(url, autocommit=True) as conn:
         retriever = Retriever(conn, _client(stub))
         chat = LlamaCppChat(llm.url, model_id=MODEL_ID)
-        return AnswerPipeline(conn, retriever, chat, method).answer(question)
+        return AnswerPipeline(conn, retriever, chat, method, variant="a").answer(question)
 
 
 # --- the pipeline (D111) -----------------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_a_request_that_times_out_is_its_own_outcome_and_is_not_retried(
 ) -> None:
     with StubLlm(mode="slow") as slow, psycopg.connect(embedded, autocommit=True) as conn:
         chat = LlamaCppChat(slow.url, model_id=MODEL_ID, timeout=0.2)
-        pipeline = AnswerPipeline(conn, Retriever(conn, _client(stub)), chat, "vector")
+        pipeline = AnswerPipeline(conn, Retriever(conn, _client(stub)), chat, "vector", variant="a")
         found = pipeline.answer("when is the midterm")
     assert (found.outcome, found.citations, len(slow.requests)) == (TIMED_OUT, (), 1)
     assert found.sources and found.prompt_tokens is None
@@ -567,3 +567,185 @@ def test_prune_refuses_an_unknown_file_among_the_answer_results(
     assert capsys.readouterr().out == (
         "consent-prune: failed at prune (UnexpectedPredictionsFileError)\n"
     )
+
+
+# --- prompt variants, answer-compare and answer-promote (D121) ---------------------------------
+
+VERSION_B = prompt_version_for(model.spec_for(MODEL_ID).chat_template_kwargs, "b")
+
+
+def _no_db() -> None:
+    return None
+
+
+def _systems(llm: StubLlm) -> set[str]:
+    return {r["messages"][0]["content"] for r in llm.requests}
+
+
+def test_answer_eval_runs_the_named_variant_and_files_it_under_its_own_version(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert commands.run_answer_eval(services=NO_SERVICES, variant="b") == 0
+    assert f"answer prompt version: {VERSION_B}" in capsys.readouterr().out.splitlines()
+    assert _systems(llm) == {system_prompt("b")}
+    assert (label_dir / "answers" / f"{MODEL_ID}__{VERSION_B}.json").is_file()
+    assert not _results_path(label_dir).exists()
+
+
+def test_the_promoted_variant_is_what_answer_eval_and_ask_use(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        commands.run_ask(terminal=ScriptedTerminal("when is the midterm"), services=NO_SERVICES)
+        == 0
+    )
+    assert _systems(llm) == {system_prompt("a")}
+    comparison.promote(embedded, "b")
+    llm.requests.clear()
+    assert (
+        commands.run_ask(terminal=ScriptedTerminal("when is the midterm"), services=NO_SERVICES)
+        == 0
+    )
+    assert commands.run_answer_eval(services=NO_SERVICES) == 0
+    assert _systems(llm) == {system_prompt("b")}
+    assert f"answer prompt version: {VERSION_B}" in capsys.readouterr().out.splitlines()
+    llm.requests.clear()
+    assert commands.run_answer_eval(services=NO_SERVICES, variant="a") == 0
+    assert _systems(llm) == {system_prompt("a")}
+
+
+def test_the_default_variant_is_a_without_a_table_or_a_row(embedded: str) -> None:
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        assert comparison.default_variant(conn) == "a"
+        conn.execute("DROP TABLE enrich.answer_prompt_default")
+        assert comparison.default_variant(conn) == "a"
+
+
+def _reply_b_answers_everything(body: dict[str, Any]) -> str:
+    """Variant a abstains on every question; variant b cites the message that answers it."""
+    if body["messages"][0]["content"] != system_prompt("b"):
+        return _output(False, [], "")
+    question = _user(body).rsplit("Question: ", 1)[1]
+    word = "midterm tomorrow" if "midterm" in question else "ramen" if "ramen" in question else ""
+    found = [n for n, line in _numbered(_user(body)).items() if word and word in line]
+    return _output(True, found[:1], "yes") if found else _output(False, [], "")
+
+
+@pytest.fixture
+def both_runs(embedded: str, label_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    with StubLlm(reply=_reply_b_answers_everything) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        for variant in ("a", "b"):
+            assert commands.run_answer_eval(services=NO_SERVICES, variant=variant) == 0
+    yield label_dir
+
+
+def test_answer_compare_records_a_verdict_and_prints_fixed_lines(
+    embedded: str, both_runs: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    winners: list[str] = []
+    assert commands.run_answer_compare(start_db=_no_db, on_verdict=winners.append) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.COMPARE_SHAPES)
+    assert lines[0] == "questions scored: 3" and lines[1] == "citation hit rate A: 0.000"
+    (path,) = (both_runs / "experiments").glob("answer-compare-*.json")
+    assert winners == [json.loads(path.read_text())["winner"]]
+    assert f"winner: {winners[0]}" in lines
+    _assert_clean("\n".join(lines), path.read_text(), extra=("midterm", "ramen"))
+
+
+def test_answer_compare_refuses_with_one_fixed_line_and_records_nothing(
+    embedded: str, both_runs: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    path = both_runs / "answers" / f"{MODEL_ID}__{VERSION_B}.json"
+    original = path.read_text()
+    for key, value, error in (
+        ("embed_version", "f" * 12, "EmbedVersionMismatch"),
+        ("corpus_hash", "f" * 12, "CorpusMismatch"),
+        ("method", "hybrid", "MethodMismatch"),
+    ):
+        path.write_text(json.dumps({**json.loads(original), key: value}))
+        assert commands.run_answer_compare(start_db=_no_db) == 1
+        assert capsys.readouterr().out == f"answer-compare: failed at scoring ({error})\n"
+    fewer = json.loads(original)
+    fewer["rows"] = fewer["rows"][:-1]
+    path.write_text(json.dumps(fewer))
+    assert commands.run_answer_compare(start_db=_no_db) == 1
+    assert capsys.readouterr().out == ("answer-compare: failed at scoring (QuestionSetMismatch)\n")
+    path.unlink()
+    assert commands.run_answer_compare(start_db=_no_db) == 1
+    assert capsys.readouterr().out == (
+        "answer-compare: failed at predictions (AnswerResultsError)\n"
+    )
+    assert not (both_runs / "experiments").exists()
+
+
+def _verdict(root: Path, **changes: str) -> None:
+    body = {
+        "a": "a",
+        "b": "b",
+        "winner": "b",
+        "model_id": MODEL_ID,
+        "a_prompt_version": VERSION,
+        "b_prompt_version": VERSION_B,
+        "embed_version": window.embed_version(),
+        **changes,
+    }
+    (root / "experiments").mkdir(exist_ok=True)
+    (root / "experiments" / "answer-compare-20260101T000000000000Z.json").write_text(
+        json.dumps(body)
+    )
+
+
+def _variant(url: str) -> str:
+    return comparison.promoted_variant(url)
+
+
+def test_answer_promote_sets_the_winner_of_the_latest_verdict(
+    embedded: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _verdict(label_dir)
+    assert commands.run_answer_promote("b", start_db=_no_db) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.PROMOTE_SHAPES)
+    assert lines == [
+        "target database: gcw_test",
+        "promoted variant: b",
+        "previous variant: none",
+        "answer-promote: ok",
+    ]
+    assert _variant(embedded) == "b"
+    _verdict(label_dir, winner="a")
+    assert commands.run_answer_promote("a", start_db=_no_db) == 0
+    assert "previous variant: b" in capsys.readouterr().out
+    assert _variant(embedded) == "a"
+
+
+@pytest.mark.parametrize(
+    ("changes", "variant", "step", "error"),
+    [
+        (None, "b", "verdict", "VerdictError"),
+        ({"winner": "a"}, "b", "verdict", "NotWinnerError"),
+        ({"embed_version": "f" * 12}, "b", "verdict", "EmbedVersionMismatch"),
+        ({"model_id": "qwen3.5-2b-q4_k_m"}, "b", "verdict", "ModelMismatch"),
+        ({"a_prompt_version": "f" * 12}, "b", "verdict", "PromptVersionMismatch"),
+        ({"b_prompt_version": "f" * 12}, "b", "verdict", "PromptVersionMismatch"),
+        ({}, "c", "variant", "UnknownVariantError"),
+    ],
+)
+def test_answer_promote_refuses_and_changes_nothing(
+    embedded: str,
+    label_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str] | None,
+    variant: str,
+    step: str,
+    error: str,
+) -> None:
+    if changes is not None:
+        _verdict(label_dir, **changes)
+    assert commands.run_answer_promote(variant, start_db=_no_db) == 1
+    assert capsys.readouterr().out == f"answer-promote: failed at {step} ({error})\n"
+    assert _variant(embedded) == "a"

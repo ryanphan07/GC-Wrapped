@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -248,14 +248,25 @@ retrieval-promote:
 	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
 	@uv run gcw retrieval-promote --method $(METHOD)
 
-# Answers with citations from the local model (D111-D113). Both start only the db, llm and embed
-# services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
+# Answers with citations from the local model (D111-D113). ask and answer-eval start only the db,
+# llm and embed services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
 # messages to the terminal only, writes nothing, and ends with fixed summary lines. answer-eval
 # answers each question once, stores IDs, hashes and numbers (never answer text) and prints fixed
 # lines. SYNTHETIC=1 means gcw_dev only (and for the eval: the committed synthetic questions and a
-# temporary directory). Real-data runs are Ryan's: make ask ENV_FILE=<env file outside the repo>
+# temporary directory). answer-eval takes VARIANT=a|b, the prompt variant (D121; default: the
+# promoted one). answer-compare applies the D121 win rule to the stored A and B runs and records the
+# verdict; answer-promote VARIANT=<v> makes <v> the variant answers use, only if the latest verdict
+# names it the winner. Both start only the db service. Real-data runs are Ryan's:
+# make ask ENV_FILE=<env file outside the repo>
 ask:
 	@uv run gcw ask $(if $(filter 1,$(SYNTHETIC)),--synthetic)
 
 answer-eval:
-	@uv run gcw answer-eval $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+	@uv run gcw answer-eval $(if $(filter 1,$(SYNTHETIC)),--synthetic) $(if $(VARIANT),--variant $(VARIANT))
+
+answer-compare:
+	@uv run gcw answer-compare $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+answer-promote:
+	@test -n "$(VARIANT)" || { echo "error: set VARIANT=a|b (make answer-promote VARIANT=a)"; exit 1; }
+	@uv run gcw answer-promote --variant $(VARIANT)

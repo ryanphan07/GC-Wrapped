@@ -212,6 +212,20 @@ def build_parser() -> argparse.ArgumentParser:
     answer_eval.add_argument(
         "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
     )
+    answer_eval.add_argument(
+        "--variant", default=None, metavar="V", help="prompt variant a or b (default: promoted)"
+    )
+    answer_compare = sub.add_parser(
+        "answer-compare", help="apply the D121 win rule to the stored A and B answer runs"
+    )
+    answer_compare.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
+    answer_promote = sub.add_parser(
+        "answer-promote",
+        help="make a prompt variant the default; refused unless the latest verdict names it",
+    )
+    answer_promote.add_argument("--variant", required=True, metavar="V", help="a or b")
     llm_model = sub.add_parser(
         "llm-model", help="download a registered model file, checking its sha256"
     )
@@ -442,7 +456,11 @@ def _run(argv: Sequence[str] | None) -> int:
     if args.command == "ask":
         return answers.run_ask(synthetic=args.synthetic)
     if args.command == "answer-eval":
-        return answers.run_answer_eval(synthetic=args.synthetic)
+        return answers.run_answer_eval(synthetic=args.synthetic, variant=args.variant)
+    if args.command == "answer-compare":
+        return answers.run_answer_compare(synthetic=args.synthetic)
+    if args.command == "answer-promote":
+        return answers.run_answer_promote(args.variant)
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":
