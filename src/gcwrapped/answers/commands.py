@@ -220,7 +220,7 @@ def ask_loop(
     """Ask until a blank line, end of input or Ctrl-C; return the summary lines."""
     counts = dict.fromkeys(OUTCOMES, 0)
     timings = Timings([])
-    prompt_tokens = Timings([])  # for its nearest-rank percentile
+    prompt_tokens: list[int] = []
     try:
         while (question := terminal.line(PROMPT)) is not None and question.strip():
             began = clock()
@@ -229,7 +229,7 @@ def ask_loop(
             timings.seconds.append(seconds)
             counts[found.outcome] += 1
             if found.prompt_tokens is not None:
-                prompt_tokens.seconds.append(found.prompt_tokens)
+                prompt_tokens.append(found.prompt_tokens)
             numbers = report.answer_line(len(found.sources), found.prompt_tokens, seconds)
             for line in ("", *answer_lines(found), "", numbers, ""):
                 terminal.out(line)

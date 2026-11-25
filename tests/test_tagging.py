@@ -13,7 +13,7 @@ import pytest
 
 from gcwrapped.labeling.schema import SENTIMENTS, TAG_CONTEXT_MESSAGES, TOPICS
 from gcwrapped.labeling.source import EligibleIndex, Message
-from gcwrapped.tagging import model, prompt
+from gcwrapped.tagging import model, prompt, scoring
 from gcwrapped.tagging.llamacpp import (
     LlamaCppProvider,
     NonLocalUrlError,
@@ -443,3 +443,11 @@ def test_the_dag_tag_task_skips_without_a_url_and_never_starts_docker() -> None:
     assert "{GCW} tag --no-start" in dag  # the container has no docker
     compose = (REPO / "docker-compose.yml").read_text()
     assert "GCW_LLM_URL: ${GCW_AIRFLOW_LLM_URL:-}" in compose  # empty by default: skipped
+
+
+def test_nearest_rank_returns_one_of_the_values_and_keeps_whole_numbers() -> None:
+    tokens = [900, 100, 500]
+    found = [scoring.nearest_rank(tokens, p) for p in (1, 50, 95, 100)]
+    assert found == [100, 500, 900, 900] and all(type(v) is int for v in found if v is not None)
+    assert scoring.nearest_rank([], 50) is None
+    assert Timings([2.5, 0.5]).percentile(50) == 0.5

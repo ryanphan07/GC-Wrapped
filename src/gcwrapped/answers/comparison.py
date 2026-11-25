@@ -27,7 +27,7 @@ from gcwrapped.answers.pipeline import INVALID, TIMED_OUT
 from gcwrapped.answers.prompt import VARIANT_A, VARIANT_B, VARIANTS
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.tagging import evaluation as tag_evaluation
-from gcwrapped.tagging.runner import Timings
+from gcwrapped.tagging.scoring import nearest_rank
 
 DEFAULT_TABLE = "enrich.answer_prompt_default"
 DEFAULT_VARIANT = VARIANT_A  # the D121 baseline, until one is promoted
@@ -92,7 +92,7 @@ def _failures(rows: list[Row]) -> int:
 
 
 def _p95(rows: list[Row]) -> float:
-    value = Timings([r.seconds for r in rows]).percentile(95)
+    value = nearest_rank([r.seconds for r in rows], 95)
     if value is None:
         raise retrieval.NoScorableQuestionsError
     return value

@@ -9,7 +9,7 @@ shown) and for `make grade-answers` (the question, the answer and the cited mess
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from gcwrapped.answers.comparison import CompareResult
 from gcwrapped.answers.evaluation import EvalResult, Rate
@@ -22,6 +22,7 @@ from gcwrapped.retrieval.evaluation import METHODS, Estimate
 from gcwrapped.tagging.model import REGISTRY
 from gcwrapped.tagging.report import check_lines
 from gcwrapped.tagging.runner import Timings
+from gcwrapped.tagging.scoring import nearest_rank
 
 _DATABASES = "|".join(sorted(ALLOWED_DATABASES))
 _METHODS = "|".join(METHODS)
@@ -214,7 +215,9 @@ def answer_line(sources: int, prompt_tokens: int | None, seconds: float) -> str:
     return check_lines([line], (ANSWER_SHAPE,))[0]
 
 
-def render_ask(counts: Mapping[str, int], timings: Timings, prompt_tokens: Timings) -> list[str]:
+def render_ask(
+    counts: Mapping[str, int], timings: Timings, prompt_tokens: Sequence[int]
+) -> list[str]:
     """The summary. `counts` is per outcome; `prompt_tokens` holds the reported counts only."""
 
     def seconds(percent: int) -> str:
@@ -229,8 +232,8 @@ def render_ask(counts: Mapping[str, int], timings: Timings, prompt_tokens: Timin
         f"timed out: {counts[TIMED_OUT]}",
         f"p50 seconds per question: {seconds(50)}",
         f"p95 seconds per question: {seconds(95)}",
-        f"p50 prompt tokens: {_tokens(prompt_tokens.percentile(50))}",
-        f"p95 prompt tokens: {_tokens(prompt_tokens.percentile(95))}",
+        f"p50 prompt tokens: {_tokens(nearest_rank(prompt_tokens, 50))}",
+        f"p95 prompt tokens: {_tokens(nearest_rank(prompt_tokens, 95))}",
         "ask: ok",
     ]
     return check_lines(lines, ASK_SHAPES)
