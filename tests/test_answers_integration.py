@@ -33,7 +33,8 @@ from gcwrapped.answers.pipeline import (
 )
 from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for, system_prompt
 from gcwrapped.config import get_database_settings
-from gcwrapped.labeling.files import read_questions
+from gcwrapped.labeling.files import read_questions, write_questions
+from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval import window
@@ -907,3 +908,75 @@ def test_synthetic_grading_uses_the_temporary_directory(
     assert commands.run_grade_summary(True, start_db=_no_db) == 0
     assert "graded questions: 3" in capsys.readouterr().out
     assert list(label_dir.iterdir()) == []
+
+
+def test_prune_drops_grade_rows_that_cite_an_ineligible_message_or_lost_their_question(
+    warehouse: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GCW_LABEL_DIR", str(tmp_path))
+
+    def question(n: int, gold: str) -> QuestionLabel:
+        return QuestionLabel(
+            f"q{n:03d}", f"question {n}", (ID[gold],), ID[gold], "2026-11-10T00:00:00+00:00"
+        )
+
+    # q003 is written from a message that is about to be revoked, so the prune drops it
+    questions = [question(1, "e1"), question(2, "e2"), question(3, "cy"), question(4, "e1")]
+    write_questions(tmp_path / "questions.csv", questions)
+
+    def row(n: int, *cited: str) -> grades.GradeRow:
+        if not cited:
+            return grades.GradeRow(f"q{n:03d}", ABSTAINED, "", "", (), 1.0)
+        ids = tuple(ID[m] for m in cited)
+        return grades.GradeRow(f"q{n:03d}", ANSWERED, "correct", "yes", ids, 1.0)
+
+    rows = [
+        row(1, "e1", "e2"),  # stays
+        row(2, "e2", "cy"),  # cites the revoked sender
+        row(3),  # its question is dropped
+        row(4),  # stays
+        row(9, "e1"),  # its question is not in the file at all
+    ]
+    grades.write_grades(tmp_path, MODEL_ID, VERSION, rows)
+    path = tmp_path / "grades" / f"{MODEL_ID}__{VERSION}.csv"
+    _revoke(warehouse, "SENDERCY")
+    before = path.read_bytes()
+
+    dry = _prune(capsys, apply=False)
+    assert "prediction rows to prune: 3" in dry
+    assert "questions left with no gold: 1" in dry
+    assert "ineligible messages with derived records: 1" in dry
+    assert path.read_bytes() == before
+
+    applied = _prune(capsys, apply=True)
+    check_lines(applied, consent_prune.SHAPES)
+    assert grades.read_grades(tmp_path, MODEL_ID, VERSION) == [rows[0], rows[3]]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert "prediction rows to prune: 0" in _prune(capsys, apply=False)
+    _assert_clean("\n".join([*dry, *applied]), extra=(str(tmp_path),))
+
+
+@pytest.mark.parametrize(
+    ("name", "error"),
+    [
+        ("notes.csv", "UnexpectedPredictionsFileError"),
+        (f"{MODEL_ID}__{VERSION}.csv", "GradesError"),
+    ],
+)
+def test_prune_fails_closed_on_a_grades_file_it_cannot_read(
+    warehouse: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    error: str,
+) -> None:
+    monkeypatch.setenv("GCW_LABEL_DIR", str(tmp_path))
+    (tmp_path / "grades").mkdir()
+    (tmp_path / "grades" / name).write_text("SENTINELTEXT\n")
+    get_database_settings.cache_clear()
+    assert consent_prune.run(apply=True, start_db=lambda: None) == 1
+    assert capsys.readouterr().out == f"consent-prune: failed at prune ({error})\n"

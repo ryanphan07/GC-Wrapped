@@ -13,7 +13,10 @@ from their messages must leave every store, not just be hidden:
     and its wording was written while reading that message),
   - rows of predictions/*.csv (stored tag-eval predictions), rows of retrieval/*.json (stored
     retrieval results) and rows of answers/*.json (stored answer-eval results, D112) that refer to
-    an ineligible message.
+    an ineligible message,
+  - rows of grades/*.csv (hand grades, D120) whose cited messages include an ineligible one, or
+    whose question is no longer in questions.csv after the pruning above. Counted with the
+    prediction rows.
 Ids-only files (the frozen samples, skips.csv) and experiment verdicts (numbers only) are untouched.
 
 A retrieval or answers file in an old format (the strict reader rejects it, but every row's message
@@ -40,6 +43,7 @@ from pathlib import Path
 import psycopg
 
 from gcwrapped.answers import evaluation as answers
+from gcwrapped.answers import grades
 from gcwrapped.config import LabelSettings
 from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
@@ -92,6 +96,7 @@ WHERE e.local_ok AND x.has_user_text
 """
 _PREDICTIONS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.csv")
 _ANSWERS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.json")
+_GRADES_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.csv")
 # The per-row lists of message IDs, beside source_message_id, in each kind of eval file.
 _RETRIEVAL_ID_LISTS = ("gold_message_ids", "retrieved_message_ids")
 _ANSWER_ID_LISTS = ("gold_message_ids", "numbered_message_ids", "cited_message_ids")
@@ -107,8 +112,8 @@ class ShapeError(PruneError):
 
 class UnexpectedPredictionsFileError(PruneError):
     """A .csv in predictions/ is not named <model id>__<prompt version>.csv, a .json in
-    retrieval/ is not named <method>.json, or a .json in answers/ is not named
-    <model id>__<answer prompt version>.json."""
+    retrieval/ is not named <method>.json, or a .json in answers/ or a .csv in grades/ is not
+    named <model id>__<answer prompt version>."""
 
 
 @dataclass(frozen=True)
@@ -264,6 +269,25 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
             writes.append(
                 partial(answers.write_results, label_dir, model_id, version, pruned_results)
             )
+    # A grade is of an answer to a question: it goes when the question goes.
+    remaining_questions = {q.question_id for q in kept_questions}
+    folder = label_dir / grades.GRADES_DIR
+    for path in sorted(folder.glob("*.csv")) if folder.is_dir() else []:
+        match = _GRADES_FILE.fullmatch(path.name)
+        if match is None:
+            raise UnexpectedPredictionsFileError
+        model_id, version = match["model"], match["version"]
+        graded = grades.read_grades(label_dir, model_id, version)
+        still = [
+            r
+            for r in graded
+            if r.question_id in remaining_questions
+            and all(m in eligible for m in r.cited_message_ids)
+        ]
+        referenced |= {m for r in graded for m in r.cited_message_ids if m not in eligible}
+        if len(still) != len(graded):
+            prediction_rows += len(graded) - len(still)
+            writes.append(partial(grades.write_grades, label_dir, model_id, version, still))
     return FilePlan(
         referenced_ineligible=frozenset(referenced),
         label_rows=len(tags) - len(kept_tags),

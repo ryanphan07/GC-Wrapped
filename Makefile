@@ -174,7 +174,7 @@ text-audit:
 	@uv run gcw text-audit
 
 # Remove everything derived from messages that are no longer eligible (D101, D105): tag rows, embedding
-# rows, hand-label rows, question gold references and stored predictions in GCW_LABEL_DIR. Run consent-load first so the
+# rows, hand-label rows, question gold references, stored predictions and hand grades in GCW_LABEL_DIR. Run consent-load first so the
 # revocation is in the warehouse. Dry run unless APPLY=1; counts only. Real-data runs are Ryan's:
 #   make consent-prune ENV_FILE=<env file outside the repo> [APPLY=1]
 consent-prune:
