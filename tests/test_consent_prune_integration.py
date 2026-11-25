@@ -5,6 +5,7 @@ questions and predictions are synthetic and live in a temporary directory, never
 Sender names and message text are sentinels that must never be printed.
 """
 
+import json
 import re
 import stat
 from pathlib import Path
@@ -13,9 +14,12 @@ import psycopg
 import pytest
 
 from gcwrapped import consent_prune
+from gcwrapped.answers import evaluation as answers
+from gcwrapped.answers.pipeline import ABSTAINED
 from gcwrapped.config import get_database_settings
 from gcwrapped.labeling.files import read_questions, read_tags, write_questions, write_tags
 from gcwrapped.labeling.schema import QuestionLabel, TagLabel
+from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.tagging import evaluation, model
 from gcwrapped.tagging.prompt import prompt_version_for
 from gcwrapped.tagging.runner import run_tagging
@@ -109,6 +113,7 @@ def test_with_nobody_revoked_the_only_ineligible_label_is_the_declined_senders(
         "question gold references to prune: 0",
         "questions left with no gold: 0",
         "prediction rows to prune: 0",
+        "old-format eval files to delete: 0",
         "mode: dry run",
         "consent-prune: ok",
     ]
@@ -131,6 +136,7 @@ def test_a_dry_run_reports_what_a_revocation_leaves_behind_and_changes_nothing(
         "question gold references to prune: 3",  # a1 (q1), a2 (q2), a3 (q4)
         "questions left with no gold: 2",  # q1 (source gone) and q4
         "prediction rows to prune: 3",
+        "old-format eval files to delete: 0",
         "mode: dry run",
         "consent-prune: ok",
     ]
@@ -161,7 +167,7 @@ def test_apply_removes_every_derived_record_and_a_rerun_finds_nothing(
 
     for apply in (False, True):  # a rerun reports zero everywhere, in either mode
         again = _run(capsys, apply=apply)
-        assert again[1:8] == [
+        assert again[1:9] == [
             "ineligible messages with derived records: 0",
             "tags to prune: 0",
             "embedding rows to prune: 0",
@@ -169,6 +175,7 @@ def test_apply_removes_every_derived_record_and_a_rerun_finds_nothing(
             "question gold references to prune: 0",
             "questions left with no gold: 0",
             "prediction rows to prune: 0",
+            "old-format eval files to delete: 0",
         ]
 
 
@@ -237,3 +244,152 @@ def test_files_that_do_not_exist_are_not_an_error(
     lines = _run(capsys, apply=True)
     assert "tags to prune: 3" in lines and "label rows to prune: 0" in lines
     assert list(empty.iterdir()) == []  # nothing was created
+
+
+# --- eval files in an old format (D118) --------------------------------------------------------
+
+
+def _old_retrieval_file(directory: Path, method: str, message_id: str) -> Path:
+    """A predictions file as S5 wrote it, with no corpus_hash; one row refers to `message_id`."""
+    rows = (
+        retrieval.Row("q001", "0" * 64, E1, (E1,), (E2,), 0.1),
+        retrieval.Row("q002", "0" * 64, E1, (E1,), (message_id,), 0.1),
+    )
+    stored = retrieval.Predictions(method, "0" * 12, "real", "1" * 12, rows)
+    retrieval.write_predictions(directory, stored)
+    path = retrieval.predictions_path(directory, method)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    del body["corpus_hash"]
+    body["note"] = SENTINEL  # whatever else an old file holds is never printed
+    path.write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(retrieval.RetrievalPredictionsError):  # the strict reader stays strict
+        retrieval.read_predictions(directory, method)
+    return path
+
+
+def _old_answers_file(directory: Path, message_id: str) -> Path:
+    """An answers file as S6 wrote it, with no token counts; one row was shown `message_id`."""
+    row = answers.Row("q001", "0" * 64, E1, (E1,), (E1, message_id), (), ABSTAINED, 0.1, 1, 1)
+    answers.write_results(
+        directory, MODEL_ID, VERSION, answers.Results("0" * 12, "1" * 12, "vector", (row,))
+    )
+    path = answers.results_path(directory, MODEL_ID, VERSION)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    for stored in body["rows"]:
+        del stored["prompt_tokens"], stored["completion_tokens"]
+    path.write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(answers.AnswerResultsError):
+        answers.read_results(directory, MODEL_ID, VERSION)
+    return path
+
+
+def test_an_old_format_file_with_an_ineligible_reference_is_deleted_whole(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _revoke_ana(warehouse)
+    old = [_old_retrieval_file(label_dir, "vector", A1), _old_answers_file(label_dir, A2)]
+    before = _snapshot(label_dir)
+
+    dry = _run(capsys, apply=False)
+    assert "old-format eval files to delete: 2" in dry
+    assert "prediction rows to prune: 3" in dry  # the tag predictions only: whole files apart
+    assert _snapshot(label_dir) == before
+
+    applied = _run(capsys, apply=True)
+    assert applied[:-2] == dry[:-2]
+    assert not any(path.exists() for path in old)
+    assert "old-format eval files to delete: 0" in _run(capsys, apply=False)
+    text = "\n".join(dry + applied)
+    assert SENTINEL not in text and "SENDER" not in text and str(label_dir) not in text
+    assert "vector" not in text and re.search(r"[0-9a-f]{64}", text) is None
+
+
+def test_an_ineligible_reference_in_an_old_format_file_is_counted_as_a_message(
+    warehouse: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "only-old"
+    directory.mkdir()
+    monkeypatch.setenv("GCW_LABEL_DIR", str(directory))
+    run_tagging(warehouse, Fake("fake"), prompt_version=VERSION)
+    _old_retrieval_file(directory, "hybrid", BO)  # nothing else refers to anything
+    lines = _run(capsys, apply=False)
+    assert "ineligible messages with derived records: 1" in lines
+    assert "old-format eval files to delete: 1" in lines
+
+
+def test_an_old_format_file_with_no_ineligible_reference_is_left_untouched(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _revoke_ana(warehouse)
+    old = [_old_retrieval_file(label_dir, "vector", E2), _old_answers_file(label_dir, E2)]
+    before = [path.read_bytes() for path in old]
+    lines = _run(capsys, apply=True)
+    assert "old-format eval files to delete: 0" in lines
+    assert [path.read_bytes() for path in old] == before
+    assert "label rows to prune: 4" in lines  # the rest of the prune went ahead
+
+
+def _rows(source: object, gold: object) -> str:
+    """A file of one row with every ID field of both kinds."""
+    empty: list[str] = []
+    row = {
+        "source_message_id": source,
+        "gold_message_ids": gold,
+        "retrieved_message_ids": empty,
+        "numbered_message_ids": empty,
+        "cited_message_ids": empty,
+    }
+    return json.dumps({"rows": [row]})
+
+
+@pytest.mark.parametrize("folder", ["retrieval", "answers"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json",
+        "[]",
+        "{}",
+        '{"rows": []}',
+        '{"rows": ["text"]}',
+        json.dumps({"rows": [{"source_message_id": E1}]}),  # the other ID fields are missing
+        _rows("x", [E1]),  # not a message ID
+        _rows(E1, [[E1]]),
+        _rows(E1, E1),  # not a list
+    ],
+)
+def test_an_eval_file_with_no_readable_row_ids_still_fails_closed(
+    warehouse: str,
+    label_dir: Path,
+    folder: str,
+    content: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _revoke_ana(warehouse)
+    name = "vector.json" if folder == "retrieval" else f"{MODEL_ID}__{VERSION}.json"
+    (label_dir / folder).mkdir()
+    (label_dir / folder / name).write_text(content, encoding="utf-8")
+    before, tags = _snapshot(label_dir), _tag_count(warehouse)
+    get_database_settings.cache_clear()
+    assert consent_prune.run(apply=True, start_db=lambda: None) == 1
+    error = "RetrievalPredictionsError" if folder == "retrieval" else "AnswerResultsError"
+    assert capsys.readouterr().out == f"consent-prune: failed at prune ({error})\n"
+    assert _snapshot(label_dir) == before and _tag_count(warehouse) == tags
+
+
+def test_a_current_format_file_is_still_pruned_row_by_row(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _revoke_ana(warehouse)
+    rows = (
+        retrieval.Row("q001", "0" * 64, E1, (E1,), (E2,), 0.1),
+        retrieval.Row("q002", "0" * 64, E1, (E1,), (A1,), 0.1),
+    )
+    stored = retrieval.Predictions("vector", "0" * 12, "real", "1" * 12, rows)
+    retrieval.write_predictions(label_dir, stored)
+    lines = _run(capsys, apply=True)
+    assert "old-format eval files to delete: 0" in lines
+    assert "prediction rows to prune: 4" in lines  # three tag predictions and q002
+    assert retrieval.read_predictions(label_dir, "vector").rows == rows[:1]

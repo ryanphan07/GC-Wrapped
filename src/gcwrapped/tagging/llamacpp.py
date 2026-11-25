@@ -73,7 +73,15 @@ def parse_tag(body: object) -> Tag:
 
 
 class ChatFailure(Exception):
-    """The server answered, but with an error, too late or not with JSON."""
+    """One request gave no usable response, though a server is there. Raised as a subclass."""
+
+
+class ChatTimeout(ChatFailure):
+    """No response within the timeout (D116)."""
+
+
+class ChatRefused(ChatFailure):
+    """The server answered with an HTTP error, or with a body that is not JSON."""
 
 
 class LlamaCppChat:
@@ -104,8 +112,9 @@ class LlamaCppChat:
         schema: dict[str, Any],
         max_tokens: int,
     ) -> object:
-        """The response body of one request. ChatFailure if the server gave no JSON body,
-        ProviderUnavailable if nothing is listening."""
+        """The response body of one request. ChatTimeout if it took too long, ChatRefused if the
+        server answered with an error or not with JSON, ProviderUnavailable if nothing is
+        listening."""
         payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": [
@@ -132,13 +141,13 @@ class LlamaCppChat:
             with self._opener.open(request, timeout=self._timeout) as response:
                 return json.loads(response.read(MAX_RESPONSE_BYTES))
         except urllib.error.HTTPError:
-            raise ChatFailure from None  # the server answered, with an error (bad request, 5xx)
+            raise ChatRefused from None  # the server answered, with an error (bad request, 5xx)
         except TimeoutError:
-            raise ChatFailure from None  # one slow request
+            raise ChatTimeout from None  # one slow request
         except (urllib.error.URLError, ConnectionError, OSError):
             raise ProviderUnavailable from None  # nothing is listening: stop the run
         except ValueError:
-            raise ChatFailure from None  # the body was not JSON
+            raise ChatRefused from None  # the body was not JSON
 
 
 class LlamaCppProvider(LlamaCppChat):

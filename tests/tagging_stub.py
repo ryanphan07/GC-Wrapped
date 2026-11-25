@@ -8,6 +8,9 @@ what was sent. Modes let a test provoke the failures the client must handle:
   invalid       always an invalid answer
   error500      HTTP 500
   redirect      HTTP 302 to `redirect_to` (the client must not follow it)
+  slow          no response until the stub is closed (the client's timeout fires first)
+  not_json      HTTP 200 with a body that is not JSON
+With `usage` set, the response carries it, as llama.cpp's does (D116).
 With `reply` set, the message content is what it returns for the request body, in any mode that
 answers (the answer pipeline's tests, D111).
 Run as a script (`python tests/tagging_stub.py --port 8099`) to serve until killed.
@@ -18,7 +21,7 @@ import json
 import zlib
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
+from threading import Event, Thread
 from types import TracebackType
 from typing import Any, Self
 
@@ -49,6 +52,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             return
+        if srv.mode == "slow":
+            srv.closing.wait(30)
+            return
+        if srv.mode == "not_json":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"<html>")
+            return
         if srv.mode == "redirect":
             self.send_response(302)
             self.send_header("Location", srv.redirect_to)
@@ -58,7 +69,12 @@ class _Handler(BaseHTTPRequestHandler):
         content = srv.reply(body) if srv.reply else json.dumps(answer_for(user))
         if srv.mode == "invalid" or (srv.mode == "invalid_once" and n == 1):
             content = json.dumps({"topic": "not-a-topic", "sentiment": "positive"})
-        payload = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]})
+        response: dict[str, Any] = {
+            "choices": [{"message": {"role": "assistant", "content": content}}]
+        }
+        if srv.usage is not None:
+            response["usage"] = srv.usage
+        payload = json.dumps(response)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -72,11 +88,14 @@ class StubLlm(ThreadingHTTPServer):
         mode: str = "ok",
         redirect_to: str = "",
         reply: Callable[[dict[str, Any]], str] | None = None,
+        usage: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.mode = mode
         self.redirect_to = redirect_to
         self.reply = reply
+        self.usage = usage
+        self.closing = Event()
         self.requests: list[dict[str, Any]] = []
 
     @property
@@ -93,6 +112,7 @@ class StubLlm(ThreadingHTTPServer):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        self.closing.set()
         self.shutdown()
         self.server_close()
 

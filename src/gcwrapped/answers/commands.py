@@ -5,24 +5,26 @@ The retrieval commands' guards, in the same order: the database must be one of A
 must be local. Only then are the db service and, for the promoted tag model (D92), the llm and
 embed services started. A failure prints `<command>: failed at <step> (<exception type>)`.
 
-answer-eval prints fixed lines only. ask also prints each answer and its cited messages: to the
-terminal, on purpose, and nowhere else. It writes no file and logs nothing, and it reads questions
-from a prompt, because argv is saved in shell history and shown in the process list.
+answer-eval prints fixed lines only. ask also prints each answer and its cited messages, or after
+an abstention the messages the model was shown (D115): to the terminal, on purpose, and nowhere
+else. It writes no file and logs nothing, and it reads questions from a prompt, because argv is
+saved in shell history and shown in the process list.
 """
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import psycopg
 
 from gcwrapped.answers import evaluation, report
+from gcwrapped.answers.excerpts import Source
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
     ANSWERED,
-    INVALID,
     OUTCOMES,
     REQUEST_TIMEOUT_SECONDS,
+    TIMED_OUT,
     Answer,
     AnswerPipeline,
 )
@@ -57,6 +59,7 @@ STEP_RENDER = "render"
 PROMPT = "question (blank line to finish): "
 NOT_IN_CHAT = "not in the chat"
 INVALID_ANSWER = "answer failed: invalid model output"
+TIMED_OUT_ANSWER = "answer failed: model timed out"
 
 
 @dataclass(frozen=True)
@@ -141,23 +144,32 @@ def run_answer_eval(synthetic: bool = False, services: Services | None = None) -
     return 0
 
 
-def answer_lines(answer: Answer) -> list[str]:
-    """What the terminal shows for one answer. Message and model text are untrusted, so control
-    characters are replaced (an escape sequence could rewrite the screen)."""
-    if answer.outcome == ABSTAINED:
-        return [NOT_IN_CHAT]
-    if answer.outcome == INVALID:
-        return [INVALID_ANSWER]
-    cited = (
+def _message_lines(sources: Iterable[Source]) -> list[str]:
+    return [
         SOURCE_LINE_FORMAT.format(
             number=source.number,
             sender=safe_text(source.message.sender),
             sent=source.message.sent_local.strftime(DATE_FORMAT),
             text=safe_text(source.message.text),
         )
-        for source in sorted(answer.cited, key=lambda s: s.number)
-    )
-    return [safe_text(answer.text), "", *cited]
+        for source in sources
+    ]
+
+
+def answer_lines(answer: Answer) -> list[str]:
+    """What the terminal shows for one answer: the text and its cited messages, or for an
+    abstention the messages the model was shown, so a retrieval miss can be told from a cautious
+    model (D115). Message and model text are untrusted, so control characters are replaced (an
+    escape sequence could rewrite the screen)."""
+    if answer.outcome == ABSTAINED:
+        shown = _message_lines(answer.sources)
+        return [NOT_IN_CHAT, "", *shown] if shown else [NOT_IN_CHAT]
+    if answer.outcome == TIMED_OUT:
+        return [TIMED_OUT_ANSWER]
+    if answer.outcome == ANSWERED:
+        cited = _message_lines(sorted(answer.cited, key=lambda s: s.number))
+        return [safe_text(answer.text), "", *cited]
+    return [INVALID_ANSWER]
 
 
 def ask_loop(
@@ -168,17 +180,22 @@ def ask_loop(
     """Ask until a blank line, end of input or Ctrl-C; return the summary lines."""
     counts = dict.fromkeys(OUTCOMES, 0)
     timings = Timings([])
+    prompt_tokens = Timings([])  # for its nearest-rank percentile
     try:
         while (question := terminal.line(PROMPT)) is not None and question.strip():
             began = clock()
             found = answer(question.strip())
-            timings.seconds.append(clock() - began)
+            seconds = clock() - began
+            timings.seconds.append(seconds)
             counts[found.outcome] += 1
-            for line in ("", *answer_lines(found), ""):
+            if found.prompt_tokens is not None:
+                prompt_tokens.seconds.append(found.prompt_tokens)
+            numbers = report.answer_line(len(found.sources), found.prompt_tokens, seconds)
+            for line in ("", *answer_lines(found), "", numbers, ""):
                 terminal.out(line)
     except KeyboardInterrupt:
         pass  # the usual way to stop a slow answer: still report the finished ones
-    return report.render_ask(counts[ANSWERED], counts[ABSTAINED], counts[INVALID], timings)
+    return report.render_ask(counts, timings, prompt_tokens)
 
 
 def run_ask(

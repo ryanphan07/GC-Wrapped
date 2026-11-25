@@ -6,7 +6,8 @@ answers at the configured llm URL, so CI (which never starts the model) skips it
 It sends a sentinel message through the real client and the real model, as a tag request and as
 an answer request (D111), then asserts the sentinel appears nowhere in the llm container's logs,
 and that the endpoints that could show prompts (slots, props, the web UI) are closed. The answer
-request also shows that the pinned image's grammar builds the answer schema.
+request also shows that the pinned image's grammar builds the answer schema and that it reports
+token counts.
 """
 
 import json
@@ -124,6 +125,9 @@ def test_an_answer_request_is_schema_constrained_and_never_reaches_the_server_lo
     assert list(output) == ["answerable", "citations", "answer"]  # the grammar keeps the order
     assert set(output["citations"]) <= {1, 2}
     assert pipeline.parse_answer(body, len(messages))[0] != pipeline.INVALID
+    prompt_tokens, completion_tokens = pipeline.token_usage(body)  # D116
+    assert prompt_tokens is not None and prompt_tokens > 0
+    assert completion_tokens is not None and completion_tokens > 0
     combined = _logs()
     assert "request" in combined.lower() or "slot" in combined.lower()  # we did read real logs
     for secret in (SENTINEL, "dinner is on friday", "bring the soda", "when is dinner"):

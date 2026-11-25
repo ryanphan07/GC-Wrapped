@@ -283,7 +283,44 @@ def test_any_gold_message_makes_a_hit_and_the_first_one_sets_the_rank() -> None:
     assert evaluation.reciprocal_rank(row) == 0.5
 
 
-def test_a_constant_outcome_gives_a_degenerate_interval() -> None:
+@pytest.mark.parametrize(
+    ("successes", "n", "interval"),
+    [
+        (0, 31, (0.0, 0.1103)),  # D117
+        (31, 31, (0.8897, 1.0)),
+        # published score intervals without continuity correction (Newcombe 1998, table I)
+        (81, 263, (0.2553, 0.3662)),
+        (15, 148, (0.0624, 0.1605)),
+        (0, 20, (0.0, 0.1611)),
+        (1, 29, (0.0061, 0.1718)),
+    ],
+)
+def test_the_wilson_interval(successes: int, n: int, interval: tuple[float, float]) -> None:
+    assert evaluation.wilson_interval(successes, n) == pytest.approx(interval, abs=5e-5)
+
+
+def test_the_wilson_bounds_at_the_ends_are_exact_and_the_other_one_leaves_a_width() -> None:
+    for n in range(1, 201):  # float noise must never print a bound as -0.000
+        low, high = evaluation.wilson_interval(0, n)
+        assert low == 0.0 and 0.0 < high < 1.0
+        low, high = evaluation.wilson_interval(n, n)
+        assert high == 1.0 and 0.0 < low < 1.0
+
+
+@pytest.mark.parametrize(("successes", "n"), [(0, 0), (2, 1), (-1, 1)])
+def test_the_wilson_interval_needs_a_count_within_a_total(successes: int, n: int) -> None:
+    with pytest.raises(ValueError):
+        evaluation.wilson_interval(successes, n)
+
+
+def test_recall_has_a_wilson_interval_and_mrr_keeps_the_bootstrap() -> None:
+    result = evaluation.score([_row(n, 1, 0.1) for n in range(1, 6)], questions=5)
+    for k in evaluation.RECALL_AT:
+        assert result.recall[k].interval == evaluation.wilson_interval(5, 5)
+    assert result.mrr.interval == (1.0, 1.0)
+
+
+def test_a_constant_outcome_gives_a_degenerate_bootstrap_interval() -> None:
     assert evaluation.estimate([1.0] * 5).interval == (1.0, 1.0)
     with pytest.raises(evaluation.NoScorableQuestionsError):
         evaluation.score([], questions=3)

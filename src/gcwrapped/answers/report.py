@@ -1,13 +1,17 @@
-"""Fixed-line output for `make answer-eval` and `make ask`'s summary (D112, D113).
+"""Fixed-line output for `make answer-eval`, and for `make ask`'s numbers line and summary
+(D112, D113, D115, D116).
 
 Every line is a fixed label plus numbers or a name from a closed list, checked with fullmatch
-before anything is printed. The one deliberate exception in this package is the answer and its
-cited messages, which `commands` prints to the terminal for `make ask` only.
+before anything is printed. The one deliberate exception in this package is the answer and the
+messages it cites (or, after an abstention, was shown), which `commands` prints to the terminal
+for `make ask` only.
 """
 
 import re
+from collections.abc import Mapping
 
 from gcwrapped.answers.evaluation import EvalResult, Rate
+from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, TIMED_OUT
 from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.retrieval import report as retrieval_report
 from gcwrapped.retrieval.evaluation import METHODS
@@ -21,7 +25,15 @@ _MODELS = "|".join(re.escape(m) for m in REGISTRY)
 _NUM = r"\d+\.\d+"
 _MAYBE = rf"({_NUM}|n/a)"
 _INTERVAL = rf"\[{_NUM}, {_NUM}\]"
-_RATES = ("invalid outputs", "answered", "abstained", "context has gold", "citation hit")
+_TOKENS = r"(\d+|n/a)"
+_RATES = (
+    "invalid outputs",
+    "timed out",
+    "answered",
+    "abstained",
+    "context has gold",
+    "citation hit",
+)
 
 EVAL_SHAPES = (
     rf"target database: ({_DATABASES})",
@@ -45,15 +57,22 @@ EVAL_SHAPES = (
     ),
     rf"p50 seconds per question: {_NUM}",
     rf"p95 seconds per question: {_NUM}",
+    rf"p50 prompt tokens: {_TOKENS}",
+    rf"p95 prompt tokens: {_TOKENS}",
+    rf"max prompt tokens: {_TOKENS}",
     r"answer-eval: ok",
 )
+ANSWER_SHAPE = rf"sources shown: \d+, prompt tokens: {_TOKENS}, seconds: {_NUM}"
 ASK_SHAPES = (
     r"questions asked: \d+",
     r"answered: \d+",
     r"abstained: \d+",
     r"invalid outputs: \d+",
+    r"timed out: \d+",
     rf"p50 seconds per question: {_MAYBE}",
     rf"p95 seconds per question: {_MAYBE}",
+    rf"p50 prompt tokens: {_TOKENS}",
+    rf"p95 prompt tokens: {_TOKENS}",
     r"ask: ok",
 )
 COMMANDS = ("answer-eval", "ask")
@@ -73,6 +92,10 @@ def _rate_lines(name: str, rate: Rate) -> list[str]:
     ]
 
 
+def _tokens(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.0f}"
+
+
 def render_eval(
     database: str,
     source: str,
@@ -84,6 +107,7 @@ def render_eval(
 ) -> list[str]:
     rates = (
         result.invalid,
+        result.timed_out,
         result.answered,
         result.abstained,
         result.context_has_gold,
@@ -107,23 +131,39 @@ def render_eval(
         ),
         f"p50 seconds per question: {result.p50:.3f}",
         f"p95 seconds per question: {result.p95:.3f}",
+        f"p50 prompt tokens: {_tokens(result.prompt_tokens_p50)}",
+        f"p95 prompt tokens: {_tokens(result.prompt_tokens_p95)}",
+        f"max prompt tokens: {_tokens(result.prompt_tokens_max)}",
         "answer-eval: ok",
     ]
     return check_lines(lines, EVAL_SHAPES)
 
 
-def render_ask(answered: int, abstained: int, invalid: int, timings: Timings) -> list[str]:
+def answer_line(sources: int, prompt_tokens: int | None, seconds: float) -> str:
+    """The numbers line after each answer of `make ask` (D115): safe to paste anywhere."""
+    line = (
+        f"sources shown: {sources}, prompt tokens: {_tokens(prompt_tokens)}, seconds: {seconds:.3f}"
+    )
+    return check_lines([line], (ANSWER_SHAPE,))[0]
+
+
+def render_ask(counts: Mapping[str, int], timings: Timings, prompt_tokens: Timings) -> list[str]:
+    """The summary. `counts` is per outcome; `prompt_tokens` holds the reported counts only."""
+
     def seconds(percent: int) -> str:
         value = timings.percentile(percent)
         return "n/a" if value is None else f"{value:.3f}"
 
     lines = [
-        f"questions asked: {answered + abstained + invalid}",
-        f"answered: {answered}",
-        f"abstained: {abstained}",
-        f"invalid outputs: {invalid}",
+        f"questions asked: {sum(counts.values())}",
+        f"answered: {counts[ANSWERED]}",
+        f"abstained: {counts[ABSTAINED]}",
+        f"invalid outputs: {counts[INVALID]}",
+        f"timed out: {counts[TIMED_OUT]}",
         f"p50 seconds per question: {seconds(50)}",
         f"p95 seconds per question: {seconds(95)}",
+        f"p50 prompt tokens: {_tokens(prompt_tokens.percentile(50))}",
+        f"p95 prompt tokens: {_tokens(prompt_tokens.percentile(95))}",
         "ask: ok",
     ]
     return check_lines(lines, ASK_SHAPES)

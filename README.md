@@ -2,7 +2,7 @@
 
 Group chat analytics platform: chat exports go into a Postgres warehouse (dbt), get enriched by an LLM, power RAG Q&A with citations, and produce a "Wrapped" profile per member.
 
-Status: Phase 2 (enrichment + evals) has started. Phase 1 is done: parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e`. The per-sender consent ledger is in. See [docs/STATUS.md](docs/STATUS.md).
+Status: Phase 3 (RAG + privacy + deploy) is in progress: local embeddings, retrieval and answers with citations are built and run on synthetic data. Phase 1 (parser, Postgres loader, dbt models, the Airflow DAG, the dashboard and `make e2e`) and Phase 2 (enrichment + evals) are done. The per-sender consent ledger is in. See [docs/STATUS.md](docs/STATUS.md).
 
 ## Architecture
 

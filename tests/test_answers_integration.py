@@ -1,5 +1,5 @@
-"""Answers over the warehouse (D111-D113), against gcw_test: the pipeline, `make answer-eval`,
-`make ask` and the pruning of answer results.
+"""Answers over the warehouse (D111-D113, D115, D116), against gcw_test: the pipeline,
+`make answer-eval`, `make ask` and the pruning of answer results.
 
 SQL, retrieval, the prompt, the llama.cpp clients and the commands run for real, against the stub
 servers in tests/embedding_stub.py and tests/tagging_stub.py. The warehouse, its stand-in dbt views
@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,14 @@ import pytest
 from gcwrapped import consent_prune
 from gcwrapped.answers import commands, evaluation, report
 from gcwrapped.answers.excerpts import load_excerpts
-from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, Answer, AnswerPipeline
+from gcwrapped.answers.pipeline import (
+    ABSTAINED,
+    ANSWERED,
+    INVALID,
+    TIMED_OUT,
+    Answer,
+    AnswerPipeline,
+)
 from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for
 from gcwrapped.config import get_database_settings
 from gcwrapped.retrieval import commands as retrieval_commands
@@ -58,6 +66,7 @@ MODEL_ID = model.MODEL_ID
 VERSION = prompt_version_for(model.spec_for(MODEL_ID).chat_template_kwargs)
 REPLY_SENTINEL = f"{SENTINEL}REPLY"
 NO_SERVICES = commands.Services(db=None, llm=None, embed=None)
+USAGE = {"prompt_tokens": 321, "completion_tokens": 12}
 _LINE = re.compile(r"^\[(\d+)\] (.*)$")
 
 
@@ -88,7 +97,7 @@ def _reply(body: dict[str, Any]) -> str:
 
 @pytest.fixture
 def llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubLlm]:
-    with StubLlm(reply=_reply) as server:
+    with StubLlm(reply=_reply, usage=USAGE) as server:
         monkeypatch.setenv("GCW_LLM_URL", server.url)
         yield server
 
@@ -125,6 +134,7 @@ def test_overlapping_windows_show_each_message_once_with_local_times(
     assert sent["items"]["enum"] == list(range(1, len(found.sources) + 1))
     assert found.outcome == ANSWERED
     assert [NAME[s.message.message_id] for s in found.cited] == ["a3"]
+    assert (found.prompt_tokens, found.completion_tokens) == (321, 12)
 
 
 @pytest.mark.parametrize("method", ["vector", "hybrid"])
@@ -181,6 +191,18 @@ def test_a_refused_request_is_an_invalid_output_and_is_not_retried(
     with StubLlm(mode="error500") as broken:
         found = _answer(embedded, stub, broken, "when is the midterm")
     assert (found.outcome, found.citations, len(broken.requests)) == (INVALID, (), 1)
+    assert (found.prompt_tokens, found.completion_tokens) == (None, None)
+
+
+def test_a_request_that_times_out_is_its_own_outcome_and_is_not_retried(
+    embedded: str, stub: Any
+) -> None:
+    with StubLlm(mode="slow") as slow, psycopg.connect(embedded, autocommit=True) as conn:
+        chat = LlamaCppChat(slow.url, model_id=MODEL_ID, timeout=0.2)
+        pipeline = AnswerPipeline(conn, Retriever(conn, _client(stub)), chat, "vector")
+        found = pipeline.answer("when is the midterm")
+    assert (found.outcome, found.citations, len(slow.requests)) == (TIMED_OUT, (), 1)
+    assert found.sources and found.prompt_tokens is None
 
 
 # --- make answer-eval (D112) -------------------------------------------------------------------
@@ -216,6 +238,12 @@ def test_answer_eval_prints_fixed_lines_and_stores_ids_hashes_and_numbers_only(
     ]
     for name in ("invalid outputs", "answered", "abstained", "citation hit"):
         assert f"{name}: 1" in lines
+    assert "timed out: 0" in lines
+    assert lines[-4:-1] == [
+        "p50 prompt tokens: 321",
+        "p95 prompt tokens: 321",
+        "max prompt tokens: 321",
+    ]
     assert lines[-1] == "answer-eval: ok"
     secrets = (str(label_dir), "which friday", "midterm", "ramen", REPLY_SENTINEL)
     _assert_clean(out.out, out.err, caplog.text, extra=secrets)
@@ -233,10 +261,31 @@ def test_answer_eval_prints_fixed_lines_and_stores_ids_hashes_and_numbers_only(
         ("q002", ANSWERED),
         ("q003", ABSTAINED),
     ]
+    assert {(r.prompt_tokens, r.completion_tokens) for r in results.rows} == {(321, 12)}
     midterm = results.rows[1]
     assert midterm.cited_message_ids == (ID["a3"],) and midterm.citation_hit
     assert f"context has gold: {sum(r.context_has_gold for r in results.rows)}" in lines
     assert len(llm.requests) == 3  # once per scorable question, never retried
+
+
+def test_answer_eval_counts_timeouts_apart_from_invalid_outputs(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(commands, "REQUEST_TIMEOUT_SECONDS", 0.2)
+    with StubLlm(mode="slow") as slow:
+        monkeypatch.setenv("GCW_LLM_URL", slow.url)
+        assert commands.run_answer_eval(services=NO_SERVICES) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.EVAL_SHAPES)
+    assert "invalid outputs: 0" in lines and "timed out: 3" in lines
+    assert "timed out rate: 1.000" in lines
+    assert "timed out rate 95% interval: [0.439, 1.000]" in lines
+    assert "max prompt tokens: n/a" in lines
+    rows = evaluation.read_results(label_dir, MODEL_ID, VERSION).rows
+    assert [(r.outcome, r.prompt_tokens) for r in rows] == [(TIMED_OUT, None)] * 3
 
 
 def test_answer_eval_uses_the_promoted_retrieval_method(
@@ -373,15 +422,31 @@ def test_ask_answers_at_the_prompt_and_writes_and_logs_nothing(
     printed = "\n".join(terminal.printed)
     assert REPLY_SENTINEL in printed and "echo midterm tomorrow" in printed
     assert re.search(r"^\[\d+\] SENDERANA, 2023-12-31 19:20: echo midterm", printed, re.M)
-    assert "not in the chat" in printed and "answer failed: invalid model output" in printed
-    summary = terminal.printed[-7:]
+    assert "answer failed: invalid model output" in printed
+    # the abstention (the second question) is followed by the messages the model was shown
+    shown = _numbered(_user(llm.requests[1]))
+    start = terminal.printed.index("not in the chat")
+    end = start + 2 + len(shown)
+    assert terminal.printed[start + 1] == ""
+    on_screen = terminal.printed[start + 2 : end]
+    assert [line.split("]")[0] for line in on_screen] == [f"[{n}" for n in shown]
+    assert on_screen == [f"[{n}] {line}" for n, line in shown.items()]
+    numbers = terminal.printed[end + 1]
+    assert numbers.startswith(f"sources shown: {len(shown)}, prompt tokens: 321, seconds: ")
+    all_numbers = [line for line in terminal.printed if line.startswith("sources shown: ")]
+    assert len(all_numbers) == 3
+    for line in all_numbers:
+        check_lines([line], (report.ANSWER_SHAPE,))
+    summary = terminal.printed[-10:]
     check_lines(summary, report.ASK_SHAPES)
-    assert summary[:4] == [
+    assert summary[:5] == [
         "questions asked: 3",
         "answered: 1",
         "abstained: 1",
         "invalid outputs: 1",
+        "timed out: 0",
     ]
+    assert summary[7:9] == ["p50 prompt tokens: 321", "p95 prompt tokens: 321"]
     _assert_clean("\n".join(summary), extra=(REPLY_SENTINEL, "midterm", "ramen"))
 
 
@@ -452,10 +517,18 @@ def test_prune_drops_answer_rows_that_refer_to_an_ineligible_message(
             (ID[cited],) if cited else (),
             ANSWERED if cited else ABSTAINED,
             0.1,
+            100,
+            5,
         )
 
     rows = (
         row(1, "e1", "e1", ["e1", "e2"], "e1"),  # stays
+        replace(  # stays, and survives the rewrite as it was
+            row(6, "e1", "e1", ["e2"]),
+            outcome=TIMED_OUT,
+            prompt_tokens=None,
+            completion_tokens=None,
+        ),
         row(2, "e1", "e1", ["e1", "cy"]),  # shown
         row(3, "e1", "cy", ["e2"]),  # gold
         row(4, "cy", "e1", ["e2"]),  # source
@@ -474,7 +547,7 @@ def test_prune_drops_answer_rows_that_refer_to_an_ineligible_message(
 
     _prune(capsys, apply=True)
     kept = evaluation.read_results(tmp_path, MODEL_ID, VERSION)
-    assert [r.question_id for r in kept.rows] == ["q001"]
+    assert kept.rows == rows[:2]
     assert (kept.embed_version, kept.corpus_hash, kept.method) == ("0" * 12, "1" * 12, "vector")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert "prediction rows to prune: 0" in _prune(capsys, apply=False)
