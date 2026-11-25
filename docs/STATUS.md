@@ -1,38 +1,40 @@
 # Status
-Last session: 2026-11-25 — S6a: answer diagnostics and eval reporting fixes (synthetic)
+Last session: 2026-11-25 — Burst finish: hand grading, answer prompt A/B, eval-all, Wrapped mart, Ask and Wrapped pages, README (synthetic)
 
 ## Phase & state
-Phase 3 (RAG + privacy + deploy): `make ask` shows what the model saw when it abstains, answer-eval reports prompt size and timeouts, single rates use Wilson intervals, consent-prune handles old eval formats. Synthetic only.
-embeddings [x] retrieval eval [x synthetic] answers (S6, S6a) [x synthetic] real questions [ ] real retrieval eval + compare [ ] real answer eval [ ] hand grading (S6b) [ ] web app (S7) [ ] deploy (S8) [ ] usage window [ ]
+Phase 3: everything the burst needs is built (D119-D125). The synthetic end-to-end run is INCOMPLETE (see Not verified). What is left is Ryan's real runs and review.
+embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x built] hand grading [x built] Ask + Wrapped [x] README [x] real questions [ ] real evals [ ] real grades [ ] METRICS rows [ ] deploy, usage window (later, D119)
 
 ## Done this session
-- docs: D115-D118; CLAUDE.md (phase, ask, answer-eval, consent-prune). Resolved: README.md:5 said Phase 2 had started.
-- D115/D116: tagging/llamacpp.py (ChatTimeout, ChatRefused); answers/ (timed_out outcome, token counts, shown excerpts on abstention, numbers line, new summary and eval lines). Resolved: a timeout counted as invalid.
-- D117: retrieval/evaluation.py `wilson_interval`, `rate` (recall@k and the answer rates; MRR and compare keep the bootstrap).
-- D118: consent_prune.py pruning reader `read_row_ids`, "old-format eval files to delete: N".
-- Tests: test_answers{,_integration}.py, test_retrieval.py, test_consent_prune_integration.py, test_llm_server_local.py (token counts), tagging_stub.py (slow, not_json, usage).
+- answers/: prompt.py variant b; comparison.py (answer-compare, verdict, default, promote); grades.py and commands.py (grade-answers, grade-summary); report.py lines. migrations/008. eval_all.py. retrieval compare reports its winner. consent_prune.py covers grades/*.csv. tagging/scoring.py `nearest_rank` for percentiles. Makefile and cli.py targets.
+- dbt: mart_member_wrapped (view), schema, unit and singular tests, reader grant. dashboard/: app.py router, views/{activity,wrapped,ask}.py; gcwrapped/dashboard/{ask,wrapped,services}.py; compose, Dockerfile, .streamlit/config.toml. README.md, docs/img/. CI: view list, mart and revocation checks.
+- Review fixes (D125): server.allowedHosts, one keypress per grading prompt, grade saves re-read the file, migration test list. Comments corrected in fct_message_tags.sql and retrieval/window.py. D119-D125; CLAUDE.md. Resolved: profiles not built; README said test-integration resets raw in gcw_dev.
 
 ## Deviations from brief
-- No write-time check of answer rows exists, so none was extended: timed_out is validated on read and covered by write/read round trips.
-- MRR@10 keeps the bootstrap (D117), so it can still be [0,0] or [1,1] if every reciprocal rank is equal; no measured interval is.
-- D118: an old-format file with an empty rows list has no readable IDs and fails closed. "Old format" is any file only the pruning reader accepts.
-- ChatTimeout is a timeout awaiting or reading the response; one while connecting or sending still means server unavailable (unchanged).
-- Added "answer failed: model timed out" for ask. Token percentiles cover rows with a count. D115-D118 are dated 2026-11-25. Synthetic runs set TMPDIR to the scratchpad.
+- Part I partial: Claude Code stopped `eval-all` for low system memory during `answer-eval b`; it was not restarted (needs Ryan's go-ahead). Dev runs used GCW_LLM_PORT=8091: something outside the dev project holds 8081 (not inspected).
+- `make answer-promote VARIANT=a|b`. grade-answers ends with four fixed count lines; new fixed failure line for dashboard-up. AnswerPipeline requires `variant`. answer-compare skips questions with ineligible references (D87); grade-summary counts the whole file.
+- D124: mart is a view (CI view assertion updated); dashboard gets pipeline DB credentials; "embed" added to the local host names. README references docs/img/; old docs/images/ screenshot left in place.
+- Screenshots ran in Microsoft's Playwright container (host Chromium libraries need sudo); script not committed.
+- Review items declined: grade rows record no retrieval method or question hash (D120 fixes the columns); reply time not narrowed (D125); Ask page does not check the served model. Part A's commit was gated on a piped command (tests passed); later commits gate on make's exit status.
 
 ## Checks
-- make lint: pass. make test: 986 passed, 226 deselected (958 before). make test-integration (llm and embed up): 226 passed, 0 skipped (202 before). dbt build gcw_dev: PASS=190 WARN=0 ERROR=0 TOTAL=190. Unchanged (pinned in test_answers.py): tagger prompt 11ac16d16643, answer prompts 23294c5ced29 / 93518209d700, embed version e3ac6a56e412. CI (PR #50, commit before this line): 14 checks pass (7 jobs in runs 45576711833 and 45576729096); eval-gate (floors 0.55 / 0.60) topic 0.650, sentiment 0.750 in the first, 0.683 and 0.733 in the second (same commit; main run 45509161069 also gave the second pair); retrieval-gate 156 embedded then 0, recall@5 0.968 (floor 0.85), 0 dropped.
-- gcw_dev, laptop CPU, embed e3ac6a56e412. `make embed SYNTHETIC=1`: 223 eligible, 0 embedded, 223 current. retrieval-eval (31 questions, 0 dropped): vector recall@1 0.323 [0.186, 0.499], @5 0.968 [0.838, 0.994], @10 1.000 [0.890, 1.000], MRR@10 0.591 [0.489, 0.700], p50 0.187 s, p95 0.273 s; hybrid @1 0.323 [0.186, 0.499], @5 0.935 [0.793, 0.982], @10 1.000 [0.890, 1.000], MRR@10 0.551 [0.440, 0.672], p50 0.159 s, p95 0.188 s. compare: difference -0.032 [-0.161, 0.097], winner vector.
-- `make answer-eval SYNTHETIC=1` (qwen3.5-4b-q4_k_m, prompt 93518209d700, vector): 31 scored; invalid 0 [0.000, 0.110]; timed out 0 [0.000, 0.110]; answered 25, 0.806 [0.637, 0.908]; abstained 6, 0.194 [0.092, 0.363]; context has gold 30, 0.968 [0.838, 0.994]; citation hit 25, 0.806 [0.637, 0.908]; p50 11.254 s, p95 17.889 s; prompt tokens p50 515, p95 629, max 669.
-- `make ask SYNTHETIC=1`, three questions piped: answered 1, abstained 2, invalid 0, timed out 0; p50 12.252 s, p95 17.862 s; prompt tokens p50 553, p95 694. Both abstentions listed the shown messages (11 and 7); each answer had its numbers line; no file changed under TMPDIR or the repo (data/ not looked at).
-- Pinned llm server, one synthetic prompt sent 3 times (scratchpad script): usage.prompt_tokens 226 each time, with 0 then 222 cached, so cached tokens are counted. docker stats after ask: llm 5.464GiB, embed 1.05GiB of 9.711GiB.
+- make lint: pass. make test: 1086 passed, 271 deselected (986 before). make test-integration with llm and embed DOWN: 268 passed, 3 skipped (local server tests). make test-warehouse: 22 passed. dbt build gcw_dev: PASS=215 WARN=0 ERROR=0 TOTAL=215 (190 before). Pins unchanged: tagger 11ac16d16643, answer A 23294c5ced29 / 93518209d700, embed e3ac6a56e412; answer B 89b98c82df03 / 1550fccbeddf (new).
+- `make eval-all SYNTHETIC=1` (partial; embed e3ac6a56e412, qwen3.5-4b-q4_k_m): embed ok, 223 eligible, 0 embedded, 223 current. vector (31 scored, 0 dropped) recall@1 0.323 [0.186, 0.499], @5 0.968 [0.838, 0.994], @10 1.000 [0.890, 1.000], MRR@10 0.591 [0.489, 0.700], p50 0.161 s, p95 0.205 s; hybrid @1 0.323 [0.186, 0.499], @5 0.935 [0.793, 0.982], @10 1.000 [0.890, 1.000], MRR@10 0.551 [0.440, 0.672], p50 0.138 s, p95 0.200 s; compare -0.032 [-0.161, 0.097], latency met yes, winner vector.
+- Same run, answer-eval a (93518209d700): 31 scored; invalid 0, timed out 0 [0.000, 0.110]; answered 25, 0.806 [0.637, 0.908]; abstained 6, 0.194 [0.092, 0.363]; context has gold 30, 0.968 [0.838, 0.994]; citation hit 25, 0.806 [0.637, 0.908]; p50 10.565 s, p95 17.934 s; prompt tokens p50 515, p95 629, max 669.
+- Synthetic stack: dashboard-up healthy; Ask answered with a citation (docs/img/ask.png); websocket Host localhost and 127.0.0.1 got 101, another name 403; a revoked sender's mart row went 1 to 0 with no dbt build (rolled back).
 
 ## Not verified
-- Real-data step (Ryan): `make ask` on real data after merge; real prompt sizes, latency and answer quality are unmeasured. retrieval-eval, compare and answer-eval wait for the 100 questions.
+- Synthetic: answer-eval b, answer-compare with the real model, `grade-answers SYNTHETIC=1 N=5`, `grade-summary SYNTHETIC=1` (all covered by stub tests only). Free about 7 GB, then `make eval-all SYNTHETIC=1`, `printf cycycycycy | make grade-answers SYNTHETIC=1 N=5`, `make grade-summary SYNTHETIC=1`, `make test-integration` with llm and embed up.
+- README quickstart not run from a fresh clone; Mermaid diagram not rendered. Grading keys tested on a pseudo-terminal, not by hand.
+- Real data (Ryan), in order: eval-all, grade-answers, grade-summary, real-ingest (builds dbt), dashboard-up (PR body block).
 
 ## Open issues and questions
-- Carried: Read(./data/**) does not cover Bash `cat data/...`; P2-5c items (placeholder NAME wildcard, pre-D95 METRICS rows not comparable); `gcw tag --no-start` does not verify the llm model; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic slow (about 9 min, mostly its third step); label files of a purged thread stay (frozen samples and skips hold ids); metrics.py reports external-eligible only; Qwen3.5-4B ~1.6x slower than the D90 model; test_llm_server_local fails if llm serves another model; profiles not built. PR 47 chores: ci.yml allowlist, model re-hash check, METRICS placeholder row.
-- One revocation plus consent-prune removes every stored retrieval or answer row that returned that sender: rerun the evals. A prompt near the token worst case would likely exceed the 600 s answer timeout (now counted as timed out).
-- tests/synthetic/instagram.py:297 writes "call ended", which dbt/seeds/instagram_placeholder_patterns.csv:11 does not match, so synthetic call messages count as user text and show up as answer sources. Real call wording not checked here (text-audit is Ryan's).
+- tagging/commands.py:63 start_llm (and embed): if another process holds the port, a later start can report healthy with no network, and the client talks to whatever holds the port. Give each stack its own GCW_LLM_PORT.
+- Planning: fct_message_tags and agg_tags_by_* keep a revoked sender's rows until the next dbt build, so D119's "consent-prune removes everything" is too strong; Activity marts include non-consented senders, against CLAUDE.md "excluded from everything"; Wrapped reply time uses others' timestamps (D125); consent_priorities.csv is never pruned.
+- Do not promote or re-ingest between grading sessions: one grades file can mix methods or corpora; a reworded question keeps its grade. dashboard/ask.py does not check the served model (rerun dashboard-up after tagging with another).
+- A revocation plus consent-prune removes stored retrieval, answer and grade rows that cite that sender: rerun evals. A prompt near the token worst case would likely exceed the 600 s timeout.
+- tests/synthetic/instagram.py:297 "call ended" does not match dbt/seeds/instagram_placeholder_patterns.csv:11, so synthetic calls count as user text. docs/images/dashboard-synthetic.png is unreferenced.
+- Carried: Read(./data/**) does not cover Bash `cat data/...`; P2-5c items (placeholder NAME wildcard, pre-D95 METRICS rows); `gcw tag --no-start` does not verify the llm model; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic slow; label files of a purged thread stay; metrics.py external-eligible only; Qwen3.5-4B slower than D90's model; test_llm_server_local fails if llm serves another model; PR 47 chores (ci.yml allowlist, model re-hash check, METRICS placeholder row).
 
 ## Suggested next session
-S6b hand grading of answer correctness.
+Finish the synthetic Part I run, then Ryan's real batch and its METRICS.md rows.
