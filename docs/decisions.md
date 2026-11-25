@@ -681,3 +681,26 @@ Alternative: a smaller context that holds ordinary text only; retrying a refused
 Why: each is fixed before any real answer, keeps one eligibility rule wherever text is read, and bounds the prompt by what D111 shows the model.
 Tradeoff: the larger context costs memory on every llm start, tagging included; a prompt near the worst case would be slow enough on the laptop CPU to hit the timeout.
 
+## D115 — 2026-11-25 — make ask shows what the model was shown when it abstains
+Decision: When an answer abstains, make ask prints "not in the chat" and then the numbered excerpts the model was shown, in the same line format as cited messages, control characters replaced, to the terminal only. Every answer (answered, abstained, invalid, timed out) is followed by one fixed numbers-only line: sources shown, prompt tokens, seconds. The summary lines add prompt tokens p50 and p95 and a timed out count. Nothing is written anywhere; D113 still holds.
+Alternative: a flag that turns sources on; an aggregate-only diagnostic target.
+Why: an abstention with no context cannot be diagnosed. Ryan reads his own chat locally, and make ask already prints chat text to the terminal for cited messages (D113), so this adds no new channel. The numbers line can be pasted without any text.
+Tradeoff: more chat text on screen per question. What web app users see is decided separately in S7.
+
+## D116 — 2026-11-25 — Answer eval records prompt size and separates timeouts
+Decision: The answer pipeline records the server's usage.prompt_tokens and usage.completion_tokens (null when absent). A request that times out is its own outcome, timed_out, instead of invalid; invalid stays for refused requests and bad output. answer-eval prints the timed out count, rate and interval, and prompt tokens p50, p95 and max. Stored answer rows gain the two token counts (numbers only).
+Alternative: count tokens with a separate /tokenize request; keep timeouts under invalid.
+Why: a timeout is a laptop-speed failure and a bad output is a model failure; they have different fixes. The llm context size (D114) and S7 latency work need measured prompt sizes on real data, not a worst case.
+Tradeoff: one more outcome everywhere outcomes are counted; answers files written before this change no longer read (none exist on real data; rerun answer-eval).
+
+## D117 — 2026-11-25 — Single rates use Wilson score intervals
+Decision: Every reported rate over questions in the retrieval and answer reports (recall@1/5/10, invalid, timed out, answered, abstained, context has gold, citation hit) uses the Wilson score 95% interval. MRR@10 and retrieval-compare's paired difference keep the bootstrap. Win rules (D104) and CI floors (D100, D108) are unchanged; they use point estimates or the paired bootstrap. Tagging reports are unchanged.
+Alternative: keep the percentile bootstrap for everything.
+Why: the percentile bootstrap gives [0, 0] or [1, 1] when every question fails or succeeds, which claims a certainty a 31- or 100-question set does not have (Wilson for 0 of 31 is [0.000, 0.110]).
+Tradeoff: two interval methods in the reports; intervals already in STATUS.md (all synthetic) shift slightly.
+
+## D118 — 2026-11-25 — consent-prune never fails because of an old eval file format
+Decision: consent-prune reads retrieval and answer eval files with a pruning reader that needs only each row's message IDs, each checked against the message ID pattern. A file the strict reader accepts is pruned row by row, as today. A file only the pruning reader accepts (an old format: no corpus_hash, or no token fields) is deleted whole if any row refers to an ineligible message, else left untouched; it prints "old-format eval files to delete: N". A file with no readable row IDs still fails closed, as today. compare, promote and the eval readers stay strict.
+Alternative: fail closed on any file the strict reader rejects (current behavior); delete every old-format file.
+Why: a consent revocation must never be blocked by an eval file's format. Old-format files cannot be compared anyway, and every eval file can be regenerated.
+Tradeoff: an old-format file with one ineligible reference loses all its rows, not just that one.

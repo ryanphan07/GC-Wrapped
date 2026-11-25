@@ -1,5 +1,6 @@
-"""Answers without a database (D111-D113): excerpts, the prompt and its version, output checks
-against a stub llm server, the eval arithmetic, private files, fixed output and terminal output.
+"""Answers without a database (D111-D113, D115-D117): excerpts, the prompt and its version, output
+checks against a stub llm server, the eval arithmetic, private files, fixed output and terminal
+output.
 """
 
 import hashlib
@@ -16,15 +17,30 @@ import pytest
 
 from gcwrapped.answers import commands, evaluation, excerpts, prompt, report
 from gcwrapped.answers.excerpts import Source, SourceMessage, build_excerpts
-from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, Answer, parse_answer
+from gcwrapped.answers.pipeline import (
+    ABSTAINED,
+    ANSWERED,
+    INVALID,
+    OUTCOMES,
+    TIMED_OUT,
+    Answer,
+    parse_answer,
+    token_usage,
+)
 from gcwrapped.cli import build_parser
 from gcwrapped.labeling.schema import QuestionLabel
+from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval import window
 from gcwrapped.tagging import model
 from gcwrapped.tagging.evaluation import OutsideRepoError
-from gcwrapped.tagging.llamacpp import ChatFailure, LlamaCppChat
+from gcwrapped.tagging.llamacpp import (
+    ChatRefused,
+    ChatTimeout,
+    LlamaCppChat,
+    LlamaCppProvider,
+)
 from gcwrapped.tagging.prompt import prompt_version_for as tag_prompt_version_for
-from gcwrapped.tagging.provider import ProviderUnavailable
+from gcwrapped.tagging.provider import ProviderUnavailable, TagFailure
 from gcwrapped.tagging.report import ShapeError, check_lines
 from gcwrapped.tagging.runner import Timings
 from tagging_stub import StubLlm
@@ -281,18 +297,62 @@ def test_a_response_of_the_wrong_shape_is_invalid(body: object) -> None:
     assert parse_answer(body, 3) == (INVALID, "", ())
 
 
-def test_a_server_error_is_a_chat_failure_and_no_server_stops_the_run() -> None:
-    def complete(url: str) -> object:
-        return LlamaCppChat(url, model_id=MODEL_ID).complete(
-            "s", "u", schema_name="answer", schema=prompt.response_schema(1), max_tokens=1
-        )
+def _complete(url: str, timeout: float = 5) -> object:
+    return LlamaCppChat(url, model_id=MODEL_ID, timeout=timeout).complete(
+        "s", "u", schema_name="answer", schema=prompt.response_schema(1), max_tokens=1
+    )
 
-    with StubLlm(mode="error500") as stub, pytest.raises(ChatFailure):
-        complete(stub.url)
+
+@pytest.mark.parametrize("mode", ["error500", "not_json", "redirect"])
+def test_an_http_error_or_a_body_that_is_not_json_is_refused(mode: str) -> None:
+    with StubLlm(mode=mode, redirect_to="http://127.0.0.1:1") as stub, pytest.raises(ChatRefused):
+        _complete(stub.url)
+
+
+def test_a_slow_server_is_a_timeout_not_a_refusal() -> None:
+    with StubLlm(mode="slow") as stub, pytest.raises(ChatTimeout):
+        _complete(stub.url, timeout=0.2)
+
+
+def test_the_tagger_still_treats_a_timeout_as_one_retryable_failure() -> None:
+    with StubLlm(mode="slow") as stub, pytest.raises(TagFailure):
+        LlamaCppProvider(stub.url, model_id=MODEL_ID, timeout=0.2).tag("S", "U")
+    assert len(stub.requests) == 2
+
+
+def test_no_server_stops_the_run() -> None:
     with StubLlm() as gone:
         url = gone.url
     with pytest.raises(ProviderUnavailable):
-        complete(url)
+        _complete(url)
+
+
+def test_the_token_counts_come_from_the_response_usage() -> None:
+    usage = {"prompt_tokens": 812, "completion_tokens": 37, "total_tokens": 849}
+    with StubLlm(usage=usage) as stub:
+        assert token_usage(_complete(stub.url)) == (812, 37)
+
+
+def test_a_response_without_usage_has_no_token_counts() -> None:
+    with StubLlm() as stub:
+        assert token_usage(_complete(stub.url)) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("body", "counts"),
+    [
+        (None, (None, None)),
+        ({"usage": None}, (None, None)),
+        ({"usage": [1, 2]}, (None, None)),
+        ({"usage": {"prompt_tokens": 5}}, (5, None)),
+        ({"usage": {"prompt_tokens": "5", "completion_tokens": True}}, (None, None)),
+        ({"usage": {"prompt_tokens": -1, "completion_tokens": 1.5}}, (None, None)),
+    ],
+)
+def test_a_usage_value_that_is_not_a_count_is_null(
+    body: object, counts: tuple[int | None, int | None]
+) -> None:
+    assert token_usage(body) == counts
 
 
 # --- the eval ----------------------------------------------------------------------------------
@@ -305,6 +365,7 @@ def _row(
     shown: tuple[int, ...] = (1, 2, 3),
     cited: tuple[int, ...] = (1,),
     seconds: float = 1.0,
+    tokens: int | None = None,
 ) -> evaluation.Row:
     return evaluation.Row(
         f"q{n:03d}",
@@ -315,6 +376,8 @@ def _row(
         tuple(_id(m) for m in cited) if outcome == ANSWERED else (),
         outcome,
         seconds,
+        tokens,
+        None if tokens is None else 7,
     )
 
 
@@ -325,30 +388,47 @@ def test_the_counts_separate_retrieval_misses_from_generation_misses() -> None:
         _row(3, ABSTAINED),  # gold shown, abstained
         _row(4, INVALID, shown=(2, 3)),  # gold not shown
         _row(5, cited=(2,), shown=(2, 3)),
+        _row(6, TIMED_OUT, shown=(2, 3)),
     ]
-    result = evaluation.score(rows, questions=7)
-    assert (result.questions, result.dropped, result.scored) == (7, 2, 5)
+    result = evaluation.score(rows, questions=8)
+    assert (result.questions, result.dropped, result.scored) == (8, 2, 6)
     assert (result.answered.count, result.abstained.count, result.invalid.count) == (3, 1, 1)
+    assert result.timed_out.count == 1
     assert (result.context_has_gold.count, result.citation_hit.count) == (3, 1)
-    assert result.citation_hit.estimate.value == pytest.approx(0.2)
-    low, high = result.citation_hit.estimate.interval
-    assert 0.0 <= low <= 0.2 <= high <= 1.0
+    assert result.citation_hit.estimate.value == pytest.approx(1 / 6)
+    assert result.citation_hit.estimate.interval == retrieval.wilson_interval(1, 6)
+
+
+def test_a_rate_that_is_all_or_nothing_keeps_an_interval_with_a_width() -> None:
+    result = evaluation.score([_row(1), _row(2)], questions=2)
+    assert result.answered.estimate.interval == retrieval.wilson_interval(2, 2)
+    assert 0.0 < result.answered.estimate.interval[0] < 1.0
+    assert 0.0 < result.timed_out.estimate.interval[1] < 1.0
+
+
+def test_prompt_token_percentiles_cover_the_rows_that_have_a_count() -> None:
+    rows = [_row(n, tokens=t) for n, t in enumerate((300, 100, None, 900, 200), start=1)]
+    result = evaluation.score(rows, questions=5)
+    found = (result.prompt_tokens_p50, result.prompt_tokens_p95, result.prompt_tokens_max)
+    assert found == (200, 900, 900)
+    bare = evaluation.score([_row(1)], questions=1)
+    assert (bare.prompt_tokens_p50, bare.prompt_tokens_max) == (None, None)
 
 
 def test_run_questions_records_what_was_shown_and_cited_and_never_the_text() -> None:
     sources = (Source(1, _message(4)), Source(2, _message(5)))
-    found = Answer(ANSWERED, f"{SENTINEL} [2]", sources, (2,))
+    found = Answer(ANSWERED, f"{SENTINEL} [2]", sources, (2,), 640, 21)
     question = QuestionLabel("q001", f"{SENTINEL}?", (_id(5),), _id(5), "2026-01-01T00:00:00+00:00")
     (row,) = evaluation.run_questions(lambda q: found, [question], clock=iter([1.0, 3.5]).__next__)
     assert row.numbered_message_ids == (_id(4), _id(5))
     assert row.cited_message_ids == (_id(5),) and row.seconds == 2.5
+    assert (row.prompt_tokens, row.completion_tokens) == (640, 21)
     assert SENTINEL not in repr(row)
 
 
 def _results(*rows: evaluation.Row) -> evaluation.Results:
-    return evaluation.Results(
-        VERSION, "ba9876543210", "vector", rows or (_row(1), _row(2, INVALID))
-    )
+    rows = rows or (_row(1, tokens=500), _row(2, INVALID), _row(3, TIMED_OUT))
+    return evaluation.Results(VERSION, "ba9876543210", "vector", rows)
 
 
 def test_results_round_trip_privately_and_hold_ids_hashes_and_numbers(tmp_path: Path) -> None:
@@ -368,14 +448,17 @@ def test_results_round_trip_privately_and_hold_ids_hashes_and_numbers(tmp_path: 
         "cited_message_ids",
         "outcome",
         "seconds",
+        "prompt_tokens",
+        "completion_tokens",
     }
+    assert body["rows"][2]["outcome"] == "timed_out" and body["rows"][2]["prompt_tokens"] is None
     assert [p.name for p in path.parent.iterdir()] == [path.name]
 
 
 def test_a_missing_or_malformed_results_file_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(evaluation.AnswerResultsError):
         evaluation.read_results(tmp_path, MODEL_ID, VERSION)
-    evaluation.write_results(tmp_path, MODEL_ID, VERSION, _results(_row(1)))
+    evaluation.write_results(tmp_path, MODEL_ID, VERSION, _results(_row(1, tokens=500)))
     path = tmp_path / "answers" / f"{MODEL_ID}__{VERSION}.json"
     good = path.read_text()
     for bad in (
@@ -387,7 +470,16 @@ def test_a_missing_or_malformed_results_file_fails_closed(tmp_path: Path) -> Non
         good.replace('"answered"', '"abstained"'),  # an abstention cites nothing
         good.replace('"seconds": 1.0', '"seconds": -1'),
         good.replace('"corpus_hash"', '"corpus"'),
+        good.replace('"prompt_tokens"', '"tokens"'),  # a file from before D116
+        good.replace('"prompt_tokens": 500', '"prompt_tokens": -1'),
+        good.replace('"prompt_tokens": 500', '"prompt_tokens": true'),
+        good.replace('"completion_tokens": 7', f'"completion_tokens": "{SENTINEL}"'),
+        # a request that timed out has no token counts
+        good.replace('"answered"', '"timed_out"').replace(
+            f'"cited_message_ids": [\n    "{_id(1)}"\n   ]', '"cited_message_ids": []'
+        ),
     ):
+        assert bad != good
         path.write_text(bad)
         with pytest.raises(evaluation.AnswerResultsError):
             evaluation.read_results(tmp_path, MODEL_ID, VERSION)
@@ -407,7 +499,14 @@ def test_results_are_never_written_inside_the_repo() -> None:
 def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
     result = evaluation.score([_row(1), _row(2, ABSTAINED, seconds=3.0)], questions=3)
     lines = report.render_eval("gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, result)
-    rates = ("invalid outputs", "answered", "abstained", "context has gold", "citation hit")
+    rates = (
+        "invalid outputs",
+        "timed out",
+        "answered",
+        "abstained",
+        "context has gold",
+        "citation hit",
+    )
     assert [line.split(":")[0] for line in lines] == [
         "target database",
         "questions source",
@@ -422,25 +521,53 @@ def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
         *(f"{r}{suffix}" for r in rates for suffix in ("", " rate", " rate 95% interval")),
         "p50 seconds per question",
         "p95 seconds per question",
+        "p50 prompt tokens",
+        "p95 prompt tokens",
+        "max prompt tokens",
         "answer-eval",
     ]
     assert "citation hit: 1" in lines and "citation hit rate: 0.500" in lines
     assert "p95 seconds per question: 3.000" in lines
+    assert "max prompt tokens: n/a" in lines
+    assert "timed out rate 95% interval: [0.000, 0.658]" in lines
+    counted = evaluation.score([_row(1, tokens=4321)], questions=1)
+    again = report.render_eval(
+        "gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, counted
+    )
+    assert "p50 prompt tokens: 4321" in again and "max prompt tokens: 4321" in again
 
 
 def test_the_ask_summary_lines_are_the_fixed_ones() -> None:
-    assert report.render_ask(2, 1, 0, Timings([1.0, 2.0, 4.0])) == [
-        "questions asked: 3",
+    counts = {ANSWERED: 2, ABSTAINED: 1, INVALID: 0, TIMED_OUT: 1}
+    timings, tokens = Timings([1.0, 2.0, 4.0, 600.0]), Timings([900, 100, 500])
+    assert report.render_ask(counts, timings, tokens) == [
+        "questions asked: 4",
         "answered: 2",
         "abstained: 1",
         "invalid outputs: 0",
+        "timed out: 1",
         "p50 seconds per question: 2.000",
-        "p95 seconds per question: 4.000",
+        "p95 seconds per question: 600.000",
+        "p50 prompt tokens: 500",
+        "p95 prompt tokens: 900",
         "ask: ok",
     ]
-    assert report.render_ask(0, 0, 0, Timings([]))[4] == "p50 seconds per question: n/a"
+    empty = report.render_ask(dict.fromkeys(OUTCOMES, 0), Timings([]), Timings([]))
+    assert empty[5] == "p50 seconds per question: n/a"
+    assert empty[7] == "p50 prompt tokens: n/a"
     with pytest.raises(ShapeError):
         check_lines([SENTINEL] * len(report.ASK_SHAPES), report.ASK_SHAPES)
+
+
+def test_the_numbers_line_holds_numbers_only() -> None:
+    assert report.answer_line(12, 3456, 23.0224) == (
+        "sources shown: 12, prompt tokens: 3456, seconds: 23.022"
+    )
+    assert report.answer_line(0, None, 0.5) == (
+        "sources shown: 0, prompt tokens: n/a, seconds: 0.500"
+    )
+    with pytest.raises(ShapeError):
+        check_lines([f"sources shown: {SENTINEL}"], (report.ANSWER_SHAPE,))
 
 
 def test_a_failure_line_carries_a_step_and_a_class_name_only() -> None:
@@ -479,29 +606,47 @@ class ScriptedTerminal:
 def _answers(question: str) -> Answer:
     sources = (Source(1, _message(1)), Source(2, _message(2, "two\x1b[2J\nlines")))
     if question == "yes":
-        return Answer(ANSWERED, "Because [2][1]\x1b]0;x\x07.", sources, (2, 1))
-    return Answer(ABSTAINED if question == "no" else INVALID, "", sources, ())
+        return Answer(ANSWERED, "Because [2][1]\x1b]0;x\x07.", sources, (2, 1), 300, 20)
+    if question == "no":
+        return Answer(ABSTAINED, "", sources, (), 200, 9)
+    if question == "late":
+        return Answer(TIMED_OUT, "", sources, ())
+    return Answer(INVALID, "", sources, ())
 
 
 @pytest.mark.parametrize("end", ["", "   ", None, KeyboardInterrupt()])
 def test_the_loop_ends_on_a_blank_line_end_of_input_or_ctrl_c(
     end: str | BaseException | None,
 ) -> None:
-    script: list[str | BaseException] = ["yes", "no", "bad"]
+    script: list[str | BaseException] = ["yes", "no", "bad", "late"]
     if end is not None:
         script.append(end)
     terminal = ScriptedTerminal(*script)
-    summary = commands.ask_loop(terminal, _answers, clock=iter([0, 1, 1, 3, 3, 8]).__next__)
+    clock = iter([0, 1, 1, 3, 3, 8, 8, 608]).__next__
+    summary = commands.ask_loop(terminal, _answers, clock=clock)
     assert summary == [
-        "questions asked: 3",
+        "questions asked: 4",
         "answered: 1",
         "abstained: 1",
         "invalid outputs: 1",
+        "timed out: 1",
         "p50 seconds per question: 2.000",
-        "p95 seconds per question: 5.000",
+        "p95 seconds per question: 600.000",
+        "p50 prompt tokens: 200",
+        "p95 prompt tokens: 300",
         "ask: ok",
     ]
-    assert terminal.prompts == [commands.PROMPT] * 4
+    assert terminal.prompts == [commands.PROMPT] * 5
+    # every answer, whatever its outcome, is followed by its numbers line
+    numbers = [line for line in terminal.printed if line.startswith("sources shown: ")]
+    assert numbers == [
+        "sources shown: 2, prompt tokens: 300, seconds: 1.000",
+        "sources shown: 2, prompt tokens: 200, seconds: 2.000",
+        "sources shown: 2, prompt tokens: n/a, seconds: 5.000",
+        "sources shown: 2, prompt tokens: n/a, seconds: 600.000",
+    ]
+    for line in numbers:
+        check_lines([line], (report.ANSWER_SHAPE,))
 
 
 def test_an_answer_shows_its_cited_messages_with_control_characters_replaced() -> None:
@@ -511,8 +656,21 @@ def test_an_answer_shows_its_cited_messages_with_control_characters_replaced() -
         "[1] sender1, 2026-03-04 17:06: text 1",
         "[2] sender2, 2026-03-04 17:07: two\ufffd[2J lines",
     ]
-    assert commands.answer_lines(_answers("no")) == ["not in the chat"]
     assert commands.answer_lines(_answers("bad")) == ["answer failed: invalid model output"]
+    assert commands.answer_lines(_answers("late")) == ["answer failed: model timed out"]
+
+
+def test_an_abstention_shows_what_the_model_was_shown_with_control_characters_replaced() -> None:
+    assert commands.answer_lines(_answers("no")) == [
+        "not in the chat",
+        "",
+        "[1] sender1, 2026-03-04 17:06: text 1",
+        "[2] sender2, 2026-03-04 17:07: two\ufffd[2J lines",
+    ]
+    hostile = replace(_message(1, "a\u202eb"), sender="eve\x1b[31m")
+    shown = commands.answer_lines(Answer(ABSTAINED, "", (Source(1, hostile),), ()))
+    assert shown[2] == "[1] eve\ufffd[31m, 2026-03-04 17:06: a\ufffdb"
+    assert commands.answer_lines(Answer(ABSTAINED, "", (), ())) == ["not in the chat"]
 
 
 def test_a_question_is_never_taken_from_argv_or_a_make_variable() -> None:

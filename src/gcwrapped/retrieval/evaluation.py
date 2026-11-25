@@ -1,8 +1,10 @@
 """The retrieval eval and the pre-registered comparison (D104). Nothing here prints.
 
 A question is a hit at k when any of its gold message IDs is in the first k results; MRR@10 is the
-mean of 1 / rank of the first gold ID in the first 10 (0 if none). Intervals are the tagging eval's:
-95% percentile bootstrap over questions, same resample count and seed; the comparison is paired.
+mean of 1 / rank of the first gold ID in the first 10 (0 if none). A rate over questions (recall@k,
+and the answer eval's rates) has a Wilson score 95% interval (D117). MRR@10 and the comparison's
+difference have the tagging eval's: 95% percentile bootstrap over questions, same resample count and
+seed; the comparison is paired.
 
 A question is dropped when its source message is no longer eligible (as consent-prune does, D101)
 or none of its gold messages has a searchable embedding; otherwise its gold is cut to the
@@ -26,6 +28,7 @@ from collections.abc import Callable, Container, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import NormalDist
 from typing import TextIO
 
 import psycopg
@@ -48,6 +51,7 @@ PREDICTIONS_DIR = "retrieval"
 SOURCES = ("synthetic", "real")
 DEFAULT_TABLE = "enrich.retrieval_default"
 DEFAULT_METHOD = VECTOR  # the D104 baseline, until one is promoted (D110)
+_Z95 = NormalDist().inv_cdf(0.975)
 _FLOAT_NOISE_PLACES = 9  # a lower bound that is 0 up to float noise does not lie above 0
 _VERSION = re.compile(r"[0-9a-f]{12}")  # an embed version or a corpus hash
 _VERDICT_FILE = re.compile(r"retrieval-compare-\d{8}T\d{12}Z\.json")
@@ -199,6 +203,26 @@ class Estimate:
     interval: tuple[float, float]
 
 
+def wilson_interval(successes: int, n: int) -> tuple[float, float]:
+    """The Wilson score 95% interval of `successes` out of `n` (D117), n at least 1. Unlike the
+    bootstrap, it keeps a width when every question fails or succeeds."""
+    if not 0 <= successes <= n or n == 0:
+        raise ValueError
+    share = successes / n
+    spread = _Z95**2 / n
+    centre = (share + spread / 2) / (1 + spread)
+    half = _Z95 * math.sqrt(share * (1 - share) / n + spread / (4 * n)) / (1 + spread)
+    # At 0 and n the bound is exactly 0 or 1; float noise would print it as -0.000.
+    low = 0.0 if successes == 0 else centre - half
+    high = 1.0 if successes == n else centre + half
+    return low, high
+
+
+def rate(flags: Sequence[bool]) -> Estimate:
+    """The share of questions with the flag set and its Wilson interval (needs at least one)."""
+    return Estimate(sum(flags) / len(flags), wilson_interval(sum(flags), len(flags)))
+
+
 def estimate(values: Sequence[float]) -> Estimate:
     """The mean of per-question values and its bootstrap interval (needs at least one)."""
 
@@ -234,7 +258,7 @@ def score(rows: Sequence[Row], questions: int) -> EvalResult:
         questions=questions,
         dropped=questions - len(rows),
         scored=len(rows),
-        recall={k: estimate([hit_at(r, k) for r in rows]) for k in RECALL_AT},
+        recall={k: rate([hit_at(r, k) == 1.0 for r in rows]) for k in RECALL_AT},
         mrr=estimate([reciprocal_rank(r) for r in rows]),
         p50=percentile(rows, 50),
         p95=percentile(rows, 95),

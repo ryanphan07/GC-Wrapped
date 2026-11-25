@@ -1,10 +1,10 @@
 """One question to one answer (D111): retrieve with the default method, build the numbered
 excerpts, ask the local model under the schema, check the output and map citations to messages.
 
-An output is one of three things. Answered: answerable, at least one citation, and every [n] in
-the text is one of the citations. Abstained: not answerable and no citations. Invalid: anything
-else, including a request the server refused; it is never retried and its text is dropped.
-Nothing here prints, logs or stores.
+An output is one of four things. Answered: answerable, at least one citation, and every [n] in
+the text is one of the citations. Abstained: not answerable and no citations. Timed out: the
+server did not respond in time (D116). Invalid: anything else, including a request the server
+refused; its text is dropped. No request is retried. Nothing here prints, logs or stores.
 """
 
 import json
@@ -25,12 +25,13 @@ from gcwrapped.answers.prompt import (
 )
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval.search import Retriever
-from gcwrapped.tagging.llamacpp import ChatFailure
+from gcwrapped.tagging.llamacpp import ChatFailure, ChatTimeout
 
 ANSWERED = "answered"
 ABSTAINED = "abstained"
 INVALID = "invalid"
-OUTCOMES = (ANSWERED, ABSTAINED, INVALID)
+TIMED_OUT = "timed_out"
+OUTCOMES = (ANSWERED, ABSTAINED, INVALID, TIMED_OUT)
 SCHEMA_NAME = "answer"
 REQUEST_TIMEOUT_SECONDS = 600  # a long prompt on a busy laptop CPU
 _MARKER = re.compile(r"\[(\s*\d+(?:\s*,\s*\d+)*\s*)\]")  # [3], and the grouped form [1, 2]
@@ -54,6 +55,8 @@ class Answer:
     text: str  # with its [n] markers; empty unless answered
     sources: tuple[Source, ...]  # every message the model was shown, numbered 1..N
     citations: tuple[int, ...]  # numbers into `sources`, each once; empty unless answered
+    prompt_tokens: int | None = None  # the server's count (D116); None if it reported none
+    completion_tokens: int | None = None
 
     @property
     def cited(self) -> tuple[Source, ...]:
@@ -74,6 +77,19 @@ def _output(body: object) -> dict[str, object] | None:
     if not isinstance(output, dict) or set(output) != {"answerable", "citations", "answer"}:
         return None
     return output
+
+
+def token_usage(body: object) -> tuple[int | None, int | None]:
+    """(prompt tokens, completion tokens) from the response's `usage`, each None when it is
+    absent or not a count."""
+    usage = body.get("usage") if isinstance(body, dict) else None
+    if not isinstance(usage, dict):
+        return None, None
+    prompt, completion = (
+        value if type(value) is int and value >= 0 else None
+        for value in (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+    )
+    return prompt, completion
 
 
 def parse_answer(body: object, source_count: int) -> tuple[str, str, tuple[int, ...]]:
@@ -129,7 +145,9 @@ class AnswerPipeline:
                 schema=response_schema(len(sources)),
                 max_tokens=MAX_TOKENS,
             )
+        except ChatTimeout:
+            return Answer(TIMED_OUT, "", sources, ())
         except ChatFailure:
             return Answer(INVALID, "", sources, ())
         outcome, text, citations = parse_answer(body, len(sources))
-        return Answer(outcome, text, sources, citations)
+        return Answer(outcome, text, sources, citations, *token_usage(body))

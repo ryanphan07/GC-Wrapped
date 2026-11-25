@@ -16,6 +16,11 @@ from their messages must leave every store, not just be hidden:
     an ineligible message.
 Ids-only files (the frozen samples, skips.csv) and experiment verdicts (numbers only) are untouched.
 
+A retrieval or answers file in an old format (the strict reader rejects it, but every row's message
+IDs can be read) cannot be rewritten row by row. It is deleted whole if any row refers to an
+ineligible message, else left alone, so a file format never blocks a revocation (D118). A file
+whose row IDs cannot be read fails the run.
+
 "Ineligible messages with derived records" counts the distinct ineligible message IDs that any of
 the above still refers to, not every ineligible message.
 
@@ -25,6 +30,7 @@ rename, mode 0600). A rerun finds nothing left. Output is fixed lines of numbers
 before printing; a failure prints a step name and an exception type only.
 """
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -38,7 +44,13 @@ from gcwrapped.config import LabelSettings
 from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
 from gcwrapped.labeling.commands import resolve_label_dir
-from gcwrapped.labeling.files import read_questions, read_tags, write_questions, write_tags
+from gcwrapped.labeling.files import (
+    MESSAGE_ID,
+    read_questions,
+    read_tags,
+    write_questions,
+    write_tags,
+)
 from gcwrapped.labeling.schema import QUESTIONS_FILE, TAG_LABELS_FILE, QuestionLabel
 from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.migrate import migrate
@@ -64,6 +76,7 @@ SHAPES = (
     r"question gold references to prune: \d+",
     r"questions left with no gold: \d+",
     r"prediction rows to prune: \d+",
+    r"old-format eval files to delete: \d+",
     r"mode: (dry run|applied)",
     r"consent-prune: ok",
 )
@@ -79,6 +92,9 @@ WHERE e.local_ok AND x.has_user_text
 """
 _PREDICTIONS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.csv")
 _ANSWERS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.json")
+# The per-row lists of message IDs, beside source_message_id, in each kind of eval file.
+_RETRIEVAL_ID_LISTS = ("gold_message_ids", "retrieved_message_ids")
+_ANSWER_ID_LISTS = ("gold_message_ids", "numbered_message_ids", "cited_message_ids")
 
 
 class PruneError(Exception):
@@ -104,6 +120,7 @@ class FilePlan:
     gold_references: int
     questions_without_gold: int
     prediction_rows: int
+    old_format_files: int  # eval files to delete whole (D118)
     writes: tuple[Callable[[], None], ...]  # one per changed file, each atomic
 
 
@@ -116,6 +133,7 @@ class PruneResult:
     gold_references: int
     questions_without_gold: int
     prediction_rows: int
+    old_format_files: int
     applied: bool
 
 
@@ -133,6 +151,27 @@ def _prune_question(label: QuestionLabel, eligible: frozenset[str]) -> QuestionL
     return QuestionLabel(
         label.question_id, label.question, gold, label.source_message_id, label.labeled_at
     )
+
+
+def read_row_ids(path: Path, id_lists: tuple[str, ...]) -> frozenset[str] | None:
+    """The pruning reader (D118): every message ID the rows of an eval file refer to, whatever else
+    the file holds. None if there is no row, or any row's IDs cannot all be read."""
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))["rows"]
+        if not isinstance(rows, list) or not rows:
+            return None
+        found: list[object] = []
+        for row in rows:
+            found.append(row["source_message_id"])
+            for name in id_lists:
+                if not isinstance(row[name], list):
+                    return None
+                found.extend(row[name])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not all(isinstance(m, str) and MESSAGE_ID.fullmatch(m) for m in found):
+        return None
+    return frozenset(str(m) for m in found)
 
 
 def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
@@ -165,6 +204,18 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
         writes.append(partial(write_questions, questions_path, kept_questions))
 
     prediction_rows = 0
+    old_format_files = 0
+
+    def plan_old_format(path: Path, id_lists: tuple[str, ...], rejected: Exception) -> None:
+        nonlocal old_format_files
+        ids = read_row_ids(path, id_lists)
+        if ids is None:
+            raise rejected  # unreadable: fail closed
+        if ids - eligible:
+            referenced.update(ids - eligible)
+            old_format_files += 1
+            writes.append(path.unlink)
+
     folder = label_dir / evaluation.PREDICTIONS_DIR
     for path in sorted(folder.glob("*.csv")) if folder.is_dir() else []:
         match = _PREDICTIONS_FILE.fullmatch(path.name)
@@ -182,7 +233,11 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         if path.stem not in retrieval.METHODS:
             raise UnexpectedPredictionsFileError
-        stored = retrieval.read_predictions(label_dir, path.stem)
+        try:
+            stored = retrieval.read_predictions(label_dir, path.stem)
+        except retrieval.RetrievalPredictionsError as exc:
+            plan_old_format(path, _RETRIEVAL_ID_LISTS, exc)
+            continue
         current = tuple(r for r in stored.rows if all(m in eligible for m in r.referenced_ids))
         referenced |= {m for r in stored.rows for m in r.referenced_ids if m not in eligible}
         if len(current) != len(stored.rows):
@@ -196,7 +251,11 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
         if match is None:
             raise UnexpectedPredictionsFileError
         model_id, version = match["model"], match["version"]
-        results = answers.read_results(label_dir, model_id, version)
+        try:
+            results = answers.read_results(label_dir, model_id, version)
+        except answers.AnswerResultsError as exc:
+            plan_old_format(path, _ANSWER_ID_LISTS, exc)
+            continue
         remaining = tuple(r for r in results.rows if all(m in eligible for m in r.referenced_ids))
         referenced |= {m for r in results.rows for m in r.referenced_ids if m not in eligible}
         if len(remaining) != len(results.rows):
@@ -211,6 +270,7 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
         gold_references=gold_references,
         questions_without_gold=without_gold,
         prediction_rows=prediction_rows,
+        old_format_files=old_format_files,
         writes=tuple(writes),
     )
 
@@ -247,6 +307,7 @@ def prune(url: str, label_dir: Path, *, apply: bool) -> PruneResult:
         gold_references=plan.gold_references,
         questions_without_gold=plan.questions_without_gold,
         prediction_rows=plan.prediction_rows,
+        old_format_files=plan.old_format_files,
         applied=apply,
     )
 
@@ -261,6 +322,7 @@ def render(database: str, result: PruneResult) -> list[str]:
         f"question gold references to prune: {result.gold_references}",
         f"questions left with no gold: {result.questions_without_gold}",
         f"prediction rows to prune: {result.prediction_rows}",
+        f"old-format eval files to delete: {result.old_format_files}",
         f"mode: {'applied' if result.applied else 'dry run'}",
         f"{COMMAND}: ok",
     ]
