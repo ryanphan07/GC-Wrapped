@@ -1,0 +1,55 @@
+version: 2
+
+unit_tests:
+  - name: wrapped_counts_only_eligible_user_text
+    description: >
+      D88, D95, D123. A "no" sender (B) gets no row and enters no total; A's placeholder (m4) is not
+      counted; the thread share is over eligible user-text messages only; reply time is the median
+      over A's replies; ties in hour, weekday and topic go to the earliest or alphabetically first;
+      only the top three topics are kept; a member with no tags has null topics and shares.
+    model: mart_member_wrapped
+    given:
+      - input: ref('fct_messages')
+        rows:
+          - {message_key: m1, member_key: kA, thread_id: t1, sender_name: A, sent_at_local: "2026-03-02 22:10:00", reply_seconds: null}
+          - {message_key: m2, member_key: kA, thread_id: t1, sender_name: A, sent_at_local: "2026-03-03 22:20:00", reply_seconds: 30}
+          - {message_key: m3, member_key: kA, thread_id: t1, sender_name: A, sent_at_local: "2026-03-10 09:00:00", reply_seconds: 90}
+          - {message_key: m4, member_key: kA, thread_id: t1, sender_name: A, sent_at_local: "2026-03-20 09:00:00", reply_seconds: 5000}
+          - {message_key: m5, member_key: kB, thread_id: t1, sender_name: B, sent_at_local: "2026-03-01 09:00:00", reply_seconds: 10}
+          - {message_key: m6, member_key: kC, thread_id: t1, sender_name: C, sent_at_local: "2026-03-04 07:00:00", reply_seconds: null}
+          - {message_key: m7, member_key: kA, thread_id: t1, sender_name: A, sent_at_local: "2026-03-11 09:30:00", reply_seconds: null}
+          - {message_key: m8, member_key: kA2, thread_id: t2, sender_name: A, sent_at_local: "2026-04-01 13:00:00", reply_seconds: null}
+      - input: ref('fct_message_eligibility')
+        rows:
+          - {message_key: m1, local_ok: true}
+          - {message_key: m2, local_ok: true}
+          - {message_key: m3, local_ok: true}
+          - {message_key: m4, local_ok: true}
+          - {message_key: m5, local_ok: false}
+          - {message_key: m6, local_ok: true}
+          - {message_key: m7, local_ok: true}
+          - {message_key: m8, local_ok: true}
+      - input: ref('fct_message_text')
+        rows:
+          - {message_key: m1, has_user_text: true}
+          - {message_key: m2, has_user_text: true}
+          - {message_key: m3, has_user_text: true}
+          - {message_key: m4, has_user_text: false}
+          - {message_key: m5, has_user_text: true}
+          - {message_key: m6, has_user_text: true}
+          - {message_key: m7, has_user_text: true}
+          - {message_key: m8, has_user_text: true}
+      - input: ref('fct_message_tags')
+        rows:
+          - {message_key: m1, topic: work, sentiment: positive}
+          - {message_key: m2, topic: food, sentiment: positive}
+          - {message_key: m3, topic: plans, sentiment: neutral}
+          - {message_key: m4, topic: news, sentiment: negative}
+          - {message_key: m5, topic: school, sentiment: negative}
+          - {message_key: m7, topic: banter, sentiment: negative}
+          - {message_key: m8, topic: other, sentiment: neutral}
+    expect:
+      rows:
+        - {member_key: kA, thread_id: t1, member_name: A, messages_sent: 4, thread_share: 0.8, most_active_hour: 9, most_active_weekday: 2, median_reply_seconds: 60, first_message_date: "2026-03-02", last_message_date: "2026-03-11", top_topic_1: banter, top_topic_2: food, top_topic_3: plans, positive_share: 0.5, neutral_share: 0.25, negative_share: 0.25}
+        - {member_key: kC, thread_id: t1, member_name: C, messages_sent: 1, thread_share: 0.2, most_active_hour: 7, most_active_weekday: 3, median_reply_seconds: null, first_message_date: "2026-03-04", last_message_date: "2026-03-04", top_topic_1: null, top_topic_2: null, top_topic_3: null, positive_share: null, neutral_share: null, negative_share: null}
+        - {member_key: kA2, thread_id: t2, member_name: A, messages_sent: 1, thread_share: 1.0, most_active_hour: 13, most_active_weekday: 3, median_reply_seconds: null, first_message_date: "2026-04-01", last_message_date: "2026-04-01", top_topic_1: other, top_topic_2: null, top_topic_3: null, positive_share: 0.0, neutral_share: 1.0, negative_share: 0.0}

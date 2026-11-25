@@ -20,6 +20,7 @@ pytestmark = pytest.mark.warehouse
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "dashboard" / "app.py"
+WRAPPED_PAGE = ROOT / "dashboard" / "views" / "wrapped.py"
 SENTINEL = "sentinel-pw-7f3a9c"
 
 
@@ -142,6 +143,22 @@ def test_reader_can_read_marts(reader_url: str) -> None:
         row = conn.execute("SELECT count(*) FROM analytics.fct_messages").fetchone()
     assert row is not None
     assert row[0] > 0
+
+
+def test_reader_reads_the_wrapped_mart(reader_url: str) -> None:
+    # The real mart, through the role the page uses. It is empty until a consent ledger is loaded.
+    frame = queries.wrapped_profiles(reader_url)
+    assert tuple(frame.columns) == queries.WRAPPED_COLUMNS
+
+
+def test_the_wrapped_page_runs_against_the_real_mart(
+    reader_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHBOARD_DATABASE_URL", reader_url)
+    get_dashboard_settings.cache_clear()
+    at = AppTest.from_file(str(WRAPPED_PAGE), default_timeout=60).run()
+    assert not at.exception and not at.error
+    get_dashboard_settings.cache_clear()
 
 
 def test_reader_reads_the_tag_aggregates_but_not_per_message_tags(reader_url: str) -> None:

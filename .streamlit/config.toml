@@ -2,3 +2,11 @@
 # text in the browser: validation errors can include input values such as connection passwords.
 [client]
 showErrorDetails = false
+
+# Local only (D123): a Streamlit run on this machine listens on 127.0.0.1. In the dashboard image
+# the command line sets 0.0.0.0 inside the container, and compose publishes it on 127.0.0.1 only.
+[server]
+address = "127.0.0.1"
+
+[browser]
+gatherUsageStats = false

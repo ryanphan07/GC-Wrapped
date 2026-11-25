@@ -23,6 +23,7 @@ from gcwrapped import (
 from gcwrapped.answers import commands as answers
 from gcwrapped.answers.grades import DEFAULT_COUNT
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
+from gcwrapped.dashboard import services as dashboard_services
 from gcwrapped.db import database_name, database_url
 from gcwrapped.labeling import commands as labeling
 from gcwrapped.landing import check_landing, find_export_roots
@@ -256,6 +257,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_all_cmd.add_argument(
         "--synthetic", action="store_true", help="synthetic questions, gcw_dev only, no promotion"
+    )
+    sub.add_parser(
+        "dashboard-services",
+        help="start the db, llm (promoted model) and embed services the dashboard needs",
     )
     llm_model = sub.add_parser(
         "llm-model", help="download a registered model file, checking its sha256"
@@ -498,6 +503,8 @@ def _run(argv: Sequence[str] | None) -> int:
         return answers.run_grade_summary(synthetic=args.synthetic)
     if args.command == "eval-all":
         return eval_all.run(synthetic=args.synthetic)
+    if args.command == "dashboard-services":
+        return dashboard_services.run()
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

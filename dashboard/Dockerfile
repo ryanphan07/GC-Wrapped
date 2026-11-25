@@ -9,4 +9,6 @@ COPY dashboard ./dashboard
 # Streamlit reads .streamlit/config.toml from the working directory (showErrorDetails = false).
 COPY .streamlit ./.streamlit
 EXPOSE 8501
+# 0.0.0.0 is inside the container only, so the published port reaches it; compose publishes that
+# port on 127.0.0.1. .streamlit/config.toml binds 127.0.0.1 everywhere else.
 CMD ["uv", "run", "--no-sync", "streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501"]

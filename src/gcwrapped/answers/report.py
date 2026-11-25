@@ -143,6 +143,7 @@ COMMANDS = (
     "answer-promote",
     "grade-answers",
     "grade-summary",
+    "dashboard-up",
 )
 STEPS = (
     "count|variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|"

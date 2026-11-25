@@ -98,7 +98,7 @@ class Services:
     embed: Callable[[], None] | None = retrieval_commands.start_embed
 
 
-def _chat_model(model_id: str) -> LlamaCppChat:
+def chat_model(model_id: str) -> LlamaCppChat:
     return LlamaCppChat(
         tagging.llm_url(),
         model_id=model_id,
@@ -145,7 +145,7 @@ def run_answer_eval(
         model_id = tag_evaluation.promoted_model(url, model.MODEL_ID)
         variant = variant or comparison.promoted_variant(url)
         version = _prompt_version(model_id, variant)
-        chat = _chat_model(model_id)
+        chat = chat_model(model_id)
         step = STEP_DOCKER
         if services.llm is not None:
             services.llm(model_id)
@@ -260,7 +260,7 @@ def run_ask(
         step = STEP_MODEL
         model_id = tag_evaluation.promoted_model(url, model.MODEL_ID)
         variant = comparison.promoted_variant(url)
-        chat = _chat_model(model_id)
+        chat = chat_model(model_id)
         step = STEP_DOCKER
         if services.llm is not None:
             services.llm(model_id)
@@ -458,7 +458,7 @@ def run_grade_answers(
         model_id = tag_evaluation.promoted_model(url, model.MODEL_ID)
         variant = comparison.promoted_variant(url)
         version = _prompt_version(model_id, variant)
-        chat = _chat_model(model_id)
+        chat = chat_model(model_id)
         step = STEP_GRADES
         rows = grades.read_grades(root, model_id, version)  # before the slow starts
         step = STEP_DOCKER

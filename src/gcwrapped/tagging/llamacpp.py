@@ -1,8 +1,9 @@
 """The llama.cpp chat client (D89, D111): schema-constrained JSON from a server on this machine.
 
 Privacy properties, each enforced here and tested:
-- `check_local_url` refuses any base URL whose host is not localhost, 127.0.0.1 or the compose
-  service name `llm`, so message text cannot be sent to another machine by a typo or a bad env.
+- `check_local_url` refuses any base URL whose host is not localhost, 127.0.0.1 or a compose
+  service name (`llm`, `embed`), so message text cannot be sent to another machine by a typo or a
+  bad env.
 - The opener has no proxy handler and no redirect handler: an HTTP(S)_PROXY variable cannot route
   the request elsewhere, and a redirect cannot move it to another host.
 - Errors carry no message text and no response body.
@@ -22,7 +23,8 @@ from gcwrapped.labeling.schema import SENTIMENTS, TOPICS
 from gcwrapped.tagging.prompt import RESPONSE_SCHEMA
 from gcwrapped.tagging.provider import ProviderUnavailable, Tag, TagFailure
 
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "llm"})  # llm: the compose service name
+# llm and embed are the compose service names, which the dashboard container uses (D124).
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "llm", "embed"})
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 2  # the first try plus one retry
 MAX_TOKENS = 48
@@ -42,7 +44,7 @@ def check_local_url(url: str) -> str:
     except ValueError:
         raise NonLocalUrlError("llm URL is not valid") from None
     if parts.scheme != "http" or host not in LOCAL_HOSTS:
-        raise NonLocalUrlError("llm URL must be http://localhost, 127.0.0.1 or llm")
+        raise NonLocalUrlError("llm URL must be http://localhost, 127.0.0.1, llm or embed")
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise NonLocalUrlError("llm URL must not carry credentials, a query or a fragment")
     return url.rstrip("/")

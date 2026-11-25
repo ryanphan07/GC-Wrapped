@@ -50,9 +50,14 @@ test-integration:
 test-warehouse:
 	uv run --group dashboard pytest -m warehouse
 
-# Streamlit on http://localhost:8501, connecting as gcw_reader.
+# Streamlit on http://localhost:8501 (127.0.0.1 only): activity, Wrapped and Ask pages (D123).
+# The Ask page needs the local models, so this starts db, llm (serving the promoted model) and
+# embed first, then builds and starts the dashboard. Real-data runs are Ryan's:
+# make dashboard-up ENV_FILE=<env file outside the repo>
 dashboard-up:
-	$(COMPOSE) up -d --build dashboard
+	@uv run gcw dashboard-services
+	$(COMPOSE) up -d --build --wait dashboard
+	@echo "dashboard: $(DASHBOARD_URL)"
 
 # One command, fresh export to dashboard: db + dashboard up and healthy, then the Airflow DAG once
 # (check landing -> migrate -> ingest -> dbt build -> summary), the same path CI verifies.
