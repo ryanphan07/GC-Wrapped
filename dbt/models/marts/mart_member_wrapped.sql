@@ -2,7 +2,9 @@
 
 -- One Wrapped profile per consented member of a thread, the consent ledger's key (D123).
 -- Computed only over messages that are local_ok and user text (D88, D95): a member with none has
--- no row, and no other member's messages enter any number here, the thread share included.
+-- no row, and only such messages are counted, in the thread share too. One exception (D125): reply
+-- time is the time since the previous turn, whoever sent it, and sessions and turns are cut over
+-- all messages, so another sender's timestamp (never their text) can enter a member's median.
 -- A view (D124), like fct_message_eligibility (D75): joining eligibility at read time means a
 -- revoked sender's profile is gone as soon as consent-load commits, with no dbt build in between
 -- and no stored copy for consent-prune to chase. Reply time is the existing reply-time model's

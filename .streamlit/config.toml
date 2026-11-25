@@ -5,8 +5,11 @@ showErrorDetails = false
 
 # Local only (D123): a Streamlit run on this machine listens on 127.0.0.1. In the dashboard image
 # the command line sets 0.0.0.0 inside the container, and compose publishes it on 127.0.0.1 only.
+# allowedHosts refuses a browser connection under any other host name, so a web page cannot reach
+# the Ask page by pointing its own name at 127.0.0.1 (DNS rebinding). Ports are not compared.
 [server]
 address = "127.0.0.1"
+allowedHosts = ["localhost", "127.0.0.1"]
 
 [browser]
 gatherUsageStats = false

@@ -45,7 +45,13 @@ from gcwrapped.docker import start_database
 from gcwrapped.labeling.files import read_questions
 from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.labeling.source import load_eligible
-from gcwrapped.labeling.terminal import EOF_KEY, StdTerminal, Terminal, safe_text
+from gcwrapped.labeling.terminal import (
+    EOF_KEY,
+    KeypressTerminal,
+    StdTerminal,
+    Terminal,
+    safe_text,
+)
 from gcwrapped.migrate import migrate
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
@@ -433,7 +439,7 @@ def run_grade_answers(
     in the seeded order, with the promoted model, retrieval method and prompt variant. Refused
     unless every eligible message is searchable (D109)."""
     services = services or Services()
-    terminal = terminal or StdTerminal()
+    terminal = terminal or KeypressTerminal()
     step = STEP_COUNT
     try:
         if count < 1:
@@ -479,18 +485,20 @@ def run_grade_answers(
                 raise retrieval.NoScorableQuestionsError
             done = {r.question_id for r in rows}
             ungraded = [q for q in grades.grading_order(kept) if q.question_id not in done]
-            before = len(rows)
+            saved: list[str] = []
 
             def save(row: grades.GradeRow) -> None:
-                rows.append(row)
-                grades.write_grades(root, model_id, version, rows)
+                # Read again: rows consent-prune removed during the session must stay removed.
+                current = grades.read_grades(root, model_id, version)
+                grades.write_grades(root, model_id, version, [*current, row])
+                saved.append(row.question_id)
 
             step = STEP_ANSWERING
             pipeline = AnswerPipeline(conn, retriever, chat, method, variant=variant)
             grade_loop(terminal, pipeline.answer, ungraded[:count], save)
         step = STEP_RENDER
-        graded_now = len(rows) - before
-        lines = report.render_grading(graded_now, len(rows), len(ungraded) - graded_now)
+        in_file = len(grades.read_grades(root, model_id, version))
+        lines = report.render_grading(len(saved), in_file, len(ungraded) - len(saved))
     except Exception as exc:  # type name only: driver and OS messages can echo values
         print(report.failure_line("grade-answers", step, exc))
         return 1

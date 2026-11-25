@@ -281,10 +281,14 @@ jobs:
           )
           flipped_messages="$(psql "SELECT count(*) FROM raw.messages WHERE thread_id = '$thread' AND sender_name = '$sender'")"
           test "$flipped_messages" -gt 0
+          profile="SELECT count(*) FROM analytics.mart_member_wrapped WHERE thread_id = '$thread' AND member_name = '$sender'"
+          test "$(psql "$profile")" -eq 1
           sed "s|^GCW_CONSENT_LEDGER=.*|GCW_CONSENT_LEDGER=$FLIPPED|" "$ENV_FILE" > "$RUNNER_TEMP/ci-flipped.env"
           make consent-load ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-l3.log; test "${PIPESTATUS[0]}" -eq 0
           expected=$((before - flipped_messages))
           test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE external_ok')" -eq "$expected"
+          # D124: the revoked sender's Wrapped profile is gone too, with no dbt build in between.
+          test "$(psql "$profile")" -eq 0
           make metrics ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-metrics2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "external-eligible messages: $expected" consent-metrics2.log
       # D70: every ingested message goes through the redaction module in memory; no member-name

@@ -125,6 +125,7 @@ def test_members_who_share_a_name_are_told_apart_and_names_are_made_safe() -> No
 def test_streamlit_listens_locally_and_sends_no_usage_statistics() -> None:
     config = tomllib.loads((REPO / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
     assert config["server"]["address"] == "127.0.0.1"
+    assert config["server"]["allowedHosts"] == ["localhost", "127.0.0.1"]
     assert config["browser"]["gatherUsageStats"] is False
     assert config["client"]["showErrorDetails"] is False
     dockerfile = (REPO / "dashboard" / "Dockerfile").read_text(encoding="utf-8")

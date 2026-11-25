@@ -6,6 +6,7 @@ Real message text is printed here and nowhere else: to the terminal, never to a 
 input, and an escape sequence in one could rewrite the screen or put text in the terminal's title.
 """
 
+import os
 import sys
 import unicodedata
 from typing import Protocol
@@ -80,3 +81,28 @@ class StdTerminal:
             import termios
 
             termios.tcflush(stream.fileno(), termios.TCIFLUSH)
+
+
+class KeypressTerminal(StdTerminal):
+    """StdTerminal for hand grading (D120), where a stray key would corrupt a measured result.
+
+    On a real terminal `key` returns everything one unbuffered read gives: one keypress is one
+    character, while an arrow key (an escape sequence) or a paste arrives as several and matches no
+    choice. Nothing is left in a Python buffer, so `discard_input` really drops what was typed
+    before. Labeling keeps StdTerminal, which takes fast typing one character at a time.
+    """
+
+    def key(self) -> str:
+        stream = sys.stdin
+        if not stream.isatty():
+            return stream.read(1)
+        import termios
+        import tty
+
+        fd = stream.fileno()
+        saved = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd, termios.TCSANOW)
+            return os.read(fd, 64).decode("utf-8", errors="replace")
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)

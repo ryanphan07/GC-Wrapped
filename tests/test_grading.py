@@ -3,8 +3,12 @@ scores and the fixed output.
 """
 
 import csv
+import io
+import os
 import re
 import stat
+import subprocess
+import tty
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -17,6 +21,7 @@ from gcwrapped.answers.excerpts import Source, SourceMessage
 from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, TIMED_OUT, Answer
 from gcwrapped.cli import build_parser
 from gcwrapped.labeling.schema import QuestionLabel
+from gcwrapped.labeling.terminal import KeypressTerminal
 from gcwrapped.tagging import model
 from gcwrapped.tagging.evaluation import OutsideRepoError
 from gcwrapped.tagging.report import ShapeError, check_lines
@@ -380,9 +385,6 @@ def test_the_cli_defaults_to_fifty_answers() -> None:
 
 @pytest.mark.parametrize(("make_args", "argv"), [([], []), (["N=5"], ["--n", "5"])])
 def test_make_passes_n_only_when_set(make_args: list[str], argv: list[str]) -> None:
-    import os
-    import subprocess
-
     env = {k: v for k, v in os.environ.items() if k not in ("N", "MAKEFLAGS", "MAKELEVEL")}
     shown = subprocess.run(
         ["make", "-n", "grade-answers", *make_args],
@@ -393,3 +395,47 @@ def test_make_passes_n_only_when_set(make_args: list[str], argv: list[str]) -> N
         check=True,
     ).stdout.split()
     assert shown == ["uv", "run", "gcw", "grade-answers", *argv]
+
+
+# --- the real terminal -------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pty_stdin(monkeypatch: pytest.MonkeyPatch) -> Iterator[int]:
+    """sys.stdin is the far end of a pseudo-terminal; yields the end a keyboard would write to."""
+    keyboard, screen = os.openpty()
+    tty.setcbreak(screen)  # so bytes written before a read are not held for a newline
+    with os.fdopen(screen, "r") as stream:
+        monkeypatch.setattr("sys.stdin", stream)
+        yield keyboard
+    os.close(keyboard)
+
+
+def test_one_keypress_is_one_key(pty_stdin: int) -> None:
+    os.write(pty_stdin, b"c")
+    assert KeypressTerminal().key() == "c"
+
+
+@pytest.mark.parametrize("typed", [b"\x1b[C", b"cyw"])
+def test_an_arrow_key_or_a_paste_matches_no_grade(pty_stdin: int, typed: bytes) -> None:
+    os.write(pty_stdin, typed)
+    key = KeypressTerminal().key()
+    assert key == typed.decode()
+    assert key.lower() not in (*commands.GRADE_KEYS, *commands.SUPPORT_KEYS, "q")
+
+
+def test_keys_typed_before_the_prompt_are_really_dropped(pty_stdin: int) -> None:
+    terminal = KeypressTerminal()
+    os.write(pty_stdin, b"c")
+    assert terminal.key() == "c"
+    os.write(pty_stdin, b"yw")
+    terminal.discard_input()
+    os.write(pty_stdin, b"p")
+    assert terminal.key() == "p"
+
+
+def test_piped_keys_are_read_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO("cy"))
+    terminal = KeypressTerminal()
+    terminal.discard_input()  # a pipe is the script: nothing is dropped
+    assert [terminal.key(), terminal.key(), terminal.key()] == ["c", "y", ""]

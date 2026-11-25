@@ -980,3 +980,28 @@ def test_prune_fails_closed_on_a_grades_file_it_cannot_read(
     get_database_settings.cache_clear()
     assert consent_prune.run(apply=True, start_db=lambda: None) == 1
     assert capsys.readouterr().out == f"consent-prune: failed at prune ({error})\n"
+
+
+def test_a_grade_pruned_during_a_session_stays_pruned(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """consent-prune can run in another terminal: the next save must not bring the row back."""
+
+    class PrunesBeforeTheThird(KeyTerminal):
+        def out(self, text: str) -> None:
+            if text.startswith("[3 of"):
+                grades.write_grades(label_dir, MODEL_ID, VERSION, _grades(label_dir)[1:])
+            super().out(text)
+
+    with StubLlm(reply=lambda body: _output(False, [], "")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        terminal = PrunesBeforeTheThird()
+        assert commands.run_grade_answers(terminal=terminal, services=NO_SERVICES) == 0
+    assert len(_grades(label_dir)) == 2
+    assert terminal.printed[-4:-1] == [
+        "graded this run: 3",
+        "graded in the file: 2",
+        "questions not yet graded: 0",
+    ]

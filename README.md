@@ -1,6 +1,6 @@
 # GC Wrapped
 
-GC Wrapped turns an Instagram group-chat export into a Postgres warehouse (dbt), tags messages by topic and sentiment, answers questions about the chat with citations to the source messages, and shows the result in a Streamlit dashboard: chat activity, a per-member "Wrapped" card and an Ask page. All model work runs on one machine with llama.cpp, work on message text needs each sender's opt-in, and model and retrieval choices are measured against eval rules written down before the runs. It is a local application: nothing is deployed, and the quickstart runs on synthetic data.
+GC Wrapped turns an Instagram group-chat export into a Postgres warehouse (dbt), tags messages by topic and sentiment, answers questions about the chat with citations to the source messages, and shows the result in a Streamlit dashboard: chat activity, a per-member "Wrapped" card and an Ask page. All model work runs on one machine with llama.cpp, model work on message text needs each sender's opt-in, and model and retrieval choices are measured against eval rules written down before the runs. It is a local application: nothing is deployed, and the quickstart runs on synthetic data.
 
 ## Architecture
 

@@ -745,3 +745,12 @@ Decision:
 Alternative: a table mart rebuilt by dbt; a second database role with read access to message text; running the dashboard on the host instead of adding a local host name; a retrieval method column in the grades file.
 Why: each keeps one eligibility rule in force wherever derived data or text is read, reuses make ask's path instead of a second one, and stays inside the columns and commands D119-D123 name.
 Tradeoff: the view is computed on every page load; the dashboard container now holds credentials that can read and write message text (the Ask session is set read-only, which the page's own code could undo); a retrieval method change between two grading sessions would mix methods in one file unnoticed.
+
+## D125 — 2026-11-25 — Fixes from the burst-finish review: local-only host names, grading keys, reply time
+Decision:
+- Streamlit's server.allowedHosts is localhost and 127.0.0.1, so the dashboard refuses a browser connection under any other host name (DNS rebinding). Reaching it by another name needs a change to .streamlit/config.toml.
+- grade-answers reads one unbuffered keypress per prompt on a real terminal, so an escape sequence or a paste matches no choice, and each save re-reads the grades file, so a row consent-prune removed during the session stays removed.
+- mart_member_wrapped's median reply time is the existing reply-time model's (D123) over the member's eligible replies. The previous turn's timestamp, and the session and turn boundaries, come from all messages, so a sender without consent can affect another member's median through timestamps only, never text.
+Alternative: count only replies whose previous message is also eligible; one key per buffered character, as labeling does.
+Why: the dashboard now shows chat text, and grades are a measured result with no undo. Reply time is defined by the existing model; narrowing it needs a change to the intermediate model, which is left for planning.
+Tradeoff: a reply time is partly derived from a message its sender did not opt in to; labeling and grading read the keyboard differently.
