@@ -72,3 +72,11 @@ class StdTerminal:
 
     def out(self, text: str) -> None:
         print(text, flush=True)
+
+    def discard_input(self) -> None:
+        """Drop keys typed before now, on a real terminal only (piped input is the script)."""
+        stream = sys.stdin
+        if stream.isatty():
+            import termios
+
+            termios.tcflush(stream.fileno(), termios.TCIFLUSH)

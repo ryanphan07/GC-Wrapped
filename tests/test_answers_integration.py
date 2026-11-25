@@ -21,7 +21,7 @@ import psycopg
 import pytest
 
 from gcwrapped import consent_prune
-from gcwrapped.answers import commands, comparison, evaluation, report
+from gcwrapped.answers import commands, comparison, evaluation, grades, report
 from gcwrapped.answers.excerpts import load_excerpts
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
@@ -33,6 +33,7 @@ from gcwrapped.answers.pipeline import (
 )
 from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for, system_prompt
 from gcwrapped.config import get_database_settings
+from gcwrapped.labeling.files import read_questions
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval import window
@@ -44,6 +45,7 @@ from gcwrapped.tagging.llamacpp import LlamaCppChat
 from gcwrapped.tagging.report import check_lines
 from tagging_stub import StubLlm
 from test_answers import ScriptedTerminal
+from test_grading import KeyTerminal
 from test_retrieval_integration import (
     ELIGIBLE,
     ID,
@@ -749,3 +751,159 @@ def test_answer_promote_refuses_and_changes_nothing(
     assert commands.run_answer_promote(variant, start_db=_no_db) == 1
     assert capsys.readouterr().out == f"answer-promote: failed at {step} ({error})\n"
     assert _variant(embedded) == "a"
+
+
+# --- hand grading (D120) -----------------------------------------------------------------------
+
+
+def _grades(root: Path, version: str = VERSION) -> list[grades.GradeRow]:
+    return grades.read_grades(root, MODEL_ID, version)
+
+
+def test_grading_resumes_where_it_stopped_and_keeps_text_out_of_the_file(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    questions = {q.question: q for q in read_questions(label_dir / "questions.csv")}
+    order = [
+        q.question_id
+        for q in grades.grading_order(questions.values())
+        if q.question_id != "q004"  # dropped: no scorable gold
+    ]
+
+    def run(count: int, *keys: str) -> KeyTerminal:
+        terminal = KeyTerminal(*keys)
+        assert commands.run_grade_answers(count, terminal=terminal, services=NO_SERVICES) == 0
+        return terminal
+
+    def asked(server: StubLlm) -> list[str]:
+        texts = [_user(r).rsplit("Question: ", 1)[1] for r in server.requests]
+        return [questions[t].question_id for t in texts]
+
+    with StubLlm(reply=lambda body: _output(True, [1], f"{REPLY_SENTINEL} [1]")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        comparison.promote(embedded, "b")
+        quit_at_once = run(50, "q")
+        assert quit_at_once.printed[-4:-1] == [
+            "graded this run: 0",
+            "graded in the file: 0",
+            "questions not yet graded: 3",
+        ]
+        one = run(1, "c", "y")
+        assert one.printed[-4:-1] == [
+            "graded this run: 1",
+            "graded in the file: 1",
+            "questions not yet graded: 2",
+        ]
+        run(50, "p", "n", "w", "y")
+        done = run(50)
+        assert done.printed[-4:-1] == [
+            "graded this run: 0",
+            "graded in the file: 3",
+            "questions not yet graded: 0",
+        ]
+        # the quit question comes first again; a graded one is never asked twice
+        assert asked(server) == [order[0], order[0], order[1], order[2]]
+        assert _systems(server) == {system_prompt("b")}
+
+    check_lines(done.printed[-4:], report.GRADE_SHAPES)
+    rows = _grades(label_dir, VERSION_B)
+    assert [(r.question_id, r.grade, r.supported) for r in rows] == [
+        (order[0], "correct", "yes"),
+        (order[1], "partial", "no"),
+        (order[2], "wrong", "yes"),
+    ]
+    path = label_dir / "grades" / f"{MODEL_ID}__{VERSION_B}.csv"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for secret in (SENTINEL, "SENDER", "midterm", "ramen", "friday", "pizza", "golf"):
+        assert secret not in path.read_text()
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""  # everything goes through the terminal
+    _assert_clean(caplog.text, extra=("midterm", "ramen"))
+
+    assert commands.run_grade_summary(start_db=_no_db) == 0
+    summary = capsys.readouterr().out.splitlines()
+    check_lines(summary, report.SUMMARY_SHAPES)
+    assert summary[1:4] == [
+        f"answer prompt version: {VERSION_B}",
+        "retrieval method: vector",
+        "graded questions: 3",
+    ]
+    _assert_clean("\n".join(summary), extra=("midterm", "ramen", str(label_dir)))
+
+
+def test_grading_refuses_a_partly_embedded_corpus_and_asks_nothing(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        conn.execute("DELETE FROM enrich.message_embeddings WHERE message_key = %s", (ID["a3"],))
+    terminal = KeyTerminal()
+    assert commands.run_grade_answers(terminal=terminal, services=NO_SERVICES) == 1
+    assert capsys.readouterr().out == (
+        "messages not embedded: 1\ngrade-answers: failed at corpus (IncompleteCorpusError)\n"
+    )
+    assert terminal.printed == [] and llm.requests == []
+    assert not (label_dir / "grades").exists()
+
+
+def test_grading_keeps_the_finished_grades_when_the_server_goes_away(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with StubLlm(reply=lambda body: _output(False, [], "")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+
+        class Stops(KeyTerminal):
+            def out(self, text: str) -> None:
+                if text.startswith("[2 of"):
+                    server.shutdown()
+                    server.server_close()
+                super().out(text)
+
+        assert commands.run_grade_answers(terminal=Stops(), services=NO_SERVICES) == 1
+    assert capsys.readouterr().out == ("grade-answers: failed at answering (ProviderUnavailable)\n")
+    assert [r.outcome for r in _grades(label_dir)] == [ABSTAINED]
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_grading_needs_a_positive_count(
+    warehouse: str, capsys: pytest.CaptureFixture[str], count: int
+) -> None:
+    terminal = KeyTerminal()
+    assert commands.run_grade_answers(count, terminal=terminal, services=_never()) == 1
+    assert capsys.readouterr().out == "grade-answers: failed at count (InvalidCountError)\n"
+
+
+def test_grade_summary_without_grades_fails_with_a_fixed_line(
+    embedded: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert commands.run_grade_summary(start_db=_no_db) == 1
+    assert capsys.readouterr().out == "grade-summary: failed at scoring (NoGradesError)\n"
+
+
+def test_synthetic_grading_uses_the_temporary_directory(
+    embedded: str,
+    llm: StubLlm,
+    label_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    committed = _write_questions(tmp_path)
+    (label_dir / "questions.csv").unlink()
+    monkeypatch.setattr(tagging, "SYNTHETIC_DATABASE", "gcw_test")
+    monkeypatch.setattr(retrieval_commands, "SYNTHETIC_QUESTIONS", committed)
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    terminal = KeyTerminal(*"cycycy")  # one character at a time, as piped keys arrive
+    assert commands.run_grade_answers(5, True, terminal, NO_SERVICES) == 0
+    (root,) = tmp_path.glob("gcw-synthetic-eval-*")
+    assert len(_grades(root)) == 3
+    assert commands.run_grade_summary(True, start_db=_no_db) == 0
+    assert "graded questions: 3" in capsys.readouterr().out
+    assert list(label_dir.iterdir()) == []

@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -277,3 +277,14 @@ answer-promote:
 # make eval-all ENV_FILE=<env file outside the repo>
 eval-all:
 	@uv run gcw eval-all $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+# Hand grading (D120). grade-answers starts only the db, llm and embed services, regenerates the
+# next N ungraded answers (default 50) and shows each with its cited messages on this terminal only;
+# c correct, p partial, w wrong, then y/n for whether the citations support it; q quits. Grades
+# (IDs and numbers, never text) go to GCW_LABEL_DIR/grades/. grade-summary prints fixed lines only.
+# Real-data runs are Ryan's: make grade-answers ENV_FILE=<env file outside the repo>
+grade-answers:
+	@uv run gcw grade-answers $(if $(N),--n $(N)) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+grade-summary:
+	@uv run gcw grade-summary $(if $(filter 1,$(SYNTHETIC)),--synthetic)

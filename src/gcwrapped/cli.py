@@ -21,6 +21,7 @@ from gcwrapped import (
     real_ingest,
 )
 from gcwrapped.answers import commands as answers
+from gcwrapped.answers.grades import DEFAULT_COUNT
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.labeling import commands as labeling
@@ -234,6 +235,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="make a prompt variant the default; refused unless the latest verdict names it",
     )
     answer_promote.add_argument("--variant", required=True, metavar="V", help="a or b")
+    grade = sub.add_parser(
+        "grade-answers",
+        help="hand-grade answers in this terminal; stores grades and IDs, no text (D120)",
+    )
+    grade.add_argument(
+        "--n", type=int, default=DEFAULT_COUNT, metavar="N", help="answers to grade this run"
+    )
+    grade.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
+    grade_summary = sub.add_parser(
+        "grade-summary", help="counts and rates of the hand grades (fixed lines only)"
+    )
+    grade_summary.add_argument(
+        "--synthetic", action="store_true", help="the synthetic grades (gcw_dev only)"
+    )
     eval_all_cmd = sub.add_parser(
         "eval-all", help="run every retrieval and answer eval in order, then promote (D122)"
     )
@@ -475,6 +492,10 @@ def _run(argv: Sequence[str] | None) -> int:
         return answers.run_answer_compare(synthetic=args.synthetic)
     if args.command == "answer-promote":
         return answers.run_answer_promote(args.variant)
+    if args.command == "grade-answers":
+        return answers.run_grade_answers(args.n, synthetic=args.synthetic)
+    if args.command == "grade-summary":
+        return answers.run_grade_summary(synthetic=args.synthetic)
     if args.command == "eval-all":
         return eval_all.run(synthetic=args.synthetic)
     if args.command == "consent-template":

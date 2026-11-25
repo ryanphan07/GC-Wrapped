@@ -173,9 +173,15 @@ def score(rows: Sequence[Row], questions: int) -> EvalResult:
 # --- private files -----------------------------------------------------------------------------
 
 
-def results_path(root: Path, model_id: str, prompt_version: str) -> Path:
+def check_file_key(model_id: str, prompt_version: str) -> None:
+    """The two parts of an answers or grades file name, which must not be able to leave its
+    directory."""
     if _MODEL_ID.fullmatch(model_id) is None or _VERSION.fullmatch(prompt_version) is None:
         raise AnswerResultsError
+
+
+def results_path(root: Path, model_id: str, prompt_version: str) -> Path:
+    check_file_key(model_id, prompt_version)
     return root / RESULTS_DIR / f"{model_id}__{prompt_version}.json"
 
 

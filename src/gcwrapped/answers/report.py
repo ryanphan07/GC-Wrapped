@@ -1,10 +1,11 @@
-"""Fixed-line output for `make answer-eval`, `answer-compare` and `answer-promote`, and for
-`make ask`'s numbers line and summary (D112, D113, D115, D116, D121).
+"""Fixed-line output for `make answer-eval`, `answer-compare`, `answer-promote`, `grade-summary`
+and `grade-answers`' closing counts, and for `make ask`'s numbers line and summary (D112, D113,
+D115, D116, D120, D121).
 
 Every line is a fixed label plus numbers or a name from a closed list, checked with fullmatch
-before anything is printed. The one deliberate exception in this package is the answer and the
-messages it cites (or, after an abstention, was shown), which `commands` prints to the terminal
-for `make ask` only.
+before anything is printed. The deliberate exceptions in this package are what `commands` prints to
+the terminal for `make ask` (the answer and the messages it cites or, after an abstention, was
+shown) and for `make grade-answers` (the question, the answer and the cited messages).
 """
 
 import re
@@ -12,11 +13,12 @@ from collections.abc import Mapping
 
 from gcwrapped.answers.comparison import CompareResult
 from gcwrapped.answers.evaluation import EvalResult, Rate
+from gcwrapped.answers.grades import Summary
 from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, TIMED_OUT
 from gcwrapped.answers.prompt import VARIANTS
 from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.retrieval import report as retrieval_report
-from gcwrapped.retrieval.evaluation import METHODS
+from gcwrapped.retrieval.evaluation import METHODS, Estimate
 from gcwrapped.tagging.model import REGISTRY
 from gcwrapped.tagging.report import check_lines
 from gcwrapped.tagging.runner import Timings
@@ -102,10 +104,48 @@ PROMOTE_SHAPES = (
     rf"previous variant: ({_VARIANTS}|none)",
     r"answer-promote: ok",
 )
-COMMANDS = ("answer-eval", "ask", "answer-compare", "answer-promote")
+_MAYBE_INTERVAL = rf"(\[{_NUM}, {_NUM}\]|n/a)"
+GRADE_SHAPES = (
+    r"graded this run: \d+",
+    r"graded in the file: \d+",
+    r"questions not yet graded: \d+",
+    r"grade-answers: ok",
+)
+_GRADE_COUNTS = (
+    "graded questions",
+    "answered",
+    "abstained",
+    "invalid outputs",
+    "timed out",
+    "correct",
+    "partial",
+    "wrong",
+    "supported",
+)
+_GRADE_RATES = ("answer accuracy", "precision", "supported rate")
+SUMMARY_SHAPES = (
+    rf"model id: ({_MODELS})",
+    r"answer prompt version: [0-9a-f]{12}",
+    rf"retrieval method: ({_METHODS})",
+    *(rf"{name}: \d+" for name in _GRADE_COUNTS),
+    *(
+        shape
+        for name in _GRADE_RATES
+        for shape in (rf"{name}: {_MAYBE}", rf"{name} 95% interval: {_MAYBE_INTERVAL}")
+    ),
+    r"grade-summary: ok",
+)
+COMMANDS = (
+    "answer-eval",
+    "ask",
+    "answer-compare",
+    "answer-promote",
+    "grade-answers",
+    "grade-summary",
+)
 STEPS = (
-    "variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|corpus|"
-    "answering|scoring|predictions|verdict|promote|render"
+    "count|variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|"
+    "corpus|grades|answering|scoring|predictions|verdict|promote|render"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 
@@ -229,6 +269,51 @@ def render_promote(database: str, variant: str, previous: str | None) -> list[st
         "answer-promote: ok",
     ]
     return check_lines(lines, PROMOTE_SHAPES)
+
+
+def render_grading(graded_now: int, graded: int, remaining: int) -> list[str]:
+    lines = [
+        f"graded this run: {graded_now}",
+        f"graded in the file: {graded}",
+        f"questions not yet graded: {remaining}",
+        "grade-answers: ok",
+    ]
+    return check_lines(lines, GRADE_SHAPES)
+
+
+def _estimate_lines(name: str, estimate: Estimate | None) -> list[str]:
+    if estimate is None:
+        return [f"{name}: n/a", f"{name} 95% interval: n/a"]
+    low, high = estimate.interval
+    return [f"{name}: {estimate.value:.3f}", f"{name} 95% interval: [{low:.3f}, {high:.3f}]"]
+
+
+def render_summary(model_id: str, prompt_version: str, method: str, summary: Summary) -> list[str]:
+    counts = (
+        summary.graded,
+        summary.answered,
+        summary.abstained,
+        summary.invalid,
+        summary.timed_out,
+        summary.correct,
+        summary.partial,
+        summary.wrong,
+        summary.supported,
+    )
+    rates = (summary.accuracy, summary.precision, summary.supported_rate)
+    lines = [
+        f"model id: {model_id}",
+        f"answer prompt version: {prompt_version}",
+        f"retrieval method: {method}",
+        *(f"{name}: {count}" for name, count in zip(_GRADE_COUNTS, counts, strict=True)),
+        *(
+            line
+            for name, rate in zip(_GRADE_RATES, rates, strict=True)
+            for line in _estimate_lines(name, rate)
+        ),
+        "grade-summary: ok",
+    ]
+    return check_lines(lines, SUMMARY_SHAPES)
 
 
 def failure_line(command: str, step: str, exc: BaseException) -> str:
