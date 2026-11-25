@@ -12,9 +12,9 @@ Context is cleared after every session. Anything not written into the repo is lo
 - main is protected: all changes go through a PR.
 
 ## Current phase
-Phase 3 (RAG + privacy + deploy) is in progress. S5 (embeddings, vector and hybrid retrieval, retrieval eval; D102-D108) and S6 (answers with citations from the local model, the retrieval corpus guard, the promoted retrieval method, `make ask` and the automatic answer eval; D109-D114) and S6a (answer diagnostics and eval reporting fixes; D115-D118) are built on synthetic data. The real embedding job has run (METRICS.md). Real questions are not written yet, so the real retrieval eval and answer eval are pending and are Ryan's. Next: S6b hand grading of answer correctness, S7 web app (Burst plan). The vector-vs-hybrid win rule is pre-registered in D104 (`docs/decisions.md`): hybrid becomes the default only if it clears that rule. Phase 2 (Enrichment + evals) is complete; its decisions are D69-D101 in `docs/decisions.md`, its results are in METRICS.md and its checklist is in `docs/STATUS.md`. The eval score is reported automatically on every change (the CI eval gate, D100). During the burst (D84) all model work is local and costs $0: llama.cpp for tagging and answers, a local embedding model; a hosted provider fails closed unless the D76 NER gate (P2-2b) has passed.
+Phase 3 (RAG + privacy + deploy) is in progress. S5 (embeddings, vector and hybrid retrieval, retrieval eval; D102-D108), S6 (answers with citations from the local model, the retrieval corpus guard, the promoted retrieval method, `make ask` and the automatic answer eval; D109-D114), S6a (answer diagnostics and eval reporting fixes; D115-D118) and the burst finish (S6b hand grading, the answer prompt A/B, `make eval-all`, the Wrapped mart and the dashboard's Ask and Wrapped pages; D119-D123 and later) are built on synthetic data. The real embedding job has run (METRICS.md). What is left of the burst is Ryan's (D119): write the eval questions, run `make eval-all`, grade answers and record the results in METRICS.md. Win rules are pre-registered in `docs/decisions.md`: hybrid retrieval becomes the default only if it clears D104, answer prompt B only if it clears D121. Phase 2 (Enrichment + evals) is complete; its decisions are D69-D101 in `docs/decisions.md`, its results are in METRICS.md and its checklist is in `docs/STATUS.md`. The eval score is reported automatically on every change (the CI eval gate, D100). During the burst (D84) all model work is local and costs $0: llama.cpp for tagging and answers, a local embedding model; a hosted provider fails closed unless the D76 NER gate (P2-2b) has passed.
 Phase 1 (Pipeline) is complete: parse Instagram DMs (Meta "Download your information" export, JSON format) → clean/dedupe → Postgres `raw` schema → dbt models with tests → Airflow landing-zone DAG → Streamlit dashboard, run end to end with one command. Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
-Not yet in scope: analysis of image/video content, a second platform, any hosted LLM or embedding API (D84). The web app and the tunnel deploy arrive in the sessions listed under Burst plan, one per brief.
+Not yet in scope: analysis of image/video content, a second platform, any hosted LLM or embedding API (D84). The app is the local Streamlit dashboard (D119, D123); the tunnel deploy is later, leisure work.
 
 ## Privacy rules (hard requirements)
 - You are a third-party API. Real chat data must never enter your context.
@@ -33,7 +33,7 @@ Not yet in scope: analysis of image/video content, a second platform, any hosted
 
 ## Stack
 Python 3.12 (uv), psycopg 3, pydantic-settings, Postgres 17 + pgvector (Docker), dbt-postgres, Airflow (LocalExecutor, runs from its own image: official base plus gcwrapped and dbt in an isolated venv), Streamlit dashboard, pytest, ruff, mypy --strict, GitHub Actions.
-Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Installed so far (D89, D98): the llama.cpp server as the `llm` compose service (CPU image pinned by digest, 127.0.0.1 only, profile `llm`) and Qwen3.5 4B (default) and 2B (challenger) Q4_K_M with thinking off, plus Qwen3-4B-Instruct-2507 as a reference and Qwen3.5 0.8B used only by the CI eval gate (D100), fetched to ~/.cache/gcw/models by `make llm-model`. Answers (D111) use the tag default model through the same `llm` service. The local embedding model (D102) is Qwen3-Embedding-0.6B Q8_0, served by the same pinned image as the `embed` compose service (127.0.0.1 only, profile `embed`) and fetched by `make llm-model MODEL=qwen3-embedding-0.6b-q8_0`.
+Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app runs on the laptop only (D119). Installed so far (D89, D98): the llama.cpp server as the `llm` compose service (CPU image pinned by digest, 127.0.0.1 only, profile `llm`) and Qwen3.5 4B (default) and 2B (challenger) Q4_K_M with thinking off, plus Qwen3-4B-Instruct-2507 as a reference and Qwen3.5 0.8B used only by the CI eval gate (D100), fetched to ~/.cache/gcw/models by `make llm-model`. Answers (D111) use the tag default model through the same `llm` service. The local embedding model (D102) is Qwen3-Embedding-0.6B Q8_0, served by the same pinned image as the `embed` compose service (127.0.0.1 only, profile `embed`) and fetched by `make llm-model MODEL=qwen3-embedding-0.6b-q8_0`.
 
 ## Commands
 ```
@@ -45,13 +45,14 @@ make test-integration           # needs Postgres up (gcw_dev)
 make test-warehouse             # warehouse tests (separate marker)
 make lint                       # ruff + mypy
 make dbt-deps / make dbt-build  # against gcw_dev only
-make airflow-up / dashboard-up  # Airflow UI :8080 / Streamlit dashboard
+make airflow-up                  # Airflow UI :8080
+make dashboard-up                # starts db, llm (promoted model), embed and the Streamlit dashboard on 127.0.0.1 (activity, Wrapped and Ask pages, D123). Real-data runs are Ryan's; never ask for what its pages show.
 make e2e [ENV_FILE=...]         # one-command end to end
 make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 make purge-unlisted [CONFIRM=1]  # delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (D91); dry run unless CONFIRM=1; counts only. Real-data runs are Ryan's.
-make consent-prune [APPLY=1]    # remove everything derived from messages no longer eligible (D101, D105): tags, embedding rows, hand-label rows, question gold, stored tag and retrieval predictions and answer-eval rows in GCW_LABEL_DIR (a retrieval or answers file in an old format is deleted whole if it refers to an ineligible message, D118); dry run unless APPLY=1; counts only. Real-data runs are Ryan's.
+make consent-prune [APPLY=1]    # remove everything derived from messages no longer eligible (D101, D105): tags, embedding rows, hand-label rows, question gold, stored tag and retrieval predictions, answer-eval rows and hand grades in GCW_LABEL_DIR (a retrieval or answers file in an old format is deleted whole if it refers to an ineligible message, D118); dry run unless APPLY=1; counts only. Real-data runs are Ryan's.
 make text-audit                 # aggregate counts per Instagram placeholder pattern and of the remaining user text (D95); never text. Real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
@@ -65,7 +66,12 @@ make retrieval-eval METHOD=vector|hybrid [SYNTHETIC=1]  # recall@1/5/10 and MRR@
 make retrieval-compare A=vector B=hybrid [SYNTHETIC=1]  # applies the D104 win rule to the two stored runs (refused if their corpus hashes differ) and records the verdict in GCW_LABEL_DIR/experiments/; fixed lines. Real-data runs are Ryan's.
 make retrieval-promote METHOD=vector|hybrid  # sets enrich.retrieval_default, the method answers use (vector with no row); refused unless the latest retrieval-compare verdict names METHOD the winner and was made on the current embed version (D110). Real-data runs are Ryan's.
 make ask [SYNTHETIC=1]           # starts db + llm + embed only; reads questions at a prompt (never argv), prints each answer and its cited messages (after an abstention, the messages the model was shown, D115) to the terminal only, each answer followed by one numbers-only line (sources shown, prompt tokens, seconds), writes nothing; a blank line ends it and prints fixed summary lines, with the timed out count and prompt tokens p50 and p95 (D113, D116). Real-data runs are Ryan's; never ask for its answers or cited messages.
-make answer-eval [SYNTHETIC=1]   # starts db + llm + embed only; answers each scorable question once, stores IDs, hashes and numbers (never answer text) outside the repo, prints counts and rates with 95% Wilson intervals (D117), the timed out count among them, and prompt tokens p50, p95 and max (D112, D116). Same corpus guard as retrieval-eval. Real-data runs are Ryan's.
+make answer-eval [SYNTHETIC=1] [VARIANT=a|b]  # starts db + llm + embed only; answers each scorable question once with prompt variant VARIANT (default: the promoted one, D121), stores IDs, hashes and numbers (never answer text) outside the repo, prints counts and rates with 95% Wilson intervals (D117), the timed out count among them, and prompt tokens p50, p95 and max (D112, D116). Same corpus guard as retrieval-eval. Real-data runs are Ryan's.
+make answer-compare [SYNTHETIC=1]  # applies the D121 win rule to the stored A and B answer-eval runs of the current model (refused if embed version, corpus hash, retrieval method or question set differ) and records the verdict in GCW_LABEL_DIR/experiments/; fixed lines. Real-data runs are Ryan's.
+make answer-promote VARIANT=a|b  # sets enrich.answer_prompt_default, the variant answers use (a with no row); refused unless the latest answer-compare verdict names VARIANT the winner and was made with the current model, prompt versions and embed version (D121). Real-data runs are Ryan's.
+make eval-all [SYNTHETIC=1]      # every eval in order, stopping at the first failure: embed, both retrieval evals, compare, promote, answer-eval a and b, answer-compare, answer-promote (D122; SYNTHETIC=1 skips both promotes). Real-data runs are Ryan's.
+make grade-answers [N=50] [SYNTHETIC=1]  # hand grading (D120): regenerates the next N ungraded answers, shows each with its cited messages on the terminal only, reads c/p/w then y/n, q quits; grades (IDs and numbers, no text) go to GCW_LABEL_DIR/grades/. Real-data runs are Ryan's; never ask for what it shows.
+make grade-summary [SYNTHETIC=1]  # counts, answer accuracy, precision and supported rate with 95% Wilson intervals for the current model and answer prompt; fixed lines. Real-data runs are Ryan's.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
 The CI eval gate (D100) fails a PR whose tiny-model synthetic tag-eval is below the floors in `tests/fixtures/eval/gate_floors.json`; a floor changes only through a new decisions entry. The CI retrieval gate (D108) does the same for synthetic vector recall@5 (`tests/fixtures/eval/retrieval_floors.json`).
@@ -78,11 +84,11 @@ One burst through deploy and real users, then leisurely work (Ryan, 2026-11-10).
 - S4 tagging eval harness (synthetic; the real eval is in the batch)
 - S5 embeddings + retrieval (synthetic)
 - S6 answers with citations
-- S6b hand grading of answer correctness
-- S7 web app
+- S6b + S7 hand grading, answer prompt A/B, one-command evals, Ask and Wrapped pages, README (one session)
 - Real-data batch (label, tag, evals, embed) once consent replies slow down (Ryan)
-- S8 deploy via tunnel
 - S9 wrap-up
+
+Later (leisure), per D119: S8 deploy via tunnel; the usage window.
 
 ## Conventions
 - Business logic lives in `src/gcwrapped/`; DAGs only call it. Everything runs and tests without Airflow.
