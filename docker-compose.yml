@@ -125,5 +125,49 @@ services:
       retries: 60
       start_period: 20s
 
+  # Local llama.cpp server for embeddings (D102): the same pinned image as llm, serving the pinned
+  # embedding model with last-token pooling. Its own service and profile because the two never need
+  # to run together; `make embed` and `make retrieval-eval` name it explicitly, so `make up`,
+  # `make e2e` and the other CI jobs never start it. The whole window must fit in one physical batch
+  # (--ubatch-size), and with one slot the slot's context is --ctx-size. Same no-leak flags as llm;
+  # the port is published on 127.0.0.1 only (GCW_EMBED_PORT lets two stacks coexist).
+  embed:
+    profiles: ["embed"]
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:c7d58273d753d33a352e5c41ab300c5ae040a16fa4b202231bb606478065c124
+    command:
+      - --model
+      - /models/Qwen3-Embedding-0.6B-Q8_0.gguf
+      - --alias
+      - qwen3-embedding-0.6b-q8_0
+      - --embedding
+      - --pooling
+      - last
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "8192"
+      - --batch-size
+      - "8192"
+      - --ubatch-size
+      - "8192"
+      - --parallel
+      - "1"
+      - --threads
+      - "8"
+      - --no-slots
+      - --no-webui
+    ports:
+      - "127.0.0.1:${GCW_EMBED_PORT:-8082}:8080"
+    volumes:
+      - ${GCW_MODEL_DIR:-${HOME}/.cache/gcw/models}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
 volumes:
   pgdata:

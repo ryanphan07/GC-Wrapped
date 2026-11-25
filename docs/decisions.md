@@ -585,3 +585,54 @@ Decision: make consent-prune ENV_FILE=<env> finds messages that are no longer el
 Alternative: prune tags only (current behavior); delete whole label files on any revocation.
 Why: a revoked or purged sender's data must leave every derived store, including private hand-made files. The dry run comes first because labels are hand work that can't be regenerated.
 Tradeoff: pruning labels shrinks the eval set, so earlier METRICS eval rows can no longer be reproduced exactly; the recorded results stay in METRICS.md.
+
+## D102 — 2026-11-24 — Local embedding model: Qwen3-Embedding-0.6B served by the pinned llama.cpp image
+Decision: Embeddings come from Qwen3-Embedding-0.6B (official Qwen GGUF, Q8_0, pinned commit and sha256), served by the same pinned llama.cpp image as a separate compose service with --embedding and last-token pooling, full 1024 dimensions, L2-normalized, cosine distance. Queries get the model's instruction prefix; stored messages get none.
+Alternative: bge-small-en-v1.5 (33M parameters, 384 dimensions); nomic-embed-text-v1.5.
+Why: multilingual and strong for its size, which helps with slang and mixed-language chat; reuses the existing serving, pinning and hash checks, so no new runtime; stays local and $0 (D84).
+Tradeoff: much slower per message than bge-small on CPU; the query prefix is one more thing that must match between eval and app.
+
+## D103 — 2026-11-24 — Retrieval unit: one vector per message, embedded with its neighbors
+Decision: Each local-eligible user-text message gets one vector, computed from a window: up to 2 eligible messages before and 2 after it in the same thread and conversation session, in time order, one line per message as "sender: text". The row stores the center message ID and the IDs of every message in the window. Search returns center message IDs, so recall and citations stay at the message level. Search is exact (no ANN index). Embeddings live only in the warehouse of the stack that made them.
+Alternative: each message alone; conversation segments split by time gaps.
+Why: short replies ("7pm works") carry almost no meaning alone; the tag eval showed single messages lack context. Keeping one vector per message keeps the 100-question gold (message IDs) and citations one-to-one. At about 6,000 vectors an exact scan takes milliseconds, so an index adds nothing yet.
+Tradeoff: neighboring windows overlap, so top results can be near-duplicates; a neighbor can outrank the gold message; any window that contains a message later made ineligible must be deleted, because that message's text shaped the vector.
+
+## D104 — 2026-11-24 — Pre-registered vector vs hybrid retrieval comparison
+Decision: Baseline: vector search (D103). Variant: hybrid, the vector list and a Postgres full-text list (simple configuration, query lexemes joined with OR, over the same window text), top 50 from each, fused by reciprocal rank fusion with k = 60. Eval set: Ryan's 100 hand-written questions, gold = message IDs. Metric: recall@5 (a hit if any gold ID is in the top 5); MRR@10 secondary. Hybrid becomes the default only if the paired-bootstrap 95% interval of per-question recall@5 (hybrid minus vector) lies entirely above 0 and hybrid's p95 retrieval latency (query embedding plus SQL) is under 1.0 s on the laptop CPU. Otherwise vector stays; the result is recorded either way.
+Alternative: pick by the point estimate; tune fusion weights on the same questions.
+Why: the win rule is fixed before any real run, so it can't be bent toward a result; the simple configuration avoids English stemming and stop words on slang, names and mixed language; OR matching, because an AND query returns almost nothing for natural-language questions.
+Tradeoff: with 100 questions only a large gap clears the rule; the questions were paraphrased on purpose (D86), which handicaps keyword search.
+
+## D105 — 2026-11-24 — consent-prune scope: embeddings in, ID-only files out
+Decision: consent-prune also deletes every embedding row whose center message or any window member is ineligible, and stored retrieval prediction rows that reference an ineligible message. Frozen sample files and skips.csv keep message IDs of ineligible messages; they hold IDs only, no text.
+Alternative: prune the frozen samples and skips too.
+Why: an embedding encodes the text of every message in its window, so it is derived content. The frozen sample is what makes the label set reproducible, and an ID carries no content.
+Tradeoff: ID-only files still record that a message once existed; a full purge of a person (deleting the messages themselves) would need a separate step.
+
+## D106 — 2026-11-24 — purge-unlisted deletes embedding rows explicitly and counts them (extends D91)
+Decision: make purge-unlisted covers enrich.message_embeddings: it deletes the rows whose center message is in a thread not on the allowlist, in the same transaction as the other deletes, and prints "embeddings: N" in both the dry run and the apply. The foreign key's ON DELETE CASCADE stays as a backstop, not as the mechanism. A window never crosses threads (D103), so deleting by the center's thread removes every window that contains an unlisted message; a test proves it.
+Alternative: only add the table to the covered list and let the cascade delete the rows.
+Why: Ryan's choice. D91 requires every table keyed to a message to be purged, and the dry run must show what a real run will remove.
+Tradeoff: one more output line in an existing make target.
+
+## D107 — 2026-11-24 — Implementation details D102-D105 leave open (S5)
+Decision:
+- Session: analytics.fct_messages.session_id, the dbt rule (a gap over session_gap_minutes starts a new one), computed over all messages, eligible or not. Window lines use the sender display name from raw.messages; line breaks inside a name or message become spaces. The cap is 2000 characters; the farthest neighbors are dropped first, the later one first on a tie; a center longer than the cap is cut.
+- The query prefix is the model card's own retrieval instruction, unchanged. The pinned server appends the end-of-text token itself, so the client adds none. The client normalizes every vector again and rejects any that is not 1024 finite numbers. One slot, context and batch of 8192 tokens.
+- The embed version hashes the model sha256, the window constants, the line format, the session rule, the dimensions and the query instruction. It does not hash the server image or the session gap; a changed gap shows up as changed windows.
+- A row is "already current" only if it has this version and model and lists exactly the window the message has now, so a newly consented or newly ingested neighbor causes a re-embed. make embed deletes nothing; consent-prune does (D105).
+- Consent applies at query time too: search skips a row if its center or any window member is not eligible now (D75, D88), before anything is pruned.
+- Full-text ranking is ts_rank with default normalization, ties by message ID. Fusion ties go to the better vector rank, then the message ID.
+- A question is dropped if its source message is not eligible (as in D101) or none of its gold messages is searchable; otherwise its gold is cut to the searchable ones. Latency is each question's query embedding plus SQL, nearest-rank percentiles, no warm-up call; "under 1.0 s" is strict.
+- Predictions are GCW_LABEL_DIR/retrieval/<method>.json: IDs, a sha256 of each question, seconds; mode 0600. retrieval-compare accepts only A=vector B=hybrid, fails if the two files differ in embed version, question source, or any question's hash, source or gold, and does not score a question whose row in either file refers to a message no longer eligible (D87).
+- consent-prune removes a whole retrieval prediction row if its source, gold or any result is ineligible, counted in "prediction rows to prune". "ineligible messages" is renamed "ineligible messages with derived records", which is what it counts.
+Alternative: version-only "current" (stale windows after new consent or ingest); ts_rank_cd; prune inside make embed.
+Why: each choice is fixed before any real run, keeps one eligibility rule in force wherever a vector is read, and keeps destructive steps in consent-prune with its dry run.
+Tradeoff: ts_rank has no inverse document frequency, so common words weigh as much as rare ones in the hybrid's text list; one revoked sender can remove most stored retrieval rows, so the eval is rerun after a prune.
+
+## D108 — 2026-11-24 — CI retrieval gate: the pinned embedding model scores the synthetic questions on every PR
+Decision: A CI job runs make embed twice (the second must embed nothing) and make retrieval-eval METHOD=vector SYNTHETIC=1 with the cached pinned embedding model. The PR fails if recall@5 is below the floor in tests/fixtures/eval/retrieval_floors.json (0.85) or any question was dropped. The floor was set once from a local run by the D100 rule: measured recall@5 minus 0.10, rounded down to the nearest 0.05. Changing it requires a new decisions entry.
+Alternative: stub embeddings only in CI; gating hybrid or MRR too.
+Why: it catches a broken window builder, query prefix, client, migration or search query on every PR, which a stub cannot.
+Tradeoff: one more CI job and a larger cached model. A pass shows the pipeline works, not that real retrieval is good; real numbers live in METRICS.md.

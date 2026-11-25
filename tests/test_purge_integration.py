@@ -33,7 +33,14 @@ CONSENT = [
     ("222", "SENTINELNAME c", "no"),
     ("333", "SENTINELNAME d", "yes"),
 ]
-TABLES = ("raw.messages", "raw.sender_consent", "enrich.message_tags", "raw.load_runs")
+TABLES = (
+    "raw.messages",
+    "raw.sender_consent",
+    "enrich.message_tags",
+    "enrich.message_embeddings",
+    "raw.load_runs",
+)
+KEYED = ("raw.messages", "raw.sender_consent", "enrich.message_tags", "enrich.message_embeddings")
 
 
 def _no_start() -> None:
@@ -56,10 +63,9 @@ def _counts(url: str) -> dict[str, int]:
 
 def _threads_in(url: str, table: str) -> set[str]:
     with psycopg.connect(url) as conn:
-        if table == "enrich.message_tags":
+        if table.startswith("enrich."):
             rows = conn.execute(
-                "SELECT m.thread_id FROM enrich.message_tags t "
-                "JOIN raw.messages m USING (message_key)"
+                f"SELECT m.thread_id FROM {table} t JOIN raw.messages m USING (message_key)"
             ).fetchall()
         else:
             rows = conn.execute(f"SELECT thread_id FROM {table}").fetchall()
@@ -94,6 +100,12 @@ def warehouse(migrated_db: str, monkeypatch: pytest.MonkeyPatch) -> str:
                 "prompt_version, run_id) VALUES (%s, 'food', 'neutral', 'm', 'p', 'r')",
                 (_key(n),),
             )
+            conn.execute(
+                "INSERT INTO enrich.message_embeddings (message_key, window_message_keys, "
+                "embed_version, model_id, embedding, window_tsv) VALUES (%s, ARRAY[%s], 'v', 'm', "
+                "array_fill(1, ARRAY[1024])::vector, to_tsvector('simple', 'SENTINELTEXT'))",
+                (_key(n), _key(n)),
+            )
         for thread, sender, consent in CONSENT:
             conn.execute(
                 "INSERT INTO raw.sender_consent (thread_id, sender_name, consent) "
@@ -122,18 +134,20 @@ def test_a_shorter_allowlist_purges_exactly_the_removed_thread_in_every_table(
         "messages: 3",
         "reactions: 4",
         "tags: 3",
+        "embeddings: 3",
         "consent rows: 2",
         "mode: deleted",
         "purge-unlisted: ok",
     ]
     for line, shape in zip(out.splitlines(), purge.SHAPES, strict=True):
         assert re.fullmatch(shape, line)
-    for table in ("raw.messages", "raw.sender_consent", "enrich.message_tags"):
+    for table in KEYED:
         assert _threads_in(warehouse, table) == {"111", "333"}
     assert _counts(warehouse) == {
         "raw.messages": 3,
         "raw.sender_consent": 2,
         "enrich.message_tags": 3,
+        "enrich.message_embeddings": 3,
         "raw.load_runs": 1,  # no thread or message key: stays
     }
     assert "sentinel" not in out.lower()
@@ -148,11 +162,12 @@ def test_a_dry_run_reports_the_same_counts_and_deletes_nothing(
     assert purge.run(start_db=_no_start) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[3:9] == [
+    assert lines[3:10] == [
         "threads to purge: 1",
         "messages: 3",
         "reactions: 4",
         "tags: 3",
+        "embeddings: 3",
         "consent rows: 2",
         "mode: dry run",
     ]
@@ -183,6 +198,7 @@ def test_a_failure_during_the_delete_leaves_every_table_unchanged(
     assert _counts(warehouse) == before
     assert _threads_in(warehouse, "enrich.message_tags") == {"111", "222", "333"}
     assert _threads_in(warehouse, "raw.sender_consent") == {"111", "222", "333"}
+    assert _threads_in(warehouse, "enrich.message_embeddings") == {"111", "222", "333"}
 
 
 @pytest.mark.parametrize("value", ["", "  "])
@@ -208,13 +224,14 @@ def test_a_rerun_purges_nothing(warehouse: str, capsys: pytest.CaptureFixture[st
     assert purge.run(confirm=True, start_db=_no_start) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[1:8] == [
+    assert lines[1:9] == [
         "threads in the warehouse: 2",
         "threads allowlisted: 2",
         "threads to purge: 0",
         "messages: 0",
         "reactions: 0",
         "tags: 0",
+        "embeddings: 0",
         "consent rows: 0",
     ]
 
@@ -291,7 +308,8 @@ def test_a_database_missing_migration_004_is_migrated_and_then_purged_normally(
     assert purge.run(confirm=True, start_db=_no_start) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert "messages: 1" in lines and "tags: 0" in lines and lines[-1] == "purge-unlisted: ok"
+    assert "messages: 1" in lines and "tags: 0" in lines and "embeddings: 0" in lines
+    assert lines[-1] == "purge-unlisted: ok"
     with psycopg.connect(clean_db) as conn:
         assert conn.execute("SELECT to_regclass('enrich.message_tags')").fetchone() == (
             "enrich.message_tags",

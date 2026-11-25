@@ -102,8 +102,9 @@ def test_with_nobody_revoked_the_only_ineligible_label_is_the_declined_senders(
     lines = _run(capsys, apply=False)
     assert lines == [
         "target database: gcw_test",
-        "ineligible messages: 1",  # the declined sender's message, labeled by mistake
+        "ineligible messages with derived records: 1",  # the declined sender's, labeled by mistake
         "tags to prune: 0",
+        "embedding rows to prune: 0",
         "label rows to prune: 1",
         "question gold references to prune: 0",
         "questions left with no gold: 0",
@@ -123,8 +124,9 @@ def test_a_dry_run_reports_what_a_revocation_leaves_behind_and_changes_nothing(
 
     assert lines == [
         "target database: gcw_test",
-        "ineligible messages: 4",  # a1 a2 a3 and the declined sender's message
+        "ineligible messages with derived records: 4",  # a1 a2 a3 and the declined sender's
         "tags to prune: 3",
+        "embedding rows to prune: 0",  # none were made here: see test_retrieval_integration
         "label rows to prune: 4",
         "question gold references to prune: 3",  # a1 (q1), a2 (q2), a3 (q4)
         "questions left with no gold: 2",  # q1 (source gone) and q4
@@ -159,9 +161,10 @@ def test_apply_removes_every_derived_record_and_a_rerun_finds_nothing(
 
     for apply in (False, True):  # a rerun reports zero everywhere, in either mode
         again = _run(capsys, apply=apply)
-        assert again[1:7] == [
-            "ineligible messages: 0",
+        assert again[1:8] == [
+            "ineligible messages with derived records: 0",
             "tags to prune: 0",
+            "embedding rows to prune: 0",
             "label rows to prune: 0",
             "question gold references to prune: 0",
             "questions left with no gold: 0",

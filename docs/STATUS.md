@@ -1,39 +1,40 @@
 # Status
-Last session: 2026-11-24 — S4b: CI eval gate (tiny model), consent-prune, eval diagnostics, METRICS rows for the real Phase 2 runs
+Last session: 2026-11-24 — S5: local embeddings, vector and hybrid retrieval, retrieval eval and compare (synthetic)
 
 ## Phase & state
-Phase 2 (Enrichment + evals) is complete (D99); Phase 3 (embeddings + retrieval, S5) is next. P2-2b (NER gate) is needed only before a hosted provider (D84).
-consent ledger [x] two-level opt-in [x] redaction [x] labeling tool [x] synthetic labeled sets [x] consent replies [x 58 of 58 yes] user-text definition [x] real labels [x] tagging pipeline [x] purge unlisted threads [x] eval harness [x] CI eval (S4b) [x on merge] real eval + Qwen3.5 4B vs 2B comparison [x] profiles [ ]
+Phase 3 (RAG + privacy + deploy): embeddings and retrieval are built and tested on synthetic data; nothing real is embedded yet. Phase 2 is complete (D99).
+embeddings [x synthetic] retrieval eval [x synthetic] real questions [ ] real embed [ ] real retrieval eval + compare [ ] answers with citations (S6) [ ] web app (S7) [ ] deploy (S8) [ ] usage window [ ]
 
 ## Done this session
-- docs/decisions.md D99-D101 (verbatim); CLAUDE.md: Phase 3 next, consent-prune and the gate-floor rule. METRICS.md: Tagging eval rows from the brief (the 2026-11-15 consent row already existed, so none added).
-- src/gcwrapped/tagging/model.py: `qwen3.5-0.8b-q4_k_m` (unsloth GGUF, pinned commit and sha256, thinking off). tests: registry (4 models), prompt version pinned at 11ac16d16643.
-- scripts/eval_gate.py, tests/fixtures/eval/gate_floors.json, tests/test_eval_gate.py: floors topic 0.55, sentiment 0.60; fixed output. .github/workflows/ci.yml: `eval-gate` job (cached model, tag-eval SYNTHETIC=1, gate).
-- tagging/{scoring,evaluation,report}.py: tag-eval majority-baseline lines and one confusion line per gold class (shape-checked; `report.check_eval_lines`). labeling/summary.py: the two sample lines.
-- src/gcwrapped/consent_prune.py, cli.py, Makefile: `make consent-prune [APPLY=1]`; tests/test_consent_prune_integration.py (8).
+- Task 0: the old "ineligible messages" counted only distinct ineligible message IDs still referenced by a derived record; APPLY deletes only from enrich.message_tags (now also message_embeddings) and rewrites tag_labels.csv, questions.csv, predictions/*.csv (now also retrieval/*.json); no message rows (both modes first apply pending migrations). Line renamed "ineligible messages with derived records".
+- docs: D102-D108; CLAUDE.md; METRICS.md three Tagging eval rows (83eccbb).
+- docker-compose.yml `embed` service; migrations/006_enrich_message_embeddings.sql; tagging/model.py EMBED_REGISTRY (`make llm-model` fetches it); config.py, .env.example GCW_EMBED_URL/PORT. src/gcwrapped/retrieval/ (window, client, embed, search, evaluation, report, commands); cli.py, Makefile `embed`, `retrieval-eval`, `retrieval-compare`.
+- consent_prune.py (D105: embedding rows, retrieval predictions); purge.py (D106).
+- CI `retrieval-gate` job, scripts/retrieval_gate.py, floor 0.85 (D108). Tests: test_retrieval{,_integration,_gate}.py, test_embed_server_local.py, embedding_stub.py.
 
 ## Deviations from brief
-- No 0.8B GGUF under Qwen/ (401); used unsloth, as for the 4B and 2B.
-- A question whose source message is ineligible is dropped whole (the file format needs the source inside the gold); it counts under "questions left with no gold".
-- frozen sample files and skips.csv (ids only) are not pruned. METRICS placeholder row kept (rows are never edited).
-- The two prompt shuffles in the bite test did not trip the gate (below); removing the label lists did.
+- purge-unlisted changed (not in the brief; asked, Ryan chose): deletes embedding rows and prints "embeddings: N" (D106).
+- Postgres image already pgvector/pgvector:pg17, unchanged (still not pinned by digest). Session = dbt fct_messages.session_id (60-minute gap), not the 30-minute rule.
+- Integration tests write to gcw_test (D68), not gcw_dev; task 7 was also run by hand on gcw_dev.
+- "Already current" also needs the same window, not only the same version (D107). retrieval-compare accepts only A=vector B=hybrid and reads eligibility from the database (D87).
+- Retrieval prediction rows count under the existing "prediction rows to prune" line. METRICS: the re-run row says "identical" without repeating the accuracies; macro-F1 not added (the cd95e19 row has it).
 
 ## Checks
-- make lint: pass. make test: 811 passed, 147 deselected (798 before). make test-integration: 146 passed, 1 skipped (138 before; llm down).
+- make lint: pass. make test: 882 passed, 175 deselected (811 before). make test-integration: 174 passed, 1 skipped (146 before; llm down; embed up). Prompt version 11ac16d16643.
 - dbt build gcw_dev: PASS=190 WARN=0 ERROR=0 TOTAL=190.
-- Floor run, qwen3.5-0.8b-q4_k_m, synthetic (60 labels, gcw_dev, local CPU): topic accuracy 0.683, sentiment accuracy 0.733 (chance 0.10, 0.33); floors 0.55 and 0.60.
-- Gate bites, local, not committed: (1) topic definitions rotated against names: topic 0.633, sentiment 0.767, gate ok; (2) names rotated: 0.600 / 0.733, gate ok; (3) topic and sentiment lists removed from the system prompt: topic 0.500, sentiment 0.717, gate FAILED (topic below 0.55), exit 1. The gate catches gross breakage, not subtle drift.
-- consent-prune on gcw_dev (one sender set to no, consent-load, temp label dir): dry run ineligible 54, tags 54, label rows 32, gold refs 13, no-gold questions 12, prediction rows 32; APPLY=1 same counts; reruns all 0; files 0600. Ledger restored and retagged after.
-- Tag-label sampler (labeling/sampling.py): stratified by thread (floor per thread, the rest proportional, seeded). "201 of 200" compared the label-file rows with the frozen sample size, so one label is for a message outside the current sample, likely made under an earlier draw (the flow offers only sample messages); new lines show it. Not verifiable here.
-- CI eval-gate job (PR #47, run 45500020093): pass, 2m34s job time, tag-eval step 94 s; topic accuracy 0.650 (floor 0.55), sentiment 0.750 (floor 0.60), majority baselines 0.100 / 0.367, "eval-gate: ok". It differs from the local 0.683 / 0.733 (CPU nondeterminism), so margins are about 0.10 and 0.15. All 6 CI jobs pass.
+- Synthetic, gcw_dev, laptop CPU, version e3ac6a56e412: `make embed SYNTHETIC=1` 223 eligible, 223 embedded, 0 failures, 36.15 s, 6.17 messages/s; rerun 0 embedded, 223 already current.
+- Synthetic retrieval-eval, 31 questions, 0 dropped. vector: recall@1 0.323 [0.161, 0.484], @5 0.968 [0.903, 1.000], @10 1.000 [1.000, 1.000], MRR@10 0.591 [0.489, 0.700], p50 0.131 s, p95 0.148 s. hybrid: recall@1 0.323 [0.161, 0.484], @5 0.935 [0.839, 1.000], @10 1.000 [1.000, 1.000], MRR@10 0.551 [0.440, 0.672], p50 0.133 s, p95 0.154 s.
+- Synthetic compare: scored 31, A 0.968, B 0.935, difference -0.032 [-0.161, 0.097], p95 B 0.154 s, latency met yes, winner vector.
+- Task 7 on gcw_dev (one sender to no): embedding rows to prune 98 (equals an independent SQL count; 54 are their own), tags 54, prediction rows 62; APPLY same; rerun all 0; make embed 169 eligible, 44 embedded, no window holds them. Ledger restored (98 re-embedded); tags back to 265.
 
 ## Not verified
-- Real-data steps below (Ryan). The eval-gate floors have run only on this laptop and one CI run.
+- Real-data steps (Ryan): llm-model and embed after merge; retrieval-eval and compare once the 100 questions exist. Real throughput and latency are unmeasured.
 
 ## Open issues and questions
-- Carried: Read(./data/**) does not cover Bash `cat data/...`; P2-5c items (placeholder NAME wildcard, pre-D95 METRICS rows not comparable); `gcw tag --no-start` does not verify the llm model; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic ~323 s; label files of a purged thread stay (consent-prune now removes rows; frozen samples and skips still hold ids); metrics.py reports external-eligible only.
-- Qwen3.5-4B is about 1.6x slower per message than the D90 model on CPU.
-- test_llm_server_local fails if the llm service runs a model other than the 4B default.
+- Carried: Read(./data/**) does not cover Bash `cat data/...`; P2-5c items (placeholder NAME wildcard, pre-D95 METRICS rows not comparable); `gcw tag --no-start` does not verify the llm model; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic ~323 s; label files of a purged thread stay (frozen samples and skips hold ids); metrics.py reports external-eligible only; Qwen3.5-4B ~1.6x slower than the D90 model; test_llm_server_local fails if llm serves another model; profiles not built.
+- Carried PR 47 chores: ci.yml allowlist, make down profile (also leaves `embed` running), model re-hash check, METRICS placeholder row.
+- retrieval-eval does not refuse a partly embedded corpus and compare does not check the corpus: finish make embed, then run both methods with no embed or consent change between them.
+- One revocation plus consent-prune removes every stored retrieval row that returned that sender (62 of 62 on synthetic): rerun both evals. No config holds the default retrieval method yet (S6; vector unless D104 says otherwise).
 
 ## Suggested next session
-S5 embeddings + retrieval (synthetic), then the real batch.
+S6 answers with citations.

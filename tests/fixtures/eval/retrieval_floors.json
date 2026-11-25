@@ -1,0 +1,4 @@
+{
+  "method": "vector",
+  "recall_at_5": 0.85
+}
