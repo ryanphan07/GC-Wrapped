@@ -21,7 +21,7 @@ import psycopg
 import pytest
 
 from gcwrapped import consent_prune
-from gcwrapped.answers import commands, evaluation, report
+from gcwrapped.answers import commands, comparison, evaluation, grades, report
 from gcwrapped.answers.excerpts import load_excerpts
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
@@ -31,8 +31,10 @@ from gcwrapped.answers.pipeline import (
     Answer,
     AnswerPipeline,
 )
-from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for
+from gcwrapped.answers.prompt import DATA_BEGIN, DATA_END, prompt_version_for, system_prompt
 from gcwrapped.config import get_database_settings
+from gcwrapped.labeling.files import read_questions, write_questions
+from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval import window
@@ -44,6 +46,7 @@ from gcwrapped.tagging.llamacpp import LlamaCppChat
 from gcwrapped.tagging.report import check_lines
 from tagging_stub import StubLlm
 from test_answers import ScriptedTerminal
+from test_grading import KeyTerminal
 from test_retrieval_integration import (
     ELIGIBLE,
     ID,
@@ -112,7 +115,7 @@ def _answer(url: str, stub: Any, llm: StubLlm, question: str, method: str = "vec
     with psycopg.connect(url, autocommit=True) as conn:
         retriever = Retriever(conn, _client(stub))
         chat = LlamaCppChat(llm.url, model_id=MODEL_ID)
-        return AnswerPipeline(conn, retriever, chat, method).answer(question)
+        return AnswerPipeline(conn, retriever, chat, method, variant="a").answer(question)
 
 
 # --- the pipeline (D111) -----------------------------------------------------------------------
@@ -199,7 +202,7 @@ def test_a_request_that_times_out_is_its_own_outcome_and_is_not_retried(
 ) -> None:
     with StubLlm(mode="slow") as slow, psycopg.connect(embedded, autocommit=True) as conn:
         chat = LlamaCppChat(slow.url, model_id=MODEL_ID, timeout=0.2)
-        pipeline = AnswerPipeline(conn, Retriever(conn, _client(stub)), chat, "vector")
+        pipeline = AnswerPipeline(conn, Retriever(conn, _client(stub)), chat, "vector", variant="a")
         found = pipeline.answer("when is the midterm")
     assert (found.outcome, found.citations, len(slow.requests)) == (TIMED_OUT, (), 1)
     assert found.sources and found.prompt_tokens is None
@@ -567,3 +570,438 @@ def test_prune_refuses_an_unknown_file_among_the_answer_results(
     assert capsys.readouterr().out == (
         "consent-prune: failed at prune (UnexpectedPredictionsFileError)\n"
     )
+
+
+# --- prompt variants, answer-compare and answer-promote (D121) ---------------------------------
+
+VERSION_B = prompt_version_for(model.spec_for(MODEL_ID).chat_template_kwargs, "b")
+
+
+def _no_db() -> None:
+    return None
+
+
+def _systems(llm: StubLlm) -> set[str]:
+    return {r["messages"][0]["content"] for r in llm.requests}
+
+
+def test_answer_eval_runs_the_named_variant_and_files_it_under_its_own_version(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert commands.run_answer_eval(services=NO_SERVICES, variant="b") == 0
+    assert f"answer prompt version: {VERSION_B}" in capsys.readouterr().out.splitlines()
+    assert _systems(llm) == {system_prompt("b")}
+    assert (label_dir / "answers" / f"{MODEL_ID}__{VERSION_B}.json").is_file()
+    assert not _results_path(label_dir).exists()
+
+
+def test_the_promoted_variant_is_what_answer_eval_and_ask_use(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        commands.run_ask(terminal=ScriptedTerminal("when is the midterm"), services=NO_SERVICES)
+        == 0
+    )
+    assert _systems(llm) == {system_prompt("a")}
+    comparison.promote(embedded, "b")
+    llm.requests.clear()
+    assert (
+        commands.run_ask(terminal=ScriptedTerminal("when is the midterm"), services=NO_SERVICES)
+        == 0
+    )
+    assert commands.run_answer_eval(services=NO_SERVICES) == 0
+    assert _systems(llm) == {system_prompt("b")}
+    assert f"answer prompt version: {VERSION_B}" in capsys.readouterr().out.splitlines()
+    llm.requests.clear()
+    assert commands.run_answer_eval(services=NO_SERVICES, variant="a") == 0
+    assert _systems(llm) == {system_prompt("a")}
+
+
+def test_the_default_variant_is_a_without_a_table_or_a_row(embedded: str) -> None:
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        assert comparison.default_variant(conn) == "a"
+        conn.execute("DROP TABLE enrich.answer_prompt_default")
+        assert comparison.default_variant(conn) == "a"
+
+
+def _reply_b_answers_everything(body: dict[str, Any]) -> str:
+    """Variant a abstains on every question; variant b cites the message that answers it."""
+    if body["messages"][0]["content"] != system_prompt("b"):
+        return _output(False, [], "")
+    question = _user(body).rsplit("Question: ", 1)[1]
+    word = "midterm tomorrow" if "midterm" in question else "ramen" if "ramen" in question else ""
+    found = [n for n, line in _numbered(_user(body)).items() if word and word in line]
+    return _output(True, found[:1], "yes") if found else _output(False, [], "")
+
+
+@pytest.fixture
+def both_runs(embedded: str, label_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    with StubLlm(reply=_reply_b_answers_everything) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        for variant in ("a", "b"):
+            assert commands.run_answer_eval(services=NO_SERVICES, variant=variant) == 0
+    yield label_dir
+
+
+def test_answer_compare_records_a_verdict_and_prints_fixed_lines(
+    embedded: str, both_runs: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    winners: list[str] = []
+    assert commands.run_answer_compare(start_db=_no_db, on_verdict=winners.append) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.COMPARE_SHAPES)
+    assert lines[0] == "questions scored: 3" and lines[1] == "citation hit rate A: 0.000"
+    (path,) = (both_runs / "experiments").glob("answer-compare-*.json")
+    assert winners == [json.loads(path.read_text())["winner"]]
+    assert f"winner: {winners[0]}" in lines
+    _assert_clean("\n".join(lines), path.read_text(), extra=("midterm", "ramen"))
+
+
+def test_answer_compare_refuses_with_one_fixed_line_and_records_nothing(
+    embedded: str, both_runs: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    path = both_runs / "answers" / f"{MODEL_ID}__{VERSION_B}.json"
+    original = path.read_text()
+    for key, value, error in (
+        ("embed_version", "f" * 12, "EmbedVersionMismatch"),
+        ("corpus_hash", "f" * 12, "CorpusMismatch"),
+        ("method", "hybrid", "MethodMismatch"),
+    ):
+        path.write_text(json.dumps({**json.loads(original), key: value}))
+        assert commands.run_answer_compare(start_db=_no_db) == 1
+        assert capsys.readouterr().out == f"answer-compare: failed at scoring ({error})\n"
+    fewer = json.loads(original)
+    fewer["rows"] = fewer["rows"][:-1]
+    path.write_text(json.dumps(fewer))
+    assert commands.run_answer_compare(start_db=_no_db) == 1
+    assert capsys.readouterr().out == ("answer-compare: failed at scoring (QuestionSetMismatch)\n")
+    path.unlink()
+    assert commands.run_answer_compare(start_db=_no_db) == 1
+    assert capsys.readouterr().out == (
+        "answer-compare: failed at predictions (AnswerResultsError)\n"
+    )
+    assert not (both_runs / "experiments").exists()
+
+
+def _verdict(root: Path, **changes: str) -> None:
+    body = {
+        "a": "a",
+        "b": "b",
+        "winner": "b",
+        "model_id": MODEL_ID,
+        "a_prompt_version": VERSION,
+        "b_prompt_version": VERSION_B,
+        "embed_version": window.embed_version(),
+        **changes,
+    }
+    (root / "experiments").mkdir(exist_ok=True)
+    (root / "experiments" / "answer-compare-20260101T000000000000Z.json").write_text(
+        json.dumps(body)
+    )
+
+
+def _variant(url: str) -> str:
+    return comparison.promoted_variant(url)
+
+
+def test_answer_promote_sets_the_winner_of_the_latest_verdict(
+    embedded: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _verdict(label_dir)
+    assert commands.run_answer_promote("b", start_db=_no_db) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.PROMOTE_SHAPES)
+    assert lines == [
+        "target database: gcw_test",
+        "promoted variant: b",
+        "previous variant: none",
+        "answer-promote: ok",
+    ]
+    assert _variant(embedded) == "b"
+    _verdict(label_dir, winner="a")
+    assert commands.run_answer_promote("a", start_db=_no_db) == 0
+    assert "previous variant: b" in capsys.readouterr().out
+    assert _variant(embedded) == "a"
+
+
+@pytest.mark.parametrize(
+    ("changes", "variant", "step", "error"),
+    [
+        (None, "b", "verdict", "VerdictError"),
+        ({"winner": "a"}, "b", "verdict", "NotWinnerError"),
+        ({"embed_version": "f" * 12}, "b", "verdict", "EmbedVersionMismatch"),
+        ({"model_id": "qwen3.5-2b-q4_k_m"}, "b", "verdict", "ModelMismatch"),
+        ({"a_prompt_version": "f" * 12}, "b", "verdict", "PromptVersionMismatch"),
+        ({"b_prompt_version": "f" * 12}, "b", "verdict", "PromptVersionMismatch"),
+        ({}, "c", "variant", "UnknownVariantError"),
+    ],
+)
+def test_answer_promote_refuses_and_changes_nothing(
+    embedded: str,
+    label_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str] | None,
+    variant: str,
+    step: str,
+    error: str,
+) -> None:
+    if changes is not None:
+        _verdict(label_dir, **changes)
+    assert commands.run_answer_promote(variant, start_db=_no_db) == 1
+    assert capsys.readouterr().out == f"answer-promote: failed at {step} ({error})\n"
+    assert _variant(embedded) == "a"
+
+
+# --- hand grading (D120) -----------------------------------------------------------------------
+
+
+def _grades(root: Path, version: str = VERSION) -> list[grades.GradeRow]:
+    return grades.read_grades(root, MODEL_ID, version)
+
+
+def test_grading_resumes_where_it_stopped_and_keeps_text_out_of_the_file(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    questions = {q.question: q for q in read_questions(label_dir / "questions.csv")}
+    order = [
+        q.question_id
+        for q in grades.grading_order(questions.values())
+        if q.question_id != "q004"  # dropped: no scorable gold
+    ]
+
+    def run(count: int, *keys: str) -> KeyTerminal:
+        terminal = KeyTerminal(*keys)
+        assert commands.run_grade_answers(count, terminal=terminal, services=NO_SERVICES) == 0
+        return terminal
+
+    def asked(server: StubLlm) -> list[str]:
+        texts = [_user(r).rsplit("Question: ", 1)[1] for r in server.requests]
+        return [questions[t].question_id for t in texts]
+
+    with StubLlm(reply=lambda body: _output(True, [1], f"{REPLY_SENTINEL} [1]")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        comparison.promote(embedded, "b")
+        quit_at_once = run(50, "q")
+        assert quit_at_once.printed[-4:-1] == [
+            "graded this run: 0",
+            "graded in the file: 0",
+            "questions not yet graded: 3",
+        ]
+        one = run(1, "c", "y")
+        assert one.printed[-4:-1] == [
+            "graded this run: 1",
+            "graded in the file: 1",
+            "questions not yet graded: 2",
+        ]
+        run(50, "p", "n", "w", "y")
+        done = run(50)
+        assert done.printed[-4:-1] == [
+            "graded this run: 0",
+            "graded in the file: 3",
+            "questions not yet graded: 0",
+        ]
+        # the quit question comes first again; a graded one is never asked twice
+        assert asked(server) == [order[0], order[0], order[1], order[2]]
+        assert _systems(server) == {system_prompt("b")}
+
+    check_lines(done.printed[-4:], report.GRADE_SHAPES)
+    rows = _grades(label_dir, VERSION_B)
+    assert [(r.question_id, r.grade, r.supported) for r in rows] == [
+        (order[0], "correct", "yes"),
+        (order[1], "partial", "no"),
+        (order[2], "wrong", "yes"),
+    ]
+    path = label_dir / "grades" / f"{MODEL_ID}__{VERSION_B}.csv"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for secret in (SENTINEL, "SENDER", "midterm", "ramen", "friday", "pizza", "golf"):
+        assert secret not in path.read_text()
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""  # everything goes through the terminal
+    _assert_clean(caplog.text, extra=("midterm", "ramen"))
+
+    assert commands.run_grade_summary(start_db=_no_db) == 0
+    summary = capsys.readouterr().out.splitlines()
+    check_lines(summary, report.SUMMARY_SHAPES)
+    assert summary[1:4] == [
+        f"answer prompt version: {VERSION_B}",
+        "retrieval method: vector",
+        "graded questions: 3",
+    ]
+    _assert_clean("\n".join(summary), extra=("midterm", "ramen", str(label_dir)))
+
+
+def test_grading_refuses_a_partly_embedded_corpus_and_asks_nothing(
+    embedded: str, llm: StubLlm, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        conn.execute("DELETE FROM enrich.message_embeddings WHERE message_key = %s", (ID["a3"],))
+    terminal = KeyTerminal()
+    assert commands.run_grade_answers(terminal=terminal, services=NO_SERVICES) == 1
+    assert capsys.readouterr().out == (
+        "messages not embedded: 1\ngrade-answers: failed at corpus (IncompleteCorpusError)\n"
+    )
+    assert terminal.printed == [] and llm.requests == []
+    assert not (label_dir / "grades").exists()
+
+
+def test_grading_keeps_the_finished_grades_when_the_server_goes_away(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with StubLlm(reply=lambda body: _output(False, [], "")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+
+        class Stops(KeyTerminal):
+            def out(self, text: str) -> None:
+                if text.startswith("[2 of"):
+                    server.shutdown()
+                    server.server_close()
+                super().out(text)
+
+        assert commands.run_grade_answers(terminal=Stops(), services=NO_SERVICES) == 1
+    assert capsys.readouterr().out == ("grade-answers: failed at answering (ProviderUnavailable)\n")
+    assert [r.outcome for r in _grades(label_dir)] == [ABSTAINED]
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_grading_needs_a_positive_count(
+    warehouse: str, capsys: pytest.CaptureFixture[str], count: int
+) -> None:
+    terminal = KeyTerminal()
+    assert commands.run_grade_answers(count, terminal=terminal, services=_never()) == 1
+    assert capsys.readouterr().out == "grade-answers: failed at count (InvalidCountError)\n"
+
+
+def test_grade_summary_without_grades_fails_with_a_fixed_line(
+    embedded: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert commands.run_grade_summary(start_db=_no_db) == 1
+    assert capsys.readouterr().out == "grade-summary: failed at scoring (NoGradesError)\n"
+
+
+def test_synthetic_grading_uses_the_temporary_directory(
+    embedded: str,
+    llm: StubLlm,
+    label_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    committed = _write_questions(tmp_path)
+    (label_dir / "questions.csv").unlink()
+    monkeypatch.setattr(tagging, "SYNTHETIC_DATABASE", "gcw_test")
+    monkeypatch.setattr(retrieval_commands, "SYNTHETIC_QUESTIONS", committed)
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    terminal = KeyTerminal(*"cycycy")  # one character at a time, as piped keys arrive
+    assert commands.run_grade_answers(5, True, terminal, NO_SERVICES) == 0
+    (root,) = tmp_path.glob("gcw-synthetic-eval-*")
+    assert len(_grades(root)) == 3
+    assert commands.run_grade_summary(True, start_db=_no_db) == 0
+    assert "graded questions: 3" in capsys.readouterr().out
+    assert list(label_dir.iterdir()) == []
+
+
+def test_prune_drops_grade_rows_that_cite_an_ineligible_message_or_lost_their_question(
+    warehouse: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GCW_LABEL_DIR", str(tmp_path))
+
+    def question(n: int, gold: str) -> QuestionLabel:
+        return QuestionLabel(
+            f"q{n:03d}", f"question {n}", (ID[gold],), ID[gold], "2026-11-10T00:00:00+00:00"
+        )
+
+    # q003 is written from a message that is about to be revoked, so the prune drops it
+    questions = [question(1, "e1"), question(2, "e2"), question(3, "cy"), question(4, "e1")]
+    write_questions(tmp_path / "questions.csv", questions)
+
+    def row(n: int, *cited: str) -> grades.GradeRow:
+        if not cited:
+            return grades.GradeRow(f"q{n:03d}", ABSTAINED, "", "", (), 1.0)
+        ids = tuple(ID[m] for m in cited)
+        return grades.GradeRow(f"q{n:03d}", ANSWERED, "correct", "yes", ids, 1.0)
+
+    rows = [
+        row(1, "e1", "e2"),  # stays
+        row(2, "e2", "cy"),  # cites the revoked sender
+        row(3),  # its question is dropped
+        row(4),  # stays
+        row(9, "e1"),  # its question is not in the file at all
+    ]
+    grades.write_grades(tmp_path, MODEL_ID, VERSION, rows)
+    path = tmp_path / "grades" / f"{MODEL_ID}__{VERSION}.csv"
+    _revoke(warehouse, "SENDERCY")
+    before = path.read_bytes()
+
+    dry = _prune(capsys, apply=False)
+    assert "prediction rows to prune: 3" in dry
+    assert "questions left with no gold: 1" in dry
+    assert "ineligible messages with derived records: 1" in dry
+    assert path.read_bytes() == before
+
+    applied = _prune(capsys, apply=True)
+    check_lines(applied, consent_prune.SHAPES)
+    assert grades.read_grades(tmp_path, MODEL_ID, VERSION) == [rows[0], rows[3]]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert "prediction rows to prune: 0" in _prune(capsys, apply=False)
+    _assert_clean("\n".join([*dry, *applied]), extra=(str(tmp_path),))
+
+
+@pytest.mark.parametrize(
+    ("name", "error"),
+    [
+        ("notes.csv", "UnexpectedPredictionsFileError"),
+        (f"{MODEL_ID}__{VERSION}.csv", "GradesError"),
+    ],
+)
+def test_prune_fails_closed_on_a_grades_file_it_cannot_read(
+    warehouse: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    error: str,
+) -> None:
+    monkeypatch.setenv("GCW_LABEL_DIR", str(tmp_path))
+    (tmp_path / "grades").mkdir()
+    (tmp_path / "grades" / name).write_text("SENTINELTEXT\n")
+    get_database_settings.cache_clear()
+    assert consent_prune.run(apply=True, start_db=lambda: None) == 1
+    assert capsys.readouterr().out == f"consent-prune: failed at prune ({error})\n"
+
+
+def test_a_grade_pruned_during_a_session_stays_pruned(
+    embedded: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """consent-prune can run in another terminal: the next save must not bring the row back."""
+
+    class PrunesBeforeTheThird(KeyTerminal):
+        def out(self, text: str) -> None:
+            if text.startswith("[3 of"):
+                grades.write_grades(label_dir, MODEL_ID, VERSION, _grades(label_dir)[1:])
+            super().out(text)
+
+    with StubLlm(reply=lambda body: _output(False, [], "")) as server:
+        monkeypatch.setenv("GCW_LLM_URL", server.url)
+        terminal = PrunesBeforeTheThird()
+        assert commands.run_grade_answers(terminal=terminal, services=NO_SERVICES) == 0
+    assert len(_grades(label_dir)) == 2
+    assert terminal.printed[-4:-1] == [
+        "graded this run: 3",
+        "graded in the file: 2",
+        "questions not yet graded: 0",
+    ]

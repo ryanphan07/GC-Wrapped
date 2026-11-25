@@ -104,3 +104,33 @@ def median_reply_seconds(thread_id: str, url: str | None = None) -> float | None
     )
     value = frame["median_reply_seconds"].iloc[0]
     return None if pd.isna(value) else float(value)
+
+
+WRAPPED_COLUMNS = (
+    "member_key",
+    "thread_id",
+    "member_name",
+    "messages_sent",
+    "thread_share",
+    "most_active_hour",
+    "most_active_weekday",
+    "median_reply_seconds",
+    "first_message_date",
+    "last_message_date",
+    "top_topic_1",
+    "top_topic_2",
+    "top_topic_3",
+    "positive_share",
+    "neutral_share",
+    "negative_share",
+)
+
+
+def wrapped_profiles(url: str | None = None) -> pd.DataFrame:
+    """One Wrapped profile per consented member (D123), by name. Columns: WRAPPED_COLUMNS."""
+    return _frame(
+        f"SELECT {', '.join(WRAPPED_COLUMNS)} FROM analytics.mart_member_wrapped "
+        "ORDER BY member_name, thread_id",
+        (),
+        url,
+    )

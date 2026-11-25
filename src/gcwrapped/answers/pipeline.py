@@ -19,9 +19,9 @@ from gcwrapped.answers.prompt import (
     MAX_ANSWER_CHARS,
     MAX_CITATIONS,
     MAX_TOKENS,
-    SYSTEM_PROMPT,
     build_user_content,
     response_schema,
+    system_prompt,
 )
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval.search import Retriever
@@ -118,13 +118,21 @@ def parse_answer(body: object, source_count: int) -> tuple[str, str, tuple[int, 
 
 
 class AnswerPipeline:
-    """Answering bound to one connection, one retriever, one model and one retrieval method."""
+    """Answering bound to one connection, one retriever, one model, one retrieval method and one
+    prompt variant (D121). The variant has no default, so no caller can ignore the promoted one."""
 
     def __init__(
-        self, conn: psycopg.Connection, retriever: Retriever, model: ChatModel, method: str
+        self,
+        conn: psycopg.Connection,
+        retriever: Retriever,
+        model: ChatModel,
+        method: str,
+        *,
+        variant: str,
     ) -> None:
         if method not in retrieval.METHODS:
             raise retrieval.UnknownMethodError
+        self._system = system_prompt(variant)
         self._conn = conn
         self._version = retriever.version
         self._search = retriever.vector if method == retrieval.VECTOR else retriever.hybrid
@@ -139,7 +147,7 @@ class AnswerPipeline:
             return Answer(ABSTAINED, "", (), ())
         try:
             body = self._model.complete(
-                SYSTEM_PROMPT,
+                self._system,
                 build_user_content(excerpts, question),
                 schema_name=SCHEMA_NAME,
                 schema=response_schema(len(sources)),

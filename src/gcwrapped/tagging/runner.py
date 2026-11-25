@@ -20,6 +20,7 @@ import psycopg
 from gcwrapped.labeling.source import EligibleIndex, Message, load_eligible
 from gcwrapped.tagging.prompt import PROMPT_VERSION, messages_for
 from gcwrapped.tagging.provider import Tag, TagFailure, TagProvider
+from gcwrapped.tagging.scoring import nearest_rank
 
 BATCH_SIZE = 25
 
@@ -49,11 +50,7 @@ class Timings:
 
     def percentile(self, percent: int) -> float | None:
         """Nearest-rank percentile (1-100). None when nothing was timed."""
-        if not self.seconds:
-            return None
-        ordered = sorted(self.seconds)
-        rank = max(1, (percent * len(ordered) + 99) // 100)  # ceil(percent * n / 100), integers
-        return ordered[rank - 1]
+        return nearest_rank(self.seconds, percent)
 
 
 @dataclass

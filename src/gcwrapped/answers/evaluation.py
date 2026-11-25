@@ -34,6 +34,7 @@ from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.tagging import evaluation as tag_evaluation
 from gcwrapped.tagging.runner import Timings
+from gcwrapped.tagging.scoring import nearest_rank
 
 RESULTS_DIR = "answers"
 _MODEL_ID = re.compile(r"[A-Za-z0-9._-]+")
@@ -149,8 +150,7 @@ def score(rows: Sequence[Row], questions: int) -> EvalResult:
     p50, p95 = timings.percentile(50), timings.percentile(95)
     if p50 is None or p95 is None:
         raise retrieval.NoScorableQuestionsError
-    tokens = Timings([r.prompt_tokens for r in rows if r.prompt_tokens is not None])
-    p50_tokens, p95_tokens, max_tokens = (tokens.percentile(p) for p in (50, 95, 100))
+    tokens = [r.prompt_tokens for r in rows if r.prompt_tokens is not None]
     return EvalResult(
         questions=questions,
         dropped=questions - len(rows),
@@ -163,19 +163,24 @@ def score(rows: Sequence[Row], questions: int) -> EvalResult:
         citation_hit=_rate([r.citation_hit for r in rows]),
         p50=p50,
         p95=p95,
-        # nearest rank returns one of the values, so these are whole numbers
-        prompt_tokens_p50=None if p50_tokens is None else int(p50_tokens),
-        prompt_tokens_p95=None if p95_tokens is None else int(p95_tokens),
-        prompt_tokens_max=None if max_tokens is None else int(max_tokens),
+        prompt_tokens_p50=nearest_rank(tokens, 50),
+        prompt_tokens_p95=nearest_rank(tokens, 95),
+        prompt_tokens_max=nearest_rank(tokens, 100),
     )
 
 
 # --- private files -----------------------------------------------------------------------------
 
 
-def results_path(root: Path, model_id: str, prompt_version: str) -> Path:
+def check_file_key(model_id: str, prompt_version: str) -> None:
+    """The two parts of an answers or grades file name, which must not be able to leave its
+    directory."""
     if _MODEL_ID.fullmatch(model_id) is None or _VERSION.fullmatch(prompt_version) is None:
         raise AnswerResultsError
+
+
+def results_path(root: Path, model_id: str, prompt_version: str) -> Path:
+    check_file_key(model_id, prompt_version)
     return root / RESULTS_DIR / f"{model_id}__{prompt_version}.json"
 
 

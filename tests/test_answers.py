@@ -539,7 +539,7 @@ def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
 
 def test_the_ask_summary_lines_are_the_fixed_ones() -> None:
     counts = {ANSWERED: 2, ABSTAINED: 1, INVALID: 0, TIMED_OUT: 1}
-    timings, tokens = Timings([1.0, 2.0, 4.0, 600.0]), Timings([900, 100, 500])
+    timings, tokens = Timings([1.0, 2.0, 4.0, 600.0]), [900, 100, 500]
     assert report.render_ask(counts, timings, tokens) == [
         "questions asked: 4",
         "answered: 2",
@@ -552,7 +552,7 @@ def test_the_ask_summary_lines_are_the_fixed_ones() -> None:
         "p95 prompt tokens: 900",
         "ask: ok",
     ]
-    empty = report.render_ask(dict.fromkeys(OUTCOMES, 0), Timings([]), Timings([]))
+    empty = report.render_ask(dict.fromkeys(OUTCOMES, 0), Timings([]), [])
     assert empty[5] == "p50 seconds per question: n/a"
     assert empty[7] == "p50 prompt tokens: n/a"
     with pytest.raises(ShapeError):

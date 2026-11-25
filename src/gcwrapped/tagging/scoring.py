@@ -103,6 +103,16 @@ def bootstrap_interval(
     return values[lower], values[resamples - lower - 1]
 
 
+def nearest_rank[T: float](values: Sequence[T], percent: int) -> T | None:
+    """The nearest-rank percentile (1-100), which is always one of the values, so whole numbers
+    stay whole. None when there are none."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, (percent * len(ordered) + 99) // 100)  # ceil(percent * n / 100), integers
+    return ordered[rank - 1]
+
+
 def messages_per_second(seconds: Sequence[float]) -> float:
     """Attempted messages divided by the summed per-message seconds; 0.0 when nothing was timed."""
     total = sum(seconds)

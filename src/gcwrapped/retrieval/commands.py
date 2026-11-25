@@ -185,9 +185,14 @@ def run_retrieval_eval(
 
 
 def run_retrieval_compare(
-    a: str, b: str, synthetic: bool = False, start_db: StartDb = start_database
+    a: str,
+    b: str,
+    synthetic: bool = False,
+    start_db: StartDb = start_database,
+    on_verdict: Callable[[str], None] | None = None,
 ) -> int:
-    """`make retrieval-compare A=vector B=hybrid [SYNTHETIC=1]`: the D104 rule on stored results."""
+    """`make retrieval-compare A=vector B=hybrid [SYNTHETIC=1]`: the D104 rule on stored results.
+    `on_verdict` receives the winning method once the verdict is recorded (eval-all)."""
     step = STEP_METHOD
     try:
         if (a, b) != (evaluation.VECTOR, evaluation.HYBRID):  # D104 names baseline and variant
@@ -212,6 +217,8 @@ def run_retrieval_compare(
         print(report.failure_line("retrieval-compare", step, exc))
         return 1
     print(*lines, sep="\n")
+    if on_verdict is not None:
+        on_verdict(b if result.b_wins else a)
     return 0
 
 

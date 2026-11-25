@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -50,9 +50,14 @@ test-integration:
 test-warehouse:
 	uv run --group dashboard pytest -m warehouse
 
-# Streamlit on http://localhost:8501, connecting as gcw_reader.
+# Streamlit on http://localhost:8501 (127.0.0.1 only): activity, Wrapped and Ask pages (D123).
+# The Ask page needs the local models, so this starts db, llm (serving the promoted model) and
+# embed first, then builds and starts the dashboard. Real-data runs are Ryan's:
+# make dashboard-up ENV_FILE=<env file outside the repo>
 dashboard-up:
-	$(COMPOSE) up -d --build dashboard
+	@uv run gcw dashboard-services
+	$(COMPOSE) up -d --build --wait dashboard
+	@echo "dashboard: $(DASHBOARD_URL)"
 
 # One command, fresh export to dashboard: db + dashboard up and healthy, then the Airflow DAG once
 # (check landing -> migrate -> ingest -> dbt build -> summary), the same path CI verifies.
@@ -174,7 +179,7 @@ text-audit:
 	@uv run gcw text-audit
 
 # Remove everything derived from messages that are no longer eligible (D101, D105): tag rows, embedding
-# rows, hand-label rows, question gold references and stored predictions in GCW_LABEL_DIR. Run consent-load first so the
+# rows, hand-label rows, question gold references, stored predictions and hand grades in GCW_LABEL_DIR. Run consent-load first so the
 # revocation is in the warehouse. Dry run unless APPLY=1; counts only. Real-data runs are Ryan's:
 #   make consent-prune ENV_FILE=<env file outside the repo> [APPLY=1]
 consent-prune:
@@ -248,14 +253,43 @@ retrieval-promote:
 	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
 	@uv run gcw retrieval-promote --method $(METHOD)
 
-# Answers with citations from the local model (D111-D113). Both start only the db, llm and embed
-# services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
+# Answers with citations from the local model (D111-D113). ask and answer-eval start only the db,
+# llm and embed services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
 # messages to the terminal only, writes nothing, and ends with fixed summary lines. answer-eval
 # answers each question once, stores IDs, hashes and numbers (never answer text) and prints fixed
 # lines. SYNTHETIC=1 means gcw_dev only (and for the eval: the committed synthetic questions and a
-# temporary directory). Real-data runs are Ryan's: make ask ENV_FILE=<env file outside the repo>
+# temporary directory). answer-eval takes VARIANT=a|b, the prompt variant (D121; default: the
+# promoted one). answer-compare applies the D121 win rule to the stored A and B runs and records the
+# verdict; answer-promote VARIANT=<v> makes <v> the variant answers use, only if the latest verdict
+# names it the winner. Both start only the db service. Real-data runs are Ryan's:
+# make ask ENV_FILE=<env file outside the repo>
 ask:
 	@uv run gcw ask $(if $(filter 1,$(SYNTHETIC)),--synthetic)
 
 answer-eval:
-	@uv run gcw answer-eval $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+	@uv run gcw answer-eval $(if $(filter 1,$(SYNTHETIC)),--synthetic) $(if $(VARIANT),--variant $(VARIANT))
+
+answer-compare:
+	@uv run gcw answer-compare $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+answer-promote:
+	@test -n "$(VARIANT)" || { echo "error: set VARIANT=a|b (make answer-promote VARIANT=a)"; exit 1; }
+	@uv run gcw answer-promote --variant $(VARIANT)
+
+# Every eval in order, stopping at the first failure (D122): embed, both retrieval evals, compare,
+# promote, answer-eval with prompt a and b, answer-compare, answer-promote. SYNTHETIC=1 skips both
+# promotes. Unattended and long on real data. Real-data runs are Ryan's:
+# make eval-all ENV_FILE=<env file outside the repo>
+eval-all:
+	@uv run gcw eval-all $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+# Hand grading (D120). grade-answers starts only the db, llm and embed services, regenerates the
+# next N ungraded answers (default 50) and shows each with its cited messages on this terminal only;
+# c correct, p partial, w wrong, then y/n for whether the citations support it; q quits. Grades
+# (IDs and numbers, never text) go to GCW_LABEL_DIR/grades/. grade-summary prints fixed lines only.
+# Real-data runs are Ryan's: make grade-answers ENV_FILE=<env file outside the repo>
+grade-answers:
+	@uv run gcw grade-answers $(if $(N),--n $(N)) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+grade-summary:
+	@uv run gcw grade-summary $(if $(filter 1,$(SYNTHETIC)),--synthetic)

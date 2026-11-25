@@ -350,6 +350,92 @@ models:
       - name: messages
         data_tests: [not_null]
 
+  - name: mart_member_wrapped
+    description: >
+      One Wrapped profile per consented member of a thread (the consent ledger's key), computed only
+      over local_ok user-text messages (D88, D95, D123). A view (D124), so a revocation removes the
+      row as soon as consent-load commits. Topics and sentiment are the promoted tag model's
+      estimates (D92, D99). No message text.
+    columns:
+      - name: member_key
+        description: Primary key, the same key as dim_members.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_members')
+                field: member_key
+      - name: thread_id
+        data_tests: [not_null]
+      - name: member_name
+        description: Display name as exported.
+        data_tests: [not_null]
+      - name: messages_sent
+        description: The member's eligible user-text messages.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: thread_share
+        description: messages_sent over the thread's eligible user-text messages.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: most_active_hour
+        description: "Local hour of day (0-23) with the most messages (ties go to the earliest)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+      - name: most_active_weekday
+        description: "Local weekday with the most messages, 1 = Monday (ties go to the earliest)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 7
+      - name: median_reply_seconds
+        description: Median reply time in seconds; null when the member has no replies.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: first_message_date
+        description: Local date of the first eligible message.
+        data_tests: [not_null]
+      - name: last_message_date
+        description: Local date of the last eligible message.
+        data_tests: [not_null]
+      - name: top_topic_1
+        description: The most frequent topic of the member's tagged messages; null if none is tagged.
+        data_tests: &topic_values
+          - accepted_values:
+              arguments:
+                values: [plans, school, work, food, entertainment, sports_fitness, relationships, banter, news, other]
+      - name: top_topic_2
+        data_tests: *topic_values
+      - name: top_topic_3
+        data_tests: *topic_values
+      - name: positive_share
+        description: Share of the member's tagged messages that are positive; null if none is tagged.
+        data_tests: &share_range
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: neutral_share
+        data_tests: *share_range
+      - name: negative_share
+        data_tests: *share_range
+
   - name: fct_message_text
     description: >
       One row per message with `has_user_text`: the content is non-blank and does not fully match
