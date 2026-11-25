@@ -21,7 +21,7 @@ embeddings [x synthetic] retrieval eval [x synthetic] real questions [ ] real em
 
 ## Checks
 - make lint: pass. make test: 882 passed, 175 deselected (811 before). make test-integration: 174 passed, 1 skipped (146 before; llm down; embed up). Prompt version 11ac16d16643.
-- dbt build gcw_dev: PASS=190 WARN=0 ERROR=0 TOTAL=190.
+- dbt build gcw_dev: PASS=190 WARN=0 ERROR=0 TOTAL=190. CI (PR #48, run 45518212799, commit before this line): all 7 jobs pass; retrieval-gate (2m0s) 156 eligible, 156 embedded then 0, 3.49 messages/s, recall@5 0.968 (floor 0.85), MRR@10 0.588, p95 0.248 s, 0 dropped.
 - Synthetic, gcw_dev, laptop CPU, version e3ac6a56e412: `make embed SYNTHETIC=1` 223 eligible, 223 embedded, 0 failures, 36.15 s, 6.17 messages/s; rerun 0 embedded, 223 already current.
 - Synthetic retrieval-eval, 31 questions, 0 dropped. vector: recall@1 0.323 [0.161, 0.484], @5 0.968 [0.903, 1.000], @10 1.000 [1.000, 1.000], MRR@10 0.591 [0.489, 0.700], p50 0.131 s, p95 0.148 s. hybrid: recall@1 0.323 [0.161, 0.484], @5 0.935 [0.839, 1.000], @10 1.000 [1.000, 1.000], MRR@10 0.551 [0.440, 0.672], p50 0.133 s, p95 0.154 s.
 - Synthetic compare: scored 31, A 0.968, B 0.935, difference -0.032 [-0.161, 0.097], p95 B 0.154 s, latency met yes, winner vector.
