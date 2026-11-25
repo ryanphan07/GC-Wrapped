@@ -12,6 +12,7 @@ import psycopg
 from pydantic import ValidationError
 
 from gcwrapped import consent_coverage, consent_prune, ledger, metrics, purge, real_ingest
+from gcwrapped.answers import commands as answers
 from gcwrapped.consent import AllowlistError, load_allowlist, require_allowlist
 from gcwrapped.db import database_name, database_url
 from gcwrapped.labeling import commands as labeling
@@ -194,6 +195,21 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval_compare.add_argument("--a", required=True, metavar="M", help="vector (baseline)")
     retrieval_compare.add_argument("--b", required=True, metavar="M", help="hybrid (variant)")
     retrieval_compare.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
+    retrieval_promote = sub.add_parser(
+        "retrieval-promote",
+        help="make a method the default; refused unless the latest verdict names it the winner",
+    )
+    retrieval_promote.add_argument("--method", required=True, metavar="M", help="vector or hybrid")
+    ask = sub.add_parser(
+        "ask", help="ask the chat questions at a prompt; answers go to the terminal only (D113)"
+    )
+    ask.add_argument("--synthetic", action="store_true", help="refuse any database but gcw_dev")
+    answer_eval = sub.add_parser(
+        "answer-eval", help="answer each question with the local model and score (D112)"
+    )
+    answer_eval.add_argument(
         "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
     )
     llm_model = sub.add_parser(
@@ -421,6 +437,12 @@ def _run(argv: Sequence[str] | None) -> int:
         return retrieval.run_retrieval_eval(args.method, synthetic=args.synthetic)
     if args.command == "retrieval-compare":
         return retrieval.run_retrieval_compare(args.a, args.b, synthetic=args.synthetic)
+    if args.command == "retrieval-promote":
+        return retrieval.run_retrieval_promote(args.method)
+    if args.command == "ask":
+        return answers.run_ask(synthetic=args.synthetic)
+    if args.command == "answer-eval":
+        return answers.run_answer_eval(synthetic=args.synthetic)
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

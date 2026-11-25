@@ -1,4 +1,4 @@
-"""The llama.cpp client (D89): schema-constrained JSON from a server on this machine.
+"""The llama.cpp chat client (D89, D111): schema-constrained JSON from a server on this machine.
 
 Privacy properties, each enforced here and tested:
 - `check_local_url` refuses any base URL whose host is not localhost, 127.0.0.1 or the compose
@@ -7,9 +7,9 @@ Privacy properties, each enforced here and tested:
   the request elsewhere, and a redirect cannot move it to another host.
 - Errors carry no message text and no response body.
 
-Constrained decoding (the `response_format` JSON schema, whose enums are labeling.schema's) makes
-an invalid answer near impossible. The answer is still validated; an invalid one gets one retry,
-then the message counts as a failure and stays untagged.
+Constrained decoding (the `response_format` JSON schema; the tagger's enums are labeling.schema's)
+makes an invalid answer near impossible. The answer is still validated. A tag gets one retry, then
+the message counts as a failure and stays untagged. An answer is never retried (see `answers`).
 """
 
 import json
@@ -53,7 +53,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # an HTTPError is raised instead of following the Location header
 
 
-def _opener() -> urllib.request.OpenerDirector:
+def local_opener() -> urllib.request.OpenerDirector:
+    """An opener that follows no proxy and no redirect: a request stays where it was sent."""
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
@@ -71,7 +72,15 @@ def parse_tag(body: object) -> Tag:
     return Tag(topic=topic, sentiment=sentiment)
 
 
-class LlamaCppProvider:
+class ChatFailure(Exception):
+    """The server answered, but with an error, too late or not with JSON."""
+
+
+class LlamaCppChat:
+    """One schema-constrained chat request to a llama.cpp server on this machine (D89, D111):
+    temperature 0, the registry entry's template setting, and a JSON schema the server turns into
+    a grammar. The tagger and the answer pipeline both go through here."""
+
     def __init__(
         self,
         base_url: str,
@@ -84,9 +93,19 @@ class LlamaCppProvider:
         self.model_id = model_id
         self._timeout = timeout
         self._chat_template_kwargs = chat_template_kwargs  # from the registry entry (D98)
-        self._opener = _opener()
+        self._opener = local_opener()
 
-    def _request(self, system: str, user: str) -> object:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_name: str,
+        schema: dict[str, Any],
+        max_tokens: int,
+    ) -> object:
+        """The response body of one request. ChatFailure if the server gave no JSON body,
+        ProviderUnavailable if nothing is listening."""
         payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": [
@@ -94,11 +113,11 @@ class LlamaCppProvider:
                 {"role": "user", "content": user},
             ],
             "temperature": 0,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "cache_prompt": True,  # the system prefix is identical, so the server reuses it
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "tag", "strict": True, "schema": RESPONSE_SCHEMA},
+                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             },
         }
         if self._chat_template_kwargs:
@@ -113,19 +132,26 @@ class LlamaCppProvider:
             with self._opener.open(request, timeout=self._timeout) as response:
                 return json.loads(response.read(MAX_RESPONSE_BYTES))
         except urllib.error.HTTPError:
-            raise TagFailure from None  # the server answered, with an error (bad request, 5xx)
+            raise ChatFailure from None  # the server answered, with an error (bad request, 5xx)
         except TimeoutError:
-            raise TagFailure from None  # one slow message: retry, then count it as a failure
+            raise ChatFailure from None  # one slow request
         except (urllib.error.URLError, ConnectionError, OSError):
             raise ProviderUnavailable from None  # nothing is listening: stop the run
         except ValueError:
-            raise TagFailure from None  # the body was not JSON
+            raise ChatFailure from None  # the body was not JSON
+
+
+class LlamaCppProvider(LlamaCppChat):
+    """The tagger (D89): the chat request above with the tag schema, retried once."""
 
     def tag(self, system: str, user: str) -> Tag:
         for attempt in range(MAX_ATTEMPTS):
             try:
-                return parse_tag(self._request(system, user))
-            except TagFailure:
+                body = self.complete(
+                    system, user, schema_name="tag", schema=RESPONSE_SCHEMA, max_tokens=MAX_TOKENS
+                )
+                return parse_tag(body)
+            except (ChatFailure, TagFailure):
                 if attempt == MAX_ATTEMPTS - 1:
-                    raise
+                    raise TagFailure from None
         raise TagFailure  # unreachable; keeps the type checker satisfied

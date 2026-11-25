@@ -1,4 +1,5 @@
-"""`make embed`, `retrieval-eval` and `retrieval-compare` (D102-D104).
+"""`make embed`, `retrieval-eval`, `retrieval-compare` and `retrieval-promote` (D102-D104, D109,
+D110).
 
 The tagging commands' guards, in the same order: the database must be one of ALLOWED_DATABASES (a
 SYNTHETIC=1 run: gcw_dev only), a label directory must resolve outside the repo, and the embedding
@@ -16,13 +17,14 @@ from gcwrapped.config import EmbeddingSettings, env_file_path
 from gcwrapped.docker import COMPOSE_TIMEOUT_SECONDS, require_docker, start_database
 from gcwrapped.labeling.files import read_questions
 from gcwrapped.labeling.schema import QUESTIONS_FILE
-from gcwrapped.labeling.source import load_eligible
+from gcwrapped.labeling.source import EligibleIndex, load_eligible
 from gcwrapped.ledger import REPO_ROOT
 from gcwrapped.migrate import migrate
 from gcwrapped.retrieval import evaluation, report
 from gcwrapped.retrieval.client import Embedder, LlamaCppEmbedder
 from gcwrapped.retrieval.embed import run_embed as embed_job
 from gcwrapped.retrieval.search import Retriever
+from gcwrapped.retrieval.window import embed_version
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import model
 from gcwrapped.tagging.llamacpp import check_local_url
@@ -39,6 +41,9 @@ STEP_DOCKER = "docker"
 STEP_EMBEDDING = "embedding"
 STEP_RETRIEVAL = "retrieval"
 STEP_SCORING = "scoring"
+STEP_CORPUS = "corpus"
+STEP_VERDICT = "verdict"
+STEP_PROMOTE = "promote"
 STEP_RENDER = "render"
 
 StartDb = Callable[[], None] | None
@@ -53,7 +58,7 @@ def embed_url() -> str:
 
 def start_embed() -> None:
     """Start only the embed service of the compose project ENV_FILE names, and wait for it to be
-    healthy. Output is captured, never shown. `make down` does not stop profile services."""
+    healthy. Output is captured, never shown. `make down` stops it."""
     if not (model.model_dir() / model.EMBED_MODEL_SPEC.file).is_file():
         raise tagging.ModelFileMissingError  # run make llm-model MODEL=<embedding model id>
     require_docker()
@@ -76,7 +81,7 @@ def start_embed() -> None:
     )
 
 
-def _embedder() -> Embedder:
+def local_embedder() -> Embedder:
     return LlamaCppEmbedder(embed_url(), model_id=model.EMBED_MODEL_ID)
 
 
@@ -91,7 +96,7 @@ def run_embed(
         url, database = tagging.check_database(synthetic)
         step = STEP_URL
         check_local_url(embed_url())
-        embedder = _embedder()
+        embedder = local_embedder()
         step = STEP_DOCKER
         if start_db is not None:
             start_db()
@@ -109,8 +114,17 @@ def run_embed(
     return 0
 
 
-def _questions_path(synthetic: bool, root: Path) -> Path:
+def questions_path(synthetic: bool, root: Path) -> Path:
     return SYNTHETIC_QUESTIONS if synthetic else root / QUESTIONS_FILE
+
+
+def require_complete_corpus(eligible: EligibleIndex, searchable: frozenset[str]) -> None:
+    """The D109 guard. A refusal prints the count first, so the next step is plain (make embed)."""
+    ids = (m for thread in eligible.ids_by_thread().values() for m in thread)
+    missing = evaluation.unembedded(ids, searchable)
+    if missing:
+        print(report.unembedded_line(missing))
+        raise evaluation.IncompleteCorpusError
 
 
 def run_retrieval_eval(
@@ -120,7 +134,8 @@ def run_retrieval_eval(
     start_service: StartEmbed = start_embed,
 ) -> int:
     """`make retrieval-eval METHOD=vector|hybrid [SYNTHETIC=1]`: search each question, store the
-    results (IDs only) and score them."""
+    results (IDs only) and score them. Refused, storing nothing, unless every eligible message is
+    searchable (D109)."""
     step = STEP_METHOD
     try:
         if method not in evaluation.METHODS:
@@ -132,9 +147,9 @@ def run_retrieval_eval(
         source = "synthetic" if synthetic else "real"
         step = STEP_URL
         check_local_url(embed_url())
-        embedder = _embedder()
+        embedder = local_embedder()
         step = STEP_QUESTIONS
-        questions = read_questions(_questions_path(synthetic, root))
+        questions = read_questions(questions_path(synthetic, root))
         if not questions:
             raise evaluation.NoScorableQuestionsError
         step = STEP_DOCKER
@@ -146,14 +161,19 @@ def run_retrieval_eval(
         eligible = load_eligible(url)
         with psycopg.connect(url, autocommit=True) as conn:
             retriever = Retriever(conn, embedder)
-            kept, _ = evaluation.split_questions(questions, eligible, retriever.searchable_ids())
+            searchable = retriever.searchable_ids()
+            step = STEP_CORPUS
+            require_complete_corpus(eligible, searchable)
+            step = STEP_RETRIEVAL
+            kept, _ = evaluation.split_questions(questions, eligible, searchable)
             search = retriever.vector if method == evaluation.VECTOR else retriever.hybrid
             rows = evaluation.run_method(search, kept)
         step = STEP_SCORING
         result = evaluation.score(rows, len(questions))
         step = STEP_PREDICTIONS
+        corpus = evaluation.corpus_hash(searchable)
         evaluation.write_predictions(
-            root, evaluation.Predictions(method, retriever.version, source, tuple(rows))
+            root, evaluation.Predictions(method, retriever.version, source, corpus, tuple(rows))
         )
         step = STEP_RENDER
         lines = report.render_eval(database, source, method, retriever.version, result)
@@ -186,8 +206,42 @@ def run_retrieval_compare(
         result = evaluation.compare(predictions_a, predictions_b, load_eligible(url))
         step = STEP_RENDER
         lines = report.render_compare(a, b, result)
+        step = STEP_VERDICT
+        evaluation.write_verdict(root, predictions_a, result)
     except Exception as exc:
         print(report.failure_line("retrieval-compare", step, exc))
+        return 1
+    print(*lines, sep="\n")
+    return 0
+
+
+def run_retrieval_promote(method: str, start_db: StartDb = start_database) -> int:
+    """`make retrieval-promote METHOD=vector|hybrid`: refused unless the latest retrieval-compare
+    verdict names the method the winner and was made on the current embed version (D110)."""
+    step = STEP_METHOD
+    try:
+        if method not in evaluation.METHODS:
+            raise evaluation.UnknownMethodError
+        step = STEP_DATABASE
+        url, database = tagging.check_database(synthetic=False)  # no synthetic promotion exists
+        step = STEP_LABEL_DIR
+        root = tagging.resolve_root(synthetic=False)
+        step = STEP_VERDICT
+        winner, version = evaluation.latest_verdict(root)
+        if winner != method:
+            raise evaluation.NotWinnerError
+        if version != embed_version():
+            raise evaluation.EmbedVersionMismatch
+        step = STEP_DOCKER
+        if start_db is not None:
+            start_db()
+        step = STEP_PROMOTE
+        migrate(url)  # the table is migration 007
+        previous = evaluation.promote(url, method)
+        step = STEP_RENDER
+        lines = report.render_promote(database, method, previous)
+    except Exception as exc:
+        print(report.failure_line("retrieval-promote", step, exc))
         return 1
     print(*lines, sep="\n")
     return 0

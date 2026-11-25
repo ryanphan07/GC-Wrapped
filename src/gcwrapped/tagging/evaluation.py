@@ -90,7 +90,7 @@ def private_subdir(root: Path, name: str) -> Path:
     return target
 
 
-def _write_private(path: Path, write: Callable[[TextIO], None]) -> None:
+def write_private(path: Path, write: Callable[[TextIO], None]) -> None:
     """Atomically replace `path`; mkstemp creates the file 0600."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".eval-", suffix=".tmp")
     try:
@@ -143,7 +143,7 @@ def write_predictions(
         for r in rows:
             writer.writerow([r.message_id, r.topic or "", r.sentiment or "", repr(r.seconds)])
 
-    _write_private(path, write)
+    write_private(path, write)
 
 
 def read_predictions(root: Path, model_id: str, prompt_version: str) -> dict[str, PredictionRow]:
@@ -322,7 +322,7 @@ def write_verdict(
     def write(handle: TextIO) -> None:
         handle.write(json.dumps(body, indent=2) + "\n")
 
-    _write_private(path, write)
+    write_private(path, write)
 
 
 def latest_winner(root: Path) -> str:

@@ -11,8 +11,9 @@ from their messages must leave every store, not just be hidden:
   - gold message references in questions.csv; a question left with no gold is dropped, and so is a
     question whose source message is ineligible (a question must contain its source in its gold,
     and its wording was written while reading that message),
-  - rows of predictions/*.csv (stored tag-eval predictions) and rows of retrieval/*.json (stored
-    retrieval results) that refer to an ineligible message.
+  - rows of predictions/*.csv (stored tag-eval predictions), rows of retrieval/*.json (stored
+    retrieval results) and rows of answers/*.json (stored answer-eval results, D112) that refer to
+    an ineligible message.
 Ids-only files (the frozen samples, skips.csv) and experiment verdicts (numbers only) are untouched.
 
 "Ineligible messages with derived records" counts the distinct ineligible message IDs that any of
@@ -32,6 +33,7 @@ from pathlib import Path
 
 import psycopg
 
+from gcwrapped.answers import evaluation as answers
 from gcwrapped.config import LabelSettings
 from gcwrapped.db import database_name, database_url
 from gcwrapped.docker import start_database
@@ -76,6 +78,7 @@ JOIN analytics.fct_message_text AS x USING (message_key)
 WHERE e.local_ok AND x.has_user_text
 """
 _PREDICTIONS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.csv")
+_ANSWERS_FILE = re.compile(r"(?P<model>[A-Za-z0-9._-]+)__(?P<version>[0-9a-f]{12})\.json")
 
 
 class PruneError(Exception):
@@ -87,8 +90,9 @@ class ShapeError(PruneError):
 
 
 class UnexpectedPredictionsFileError(PruneError):
-    """A .csv in predictions/ is not named <model id>__<prompt version>.csv, or a .json in
-    retrieval/ is not named <method>.json."""
+    """A .csv in predictions/ is not named <model id>__<prompt version>.csv, a .json in
+    retrieval/ is not named <method>.json, or a .json in answers/ is not named
+    <model id>__<answer prompt version>.json."""
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,21 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
             prediction_rows += len(stored.rows) - len(current)
             writes.append(
                 partial(retrieval.write_predictions, label_dir, replace(stored, rows=current))
+            )
+    folder = label_dir / answers.RESULTS_DIR
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        match = _ANSWERS_FILE.fullmatch(path.name)
+        if match is None:
+            raise UnexpectedPredictionsFileError
+        model_id, version = match["model"], match["version"]
+        results = answers.read_results(label_dir, model_id, version)
+        remaining = tuple(r for r in results.rows if all(m in eligible for m in r.referenced_ids))
+        referenced |= {m for r in results.rows for m in r.referenced_ids if m not in eligible}
+        if len(remaining) != len(results.rows):
+            prediction_rows += len(results.rows) - len(remaining)
+            pruned_results = replace(results, rows=remaining)
+            writes.append(
+                partial(answers.write_results, label_dir, model_id, version, pruned_results)
             )
     return FilePlan(
         referenced_ineligible=frozenset(referenced),
