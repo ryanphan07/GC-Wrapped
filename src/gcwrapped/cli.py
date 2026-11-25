@@ -27,6 +27,7 @@ from gcwrapped.parsers.instagram import (
     parse_export,
     parse_export_consented,
 )
+from gcwrapped.retrieval import commands as retrieval
 from gcwrapped.runs import latest_run
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging.model import MODEL_ID as DEFAULT_MODEL_ID
@@ -176,6 +177,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="make a model the default; refused unless the latest verdict names it the winner",
     )
     tag_promote.add_argument("--model", required=True, metavar="ID", help="a registered model id")
+    embed = sub.add_parser(
+        "embed", help="embed local-eligible messages with the local model (fixed lines only)"
+    )
+    embed.add_argument("--synthetic", action="store_true", help="refuse any database but gcw_dev")
+    retrieval_eval = sub.add_parser(
+        "retrieval-eval", help="search each question with one method, store and score (D104)"
+    )
+    retrieval_eval.add_argument("--method", required=True, metavar="M", help="vector or hybrid")
+    retrieval_eval.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
+    retrieval_compare = sub.add_parser(
+        "retrieval-compare", help="apply the D104 win rule to two stored retrieval runs"
+    )
+    retrieval_compare.add_argument("--a", required=True, metavar="M", help="vector (baseline)")
+    retrieval_compare.add_argument("--b", required=True, metavar="M", help="hybrid (variant)")
+    retrieval_compare.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
     llm_model = sub.add_parser(
         "llm-model", help="download a registered model file, checking its sha256"
     )
@@ -395,6 +415,12 @@ def _run(argv: Sequence[str] | None) -> int:
         return tagging.run_tag_promote(args.model)
     if args.command == "llm-model":
         return tagging.run_llm_model(args.model)
+    if args.command == "embed":
+        return retrieval.run_embed(synthetic=args.synthetic)
+    if args.command == "retrieval-eval":
+        return retrieval.run_retrieval_eval(args.method, synthetic=args.synthetic)
+    if args.command == "retrieval-compare":
+        return retrieval.run_retrieval_compare(args.a, args.b, synthetic=args.synthetic)
     if args.command == "consent-template":
         return ledger.run_template()
     if args.command == "consent-load":

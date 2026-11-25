@@ -2,7 +2,9 @@
 
 The allowlist is the ingestion consent gate, so a thread that leaves it must leave the warehouse.
 Everything keyed to such a thread goes: its raw.messages (reactions live in a jsonb column of that
-row), enrich.message_tags (keyed to a message) and raw.sender_consent. raw.load_runs has no thread
+row), enrich.message_tags and enrich.message_embeddings (keyed to a message; a window never crosses
+threads, D103, so deleting by the centre's thread removes every vector an unlisted message shaped,
+D106) and raw.sender_consent. raw.load_runs has no thread
 or message key and stays. dbt marts drop the thread on their next build.
 
 Guards come before anything runs: the database must be in ALLOWED_DATABASES and the allowlist must
@@ -31,7 +33,9 @@ COMMAND = "purge-unlisted"
 SCHEMAS = ("raw", "enrich")
 KEY_COLUMNS = ("message_key", "thread_id")
 # Every table in SCHEMAS that has a KEY_COLUMNS column; purge() deletes from exactly these.
-COVERED_TABLES = frozenset({"raw.messages", "raw.sender_consent", "enrich.message_tags"})
+COVERED_TABLES = frozenset(
+    {"raw.messages", "raw.sender_consent", "enrich.message_tags", "enrich.message_embeddings"}
+)
 
 STEP_DATABASE = "database"
 STEP_ALLOWLIST = "allowlist"
@@ -47,6 +51,7 @@ SHAPES = (
     r"messages: \d+",
     r"reactions: \d+",
     r"tags: \d+",
+    r"embeddings: \d+",
     r"consent rows: \d+",
     r"mode: (dry run|deleted)",
     r"purge-unlisted: ok",
@@ -77,6 +82,7 @@ class PurgeResult:
     messages: int
     reactions: int
     tags: int
+    embeddings: int
     consent_rows: int
     deleted: bool
 
@@ -111,7 +117,7 @@ def _threads(conn: psycopg.Connection) -> set[str]:
 def purge(url: str, allowlist: frozenset[str], *, confirm: bool) -> PurgeResult:
     """Delete every row of a thread outside `allowlist`, or (no `confirm`) count what would go.
 
-    Both modes run the same three deletes in one transaction, children first. Without `confirm`
+    Both modes run the same four deletes in one transaction, children first. Without `confirm`
     the transaction is rolled back, so the dry-run counts cannot drift from what a real run
     removes. With `confirm` it commits; any exception rolls everything back (`with connect()`).
     Counts come from the deletes themselves.
@@ -126,6 +132,11 @@ def purge(url: str, allowlist: frozenset[str], *, confirm: bool) -> PurgeResult:
         tags = conn.execute(
             "DELETE FROM enrich.message_tags t USING raw.messages m "
             "WHERE m.message_key = t.message_key AND m.thread_id <> ALL(%s)",
+            (keep,),
+        ).rowcount
+        embeddings = conn.execute(
+            "DELETE FROM enrich.message_embeddings e USING raw.messages m "
+            "WHERE m.message_key = e.message_key AND m.thread_id <> ALL(%s)",
             (keep,),
         ).rowcount
         consent = conn.execute(
@@ -150,6 +161,7 @@ def purge(url: str, allowlist: frozenset[str], *, confirm: bool) -> PurgeResult:
         messages=messages,
         reactions=reactions,
         tags=tags,
+        embeddings=embeddings,
         consent_rows=consent,
         deleted=confirm,
     )
@@ -164,6 +176,7 @@ def render(database: str, result: PurgeResult) -> list[str]:
         f"messages: {result.messages}",
         f"reactions: {result.reactions}",
         f"tags: {result.tags}",
+        f"embeddings: {result.embeddings}",
         f"consent rows: {result.consent_rows}",
         f"mode: {'deleted' if result.deleted else 'dry run'}",
         "purge-unlisted: ok",

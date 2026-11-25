@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -172,8 +172,8 @@ redaction-audit:
 text-audit:
 	@uv run gcw text-audit
 
-# Remove everything derived from messages that are no longer eligible (D101): tag rows, hand-label rows,
-# question gold references and stored predictions in GCW_LABEL_DIR. Run consent-load first so the
+# Remove everything derived from messages that are no longer eligible (D101, D105): tag rows, embedding
+# rows, hand-label rows, question gold references and stored predictions in GCW_LABEL_DIR. Run consent-load first so the
 # revocation is in the warehouse. Dry run unless APPLY=1; counts only. Real-data runs are Ryan's:
 #   make consent-prune ENV_FILE=<env file outside the repo> [APPLY=1]
 consent-prune:
@@ -220,3 +220,23 @@ tag-compare:
 tag-promote:
 	@test -n "$(MODEL)" || { echo "error: set MODEL=<id> (make tag-promote MODEL=<id>)"; exit 1; }
 	@uv run gcw tag-promote --model $(MODEL)
+
+# Local embeddings and retrieval (D102-D104). The model is fetched once with
+# `make llm-model MODEL=qwen3-embedding-0.6b-q8_0`. embed starts only the db and embed services,
+# embeds every local-eligible text message whose window has no current vector (resumable, rerunning
+# embeds nothing new) and prints fixed lines only. retrieval-eval searches each question with one
+# method over those vectors, stores the results (IDs only) and prints recall@k and MRR@10;
+# retrieval-compare applies the D104 win rule to the two stored runs. SYNTHETIC=1 means gcw_dev
+# only (and for the eval: the committed synthetic questions and a temporary directory). The embed
+# service stays running (docker compose --env-file <env> --profile embed down stops it).
+# Real-data runs are Ryan's: make embed ENV_FILE=<env file outside the repo>
+embed:
+	@uv run gcw embed $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+retrieval-eval:
+	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-eval METHOD=vector [SYNTHETIC=1])"; exit 1; }
+	@uv run gcw retrieval-eval --method $(METHOD) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+retrieval-compare:
+	@test -n "$(A)" -a -n "$(B)" || { echo "error: set A=vector and B=hybrid (make retrieval-compare A=vector B=hybrid [SYNTHETIC=1])"; exit 1; }
+	@uv run gcw retrieval-compare --a $(A) --b $(B) $(if $(filter 1,$(SYNTHETIC)),--synthetic)

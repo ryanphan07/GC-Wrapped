@@ -1,18 +1,24 @@
-"""`make consent-prune [APPLY=1]` (D101): remove everything derived from a message that is no longer
-eligible.
+"""`make consent-prune [APPLY=1]` (D101, D105): remove everything derived from a message that is no
+longer eligible.
 
 A message is eligible when its sender is local_ok and it is user text (D88, D95). When a sender
 revokes consent (or a thread is purged, or a placeholder pattern starts to match), what was derived
 from their messages must leave every store, not just be hidden:
   - enrich.message_tags rows (the same delete `make tag` runs first),
+  - enrich.message_embeddings rows whose centre or any window member is ineligible (D105): that
+    message's text shaped the vector,
   - rows of tag_labels.csv in GCW_LABEL_DIR (hand labels),
   - gold message references in questions.csv; a question left with no gold is dropped, and so is a
     question whose source message is ineligible (a question must contain its source in its gold,
     and its wording was written while reading that message),
-  - rows of predictions/*.csv (stored tag-eval predictions).
+  - rows of predictions/*.csv (stored tag-eval predictions) and rows of retrieval/*.json (stored
+    retrieval results) that refer to an ineligible message.
 Ids-only files (the frozen samples, skips.csv) and experiment verdicts (numbers only) are untouched.
 
-Dry run by default: the database delete runs in a transaction that is rolled back and no file is
+"Ineligible messages with derived records" counts the distinct ineligible message IDs that any of
+the above still refers to, not every ineligible message.
+
+Dry run by default: the database deletes run in a transaction that is rolled back and no file is
 written. APPLY commits it and rewrites each changed file atomically (a temporary file, then a
 rename, mode 0600). A rerun finds nothing left. Output is fixed lines of numbers, shape-checked
 before printing; a failure prints a step name and an exception type only.
@@ -20,7 +26,7 @@ before printing; a failure prints a step name and an exception type only.
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 
@@ -34,6 +40,8 @@ from gcwrapped.labeling.files import read_questions, read_tags, write_questions,
 from gcwrapped.labeling.schema import QUESTIONS_FILE, TAG_LABELS_FILE, QuestionLabel
 from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.migrate import migrate
+from gcwrapped.retrieval import evaluation as retrieval
+from gcwrapped.retrieval.search import PRUNE_EMBEDDINGS_SQL
 from gcwrapped.tagging import evaluation
 from gcwrapped.tagging.runner import PRUNE_SQL
 
@@ -47,8 +55,9 @@ STEP_RENDER = "render"
 _DB = "|".join(sorted(ALLOWED_DATABASES))
 SHAPES = (
     rf"target database: ({_DB})",
-    r"ineligible messages: \d+",
+    r"ineligible messages with derived records: \d+",
     r"tags to prune: \d+",
+    r"embedding rows to prune: \d+",
     r"label rows to prune: \d+",
     r"question gold references to prune: \d+",
     r"questions left with no gold: \d+",
@@ -78,7 +87,8 @@ class ShapeError(PruneError):
 
 
 class UnexpectedPredictionsFileError(PruneError):
-    """A .csv in predictions/ is not named <model id>__<prompt version>.csv."""
+    """A .csv in predictions/ is not named <model id>__<prompt version>.csv, or a .json in
+    retrieval/ is not named <method>.json."""
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,7 @@ class FilePlan:
 class PruneResult:
     ineligible_messages: int
     tags: int
+    embeddings: int
     label_rows: int
     gold_references: int
     questions_without_gold: int
@@ -162,6 +173,19 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
         if len(kept) != len(rows):
             prediction_rows += len(rows) - len(kept)
             writes.append(partial(evaluation.write_predictions, label_dir, model_id, version, kept))
+
+    folder = label_dir / retrieval.PREDICTIONS_DIR
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        if path.stem not in retrieval.METHODS:
+            raise UnexpectedPredictionsFileError
+        stored = retrieval.read_predictions(label_dir, path.stem)
+        current = tuple(r for r in stored.rows if all(m in eligible for m in r.referenced_ids))
+        referenced |= {m for r in stored.rows for m in r.referenced_ids if m not in eligible}
+        if len(current) != len(stored.rows):
+            prediction_rows += len(stored.rows) - len(current)
+            writes.append(
+                partial(retrieval.write_predictions, label_dir, replace(stored, rows=current))
+            )
     return FilePlan(
         referenced_ineligible=frozenset(referenced),
         label_rows=len(tags) - len(kept_tags),
@@ -175,8 +199,9 @@ def plan_files(label_dir: Path, eligible: frozenset[str]) -> FilePlan:
 def prune(url: str, label_dir: Path, *, apply: bool) -> PruneResult:
     """Count (and with `apply`, remove) every derived record of an ineligible message.
 
-    The database delete is the one `make tag` runs; without `apply` it is rolled back, so the dry
-    run count cannot drift from what APPLY removes. Files are planned (and validated) before
+    The tag delete is the one `make tag` runs and the embedding delete is the complement of what
+    search reads; without `apply` both are rolled back, so the dry run counts cannot drift from
+    what APPLY removes. Files are planned (and validated) before
     anything is written, and written only after the database delete succeeded.
     """
     migrate(url)  # an unmigrated database has no enrich schema (purge-unlisted does the same)
@@ -187,6 +212,8 @@ def prune(url: str, label_dir: Path, *, apply: bool) -> PruneResult:
         }
         plan = plan_files(label_dir, eligible)
         tags = conn.execute(PRUNE_SQL).rowcount
+        embeddings = conn.execute(PRUNE_EMBEDDINGS_SQL).fetchall()
+        embedded = {str(key) for (keys,) in embeddings for key in keys}
         if apply:
             conn.commit()
             for write in plan.writes:
@@ -194,8 +221,9 @@ def prune(url: str, label_dir: Path, *, apply: bool) -> PruneResult:
         else:
             conn.rollback()
     return PruneResult(
-        ineligible_messages=len(plan.referenced_ineligible | (tagged - eligible)),
+        ineligible_messages=len(plan.referenced_ineligible | ((tagged | embedded) - eligible)),
         tags=tags,
+        embeddings=len(embeddings),
         label_rows=plan.label_rows,
         gold_references=plan.gold_references,
         questions_without_gold=plan.questions_without_gold,
@@ -207,8 +235,9 @@ def prune(url: str, label_dir: Path, *, apply: bool) -> PruneResult:
 def render(database: str, result: PruneResult) -> list[str]:
     lines = [
         f"target database: {database}",
-        f"ineligible messages: {result.ineligible_messages}",
+        f"ineligible messages with derived records: {result.ineligible_messages}",
         f"tags to prune: {result.tags}",
+        f"embedding rows to prune: {result.embeddings}",
         f"label rows to prune: {result.label_rows}",
         f"question gold references to prune: {result.gold_references}",
         f"questions left with no gold: {result.questions_without_gold}",

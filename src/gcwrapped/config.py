@@ -121,6 +121,14 @@ class TaggingSettings(_HostSettings):
     gcw_model_dir: str = ""
 
 
+class EmbeddingSettings(_HostSettings):
+    """Where the local embedding server is (D102). Empty URL means "use the compose default on
+    this machine"; the URL is checked to be local by the client."""
+
+    gcw_embed_url: str = ""
+    gcw_embed_port: int = 8082
+
+
 class DatabaseSettings(_HostSettings):
     """Postgres connection settings. Required only by code that connects to the database."""
 

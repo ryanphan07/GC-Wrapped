@@ -361,6 +361,78 @@ jobs:
         if: always()
         run: docker compose --env-file "$ENV_FILE" --profile llm down -v
 
+  # D108: the production window builder, embedding client and vector search score the committed
+  # synthetic questions with the pinned embedding model (D102) on every PR; the job fails if
+  # recall@5 is below the committed floor (tests/fixtures/eval/retrieval_floors.json) or a question
+  # was dropped. Its own job, like eval-gate. Synthetic data only.
+  retrieval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dbt
+      - name: Write the env file
+        run: |
+          echo "ENV_FILE=$RUNNER_TEMP/retrieval.env" >> "$GITHUB_ENV"
+          echo "GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/retrieval.env" <<EOF
+          COMPOSE_PROJECT_NAME=gc-wrapped-ci-retrieval
+          GCW_DB_NAME=gcw_dev
+          GCW_THREAD_ALLOWLIST=1784563920183746,293847561029384,48271936502817364,51928374650192837,61827394501827364,70192837465019283
+          POSTGRES_USER=gcw
+          POSTGRES_PASSWORD=ci-password
+          POSTGRES_HOST=localhost
+          POSTGRES_PORT=5432
+          GCW_READER_PASSWORD=ci-reader-password
+          GCW_LANDING_HOST_DIR=$RUNNER_TEMP/unused-landing
+          GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv
+          GCW_MODEL_DIR=$RUNNER_TEMP/models
+          EOF
+      - name: Pinned model sha256 (the cache key)
+        id: model
+        run: echo "sha256=$(uv run python -c 'from gcwrapped.tagging import model; print(model.EMBED_MODEL_SPEC.sha256)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/models
+          key: embed-model-${{ steps.model.outputs.sha256 }}
+      - name: Download the embedding model (sha256-checked)
+        run: make llm-model MODEL=qwen3-embedding-0.6b-q8_0
+      - name: Database, synthetic export, dbt models and consent ledger
+        run: |
+          docker compose --env-file "$ENV_FILE" up -d --wait db
+          uv run gcw migrate
+          uv run python tests/synthetic/instagram.py
+          uv run gcw ingest tests/fixtures/synthetic/export_a
+          make dbt-deps
+          make dbt-build
+          uv run gcw consent-load --no-start
+      - name: make embed (a second run embeds nothing)
+        run: |
+          make embed SYNTHETIC=1 2>&1 | tee embed-1.log
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "failures: 0" embed-1.log
+          grep -qE "^embedded this run: [1-9][0-9]*$" embed-1.log
+          make embed SYNTHETIC=1 2>&1 | tee embed-2.log
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -qx "embedded this run: 0" embed-2.log
+          if grep -qi sentinel embed-1.log embed-2.log; then echo "sentinel string in embed output"; exit 1; fi
+      - name: retrieval-eval on the synthetic questions
+        run: |
+          make retrieval-eval METHOD=vector SYNTHETIC=1 2>&1 | tee retrieval.log
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -qi sentinel retrieval.log; then echo "sentinel string in retrieval-eval output"; exit 1; fi
+      - name: Gate against the committed floor
+        run: python3 scripts/retrieval_gate.py retrieval.log
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose --env-file "$ENV_FILE" --profile embed logs --no-color --tail=40 db embed
+      - name: Stop the stack
+        if: always()
+        run: docker compose --env-file "$ENV_FILE" --profile embed down -v
+
   # `make real-ingest` is never run locally by the coding assistant (decisions.md, 2026-11-05), so
   # this job is its end-to-end test. Same command as a real run, on the synthetic sentinel landing:
   # its own compose project, ports and database (gcw_ci), and a log dir outside the workspace.

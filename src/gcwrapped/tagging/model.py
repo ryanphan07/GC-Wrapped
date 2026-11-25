@@ -98,8 +98,23 @@ REGISTRY: dict[str, ModelSpec] = {
 }
 
 
+# D102: the embedding model (official Qwen GGUF, Apache-2.0; exact commit, sha256 is the LFS id).
+# A sibling registry, not part of REGISTRY, so no tagger command can serve, compare or promote it.
+EMBED_MODEL_ID = "qwen3-embedding-0.6b-q8_0"
+EMBED_MODEL_SPEC = ModelSpec(
+    file="Qwen3-Embedding-0.6B-Q8_0.gguf",
+    sha256="06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    url=(
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/"
+        "370f27d7550e0def9b39c1f16d3fbaa13aa67728/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    ),
+    enable_thinking=None,  # an embedding model has no chat template to configure
+)
+EMBED_REGISTRY: dict[str, ModelSpec] = {EMBED_MODEL_ID: EMBED_MODEL_SPEC}
+
+
 class UnknownModelError(ValueError):
-    """The model id is not in REGISTRY. The message omits the id."""
+    """The model id is not registered. The message omits the id."""
 
 
 def spec_for(model_id: str) -> ModelSpec:
@@ -107,6 +122,11 @@ def spec_for(model_id: str) -> ModelSpec:
         return REGISTRY[model_id]
     except KeyError:
         raise UnknownModelError("model id is not registered") from None
+
+
+def downloadable_spec(model_id: str) -> ModelSpec:
+    """The pinned file behind any registered model, tagger or embedding (`make llm-model`)."""
+    return EMBED_REGISTRY.get(model_id) or spec_for(model_id)
 
 
 def model_dir() -> Path:

@@ -320,7 +320,7 @@ def run_tag_promote(model_id: str, start_db: StartDb = start_database) -> int:
 def run_llm_model(model_id: str = model.MODEL_ID) -> int:
     step = STEP_MODEL
     try:
-        spec = model.spec_for(model_id)
+        spec = model.downloadable_spec(model_id)
         downloaded = model.ensure_model(model.model_dir(), spec)
     except Exception as exc:
         print(report.failure_line("llm-model", step, exc))

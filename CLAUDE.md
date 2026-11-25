@@ -12,9 +12,9 @@ Context is cleared after every session. Anything not written into the repo is lo
 - main is protected: all changes go through a PR.
 
 ## Current phase
-Phase 3 (Embeddings + retrieval) is next: S5, then S6 answers, S7 web app (Burst plan). Phase 2 (Enrichment + evals) is complete; its decisions are D69-D101 in `docs/decisions.md`, its results are in METRICS.md and its checklist is in `docs/STATUS.md`. The eval score is reported automatically on every change (the CI eval gate, D100). During the burst (D84) all model work is local and costs $0: llama.cpp for tagging and answers, a local embedding model; a hosted provider fails closed unless the D76 NER gate (P2-2b) has passed.
+Phase 3 (Embeddings + retrieval) is in progress: S5 (embeddings, vector and hybrid retrieval, retrieval eval) is built on synthetic data, its decisions are D102-D108; the real embedding job and the real retrieval eval are Ryan's. Next: S6 answers, S7 web app (Burst plan). The vector-vs-hybrid win rule is pre-registered in D104 (`docs/decisions.md`): hybrid becomes the default only if it clears that rule. Phase 2 (Enrichment + evals) is complete; its decisions are D69-D101 in `docs/decisions.md`, its results are in METRICS.md and its checklist is in `docs/STATUS.md`. The eval score is reported automatically on every change (the CI eval gate, D100). During the burst (D84) all model work is local and costs $0: llama.cpp for tagging and answers, a local embedding model; a hosted provider fails closed unless the D76 NER gate (P2-2b) has passed.
 Phase 1 (Pipeline) is complete: parse Instagram DMs (Meta "Download your information" export, JSON format) → clean/dedupe → Postgres `raw` schema → dbt models with tests → Airflow landing-zone DAG → Streamlit dashboard, run end to end with one command. Messenger and TikTok are possible later platforms; iMessage is out (no Mac).
-Not yet in scope: analysis of image/video content, a second platform, any hosted LLM or embedding API (D84). Local llama.cpp, local embeddings, the web app and the tunnel deploy arrive in the sessions listed under Burst plan, one per brief.
+Not yet in scope: analysis of image/video content, a second platform, any hosted LLM or embedding API (D84). The web app and the tunnel deploy arrive in the sessions listed under Burst plan, one per brief.
 
 ## Privacy rules (hard requirements)
 - You are a third-party API. Real chat data must never enter your context.
@@ -33,7 +33,7 @@ Not yet in scope: analysis of image/video content, a second platform, any hosted
 
 ## Stack
 Python 3.12 (uv), psycopg 3, pydantic-settings, Postgres 17 + pgvector (Docker), dbt-postgres, Airflow (LocalExecutor, runs from its own image: official base plus gcwrapped and dbt in an isolated venv), Streamlit dashboard, pytest, ruff, mypy --strict, GitHub Actions.
-Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Installed so far (D89, D98): the llama.cpp server as the `llm` compose service (CPU image pinned by digest, 127.0.0.1 only, profile `llm`) and Qwen3.5 4B (default) and 2B (challenger) Q4_K_M with thinking off, plus Qwen3-4B-Instruct-2507 as a reference and Qwen3.5 0.8B used only by the CI eval gate (D100), fetched to ~/.cache/gcw/models by `make llm-model`. The local embedding model is not installed yet.
+Models (D84, from the sessions in Burst plan on): llama.cpp for tagging and answers and a local embedding model, both on Ryan's laptop; the app is served from the laptop through a free tunnel. Installed so far (D89, D98): the llama.cpp server as the `llm` compose service (CPU image pinned by digest, 127.0.0.1 only, profile `llm`) and Qwen3.5 4B (default) and 2B (challenger) Q4_K_M with thinking off, plus Qwen3-4B-Instruct-2507 as a reference and Qwen3.5 0.8B used only by the CI eval gate (D100), fetched to ~/.cache/gcw/models by `make llm-model`. The local embedding model (D102) is Qwen3-Embedding-0.6B Q8_0, served by the same pinned image as the `embed` compose service (127.0.0.1 only, profile `embed`) and fetched by `make llm-model MODEL=qwen3-embedding-0.6b-q8_0`.
 
 ## Commands
 ```
@@ -51,7 +51,7 @@ make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_L
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.
 make metrics                    # aggregate counts report. You run it only with the default .env; real-data runs are Ryan's.
 make purge-unlisted [CONFIRM=1]  # delete warehouse rows of threads not in GCW_THREAD_ALLOWLIST (D91); dry run unless CONFIRM=1; counts only. Real-data runs are Ryan's.
-make consent-prune [APPLY=1]    # remove everything derived from messages no longer eligible (D101): tags, hand-label rows, question gold, stored predictions in GCW_LABEL_DIR; dry run unless APPLY=1; counts only. Real-data runs are Ryan's.
+make consent-prune [APPLY=1]    # remove everything derived from messages no longer eligible (D101, D105): tags, embedding rows, hand-label rows, question gold, stored tag and retrieval predictions in GCW_LABEL_DIR; dry run unless APPLY=1; counts only. Real-data runs are Ryan's.
 make text-audit                 # aggregate counts per Instagram placeholder pattern and of the remaining user text (D95); never text. Real-data runs are Ryan's.
 make consent-coverage            # aggregate consent coverage; private priority list to GCW_LABEL_DIR (never printed). Real-data runs are Ryan's.
 make label-tags / label-questions / label-summary  # hand labeling (D86): interactive, needs GCW_LABEL_DIR outside the repo. Real-data runs are Ryan's; never read GCW_LABEL_DIR for a real run.
@@ -60,9 +60,12 @@ make tag [LIMIT=n] [MODEL=id]   # starts db + llm only; tags local-eligible mess
 make tag-eval MODEL=id [SYNTHETIC=1]      # one model over the hand labels (D92): predictions stored outside the repo (mode 0600), accuracy and macro-F1 with 95% bootstrap intervals; SYNTHETIC=1 = the committed synthetic set, gcw_dev only, temporary directory. Real-data runs are Ryan's.
 make tag-compare A=id B=id [SYNTHETIC=1]  # paired bootstrap of two stored runs, verdict under the D93 win rule, recorded in GCW_LABEL_DIR/experiments/
 make tag-promote MODEL=id       # sets enrich.tag_default; refused unless the latest tag-compare verdict names MODEL the winner
+make embed [SYNTHETIC=1]         # starts db + embed only; one vector per local-eligible message window (D103); resumable, a rerun embeds nothing new; fixed lines only. SYNTHETIC=1 = gcw_dev only. Real-data runs are Ryan's.
+make retrieval-eval METHOD=vector|hybrid [SYNTHETIC=1]  # recall@1/5/10 and MRR@10 with intervals over the questions file (SYNTHETIC=1: committed questions, gcw_dev, temporary directory); stores IDs-only predictions outside the repo. Real-data runs are Ryan's.
+make retrieval-compare A=vector B=hybrid [SYNTHETIC=1]  # applies the D104 win rule to the two stored runs; fixed lines. Real-data runs are Ryan's.
 ```
 Real-data runs are Ryan's: `make e2e ENV_FILE=<file outside the repo>`. You never run them.
-The CI eval gate (D100) fails a PR whose tiny-model synthetic tag-eval is below the floors in `tests/fixtures/eval/gate_floors.json`; a floor changes only through a new decisions entry.
+The CI eval gate (D100) fails a PR whose tiny-model synthetic tag-eval is below the floors in `tests/fixtures/eval/gate_floors.json`; a floor changes only through a new decisions entry. The CI retrieval gate (D108) does the same for synthetic vector recall@5 (`tests/fixtures/eval/retrieval_floors.json`).
 Model changes follow the D93 protocol (arms per D98: A Qwen3.5-4B, B Qwen3.5-2B; Qwen3-4B-Instruct-2507 is a reference, never compared or promoted): a new default model is promoted only through `make tag-eval`, `make tag-compare` and `make tag-promote`, never by editing config.
 
 ## Burst plan
