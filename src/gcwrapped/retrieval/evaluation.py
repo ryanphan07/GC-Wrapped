@@ -8,8 +8,13 @@ A question is dropped when its source message is no longer eligible (as consent-
 or none of its gold messages has a searchable embedding; otherwise its gold is cut to the
 searchable ones.
 
+A run is refused unless every eligible message is searchable (D109), and its file records a hash
+of the corpus searched, so two runs over different corpora are never compared.
+
 Predictions go to <directory outside the repo>/retrieval/<method>.json, mode 0600, written
-atomically: IDs, a hash of each question and seconds. Never question or message text.
+atomically: IDs, a hash of each question, seconds, the embed version and the corpus hash. Never
+question or message text. A comparison's verdict goes to experiments/ beside the tagging ones
+(D110); the default method changes only through `make retrieval-promote`.
 """
 
 import hashlib
@@ -17,10 +22,13 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable, Container, Sequence
+from collections.abc import Callable, Container, Iterable, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
+
+import psycopg
 
 from gcwrapped.labeling.files import MESSAGE_ID, QUESTION_ID
 from gcwrapped.labeling.schema import QuestionLabel
@@ -38,8 +46,11 @@ COMPARE_AT = 5  # D104: the win rule is on recall@5
 LATENCY_LIMIT_SECONDS = 1.0  # D104: hybrid's p95 must be under this
 PREDICTIONS_DIR = "retrieval"
 SOURCES = ("synthetic", "real")
+DEFAULT_TABLE = "enrich.retrieval_default"
+DEFAULT_METHOD = VECTOR  # the D104 baseline, until one is promoted (D110)
 _FLOAT_NOISE_PLACES = 9  # a lower bound that is 0 up to float noise does not lie above 0
-_VERSION = re.compile(r"[0-9a-f]{12}")
+_VERSION = re.compile(r"[0-9a-f]{12}")  # an embed version or a corpus hash
+_VERDICT_FILE = re.compile(r"retrieval-compare-\d{8}T\d{12}Z\.json")
 
 
 class RetrievalEvalError(Exception):
@@ -59,7 +70,23 @@ class RetrievalPredictionsError(RetrievalEvalError):
 
 
 class EmbedVersionMismatch(RetrievalEvalError):
-    """The two predictions files were made with different embed versions."""
+    """Two predictions files, or a verdict and the code, name different embed versions."""
+
+
+class CorpusMismatch(RetrievalEvalError):
+    """The two predictions files were made over different sets of searchable messages (D109)."""
+
+
+class IncompleteCorpusError(RetrievalEvalError):
+    """An eligible message has no searchable row of the current embed version (D109)."""
+
+
+class VerdictError(RetrievalEvalError):
+    """No retrieval-compare verdict exists, or the latest one is malformed."""
+
+
+class NotWinnerError(RetrievalEvalError):
+    """The latest verdict does not name the requested method as the winner."""
 
 
 class QuestionSetMismatch(RetrievalEvalError):
@@ -87,7 +114,20 @@ class Predictions:
     method: str
     embed_version: str
     source: str  # "synthetic" or "real" questions
+    corpus_hash: str  # of the searchable message IDs (D109)
     rows: tuple[Row, ...]
+
+
+def corpus_hash(searchable: Iterable[str]) -> str:
+    """A short hash of the set of searchable message IDs (D109): equal sets give equal hashes."""
+    joined = "\n".join(sorted(searchable))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+
+
+def unembedded(eligible: Iterable[str], searchable: Container[str]) -> int:
+    """How many eligible messages search cannot return. A run needs 0 (D109): a missing message
+    silently cuts gold and drops questions, and a smaller corpus is easier to search."""
+    return sum(1 for message_id in eligible if message_id not in searchable)
 
 
 def split_questions(
@@ -234,6 +274,8 @@ def compare(a: Predictions, b: Predictions, eligible: Container[str]) -> Compare
     refers to a message that is no longer eligible is not scored (D87, D105)."""
     if a.embed_version != b.embed_version:
         raise EmbedVersionMismatch
+    if a.corpus_hash != b.corpus_hash:
+        raise CorpusMismatch
     if a.source != b.source or _question_set(a) != _question_set(b):
         raise QuestionSetMismatch
     by_id = {r.question_id: r for r in b.rows}
@@ -272,7 +314,7 @@ def write_predictions(root: Path, predictions: Predictions) -> None:
     def write(handle: TextIO) -> None:
         handle.write(json.dumps(asdict(predictions), indent=1) + "\n")
 
-    tag_evaluation._write_private(path, write)
+    tag_evaluation.write_private(path, write)
 
 
 def _row(data: dict[str, object]) -> Row:
@@ -307,15 +349,90 @@ def read_predictions(root: Path, method: str) -> Predictions:
         data = json.loads(path.read_text(encoding="utf-8"))
         rows = tuple(_row(r) for r in data["rows"])
         found = Predictions(
-            str(data["method"]), str(data["embed_version"]), str(data["source"]), rows
+            str(data["method"]),
+            str(data["embed_version"]),
+            str(data["source"]),
+            str(data["corpus_hash"]),
+            rows,
         )
         if (
             found.method != method
             or found.source not in SOURCES
             or _VERSION.fullmatch(found.embed_version) is None
+            or _VERSION.fullmatch(found.corpus_hash) is None
             or len({r.question_id for r in rows}) != len(rows)
         ):
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         raise RetrievalPredictionsError from None
     return found
+
+
+# --- verdicts and the default method (D110) ----------------------------------------------------
+
+
+def write_verdict(root: Path, predictions: Predictions, result: CompareResult) -> None:
+    """Record a vector-vs-hybrid verdict in root/experiments/: numbers, method names, the embed
+    version and the corpus hash only; mode 0600. `predictions` is either of the compared files
+    (compare has checked that version and corpus are the same in both)."""
+    folder = tag_evaluation.private_subdir(root, tag_evaluation.EXPERIMENTS_DIR)
+    now = datetime.now(UTC)
+    path = folder / f"retrieval-compare-{now:%Y%m%dT%H%M%S%f}Z.json"
+    body = {
+        "a": VECTOR,
+        "b": HYBRID,
+        "winner": HYBRID if result.b_wins else VECTOR,
+        "embed_version": predictions.embed_version,
+        "corpus_hash": predictions.corpus_hash,
+        "questions_scored": result.scored,
+        "a_recall_at_5": result.a_recall,
+        "b_recall_at_5": result.b_recall,
+        "difference": result.difference.value,
+        "difference_interval": list(result.difference.interval),
+        "b_p95_seconds": result.b_p95,
+    }
+
+    def write(handle: TextIO) -> None:
+        handle.write(json.dumps(body, indent=2) + "\n")
+
+    tag_evaluation.write_private(path, write)
+
+
+def latest_verdict(root: Path) -> tuple[str, str]:
+    """(winner, embed version) of the most recent retrieval-compare verdict."""
+    folder = root / tag_evaluation.EXPERIMENTS_DIR
+    found = folder.glob("retrieval-compare-*.json") if folder.is_dir() else []
+    names = sorted(p.name for p in found if _VERDICT_FILE.fullmatch(p.name))
+    if not names:
+        raise VerdictError
+    try:
+        body = json.loads((folder / names[-1]).read_text(encoding="utf-8"))
+        a, b, winner = body["a"], body["b"], body["winner"]
+        version = str(body["embed_version"])
+    except (OSError, ValueError, KeyError, TypeError):
+        raise VerdictError from None
+    if (a, b) != (VECTOR, HYBRID) or winner not in METHODS or _VERSION.fullmatch(version) is None:
+        raise VerdictError
+    return str(winner), version
+
+
+def default_method(conn: psycopg.Connection) -> str:
+    """The method answers use: enrich.retrieval_default, or vector while the table or its row
+    does not exist (D110)."""
+    if conn.execute("SELECT to_regclass(%s)", (DEFAULT_TABLE,)).fetchone() == (None,):
+        return DEFAULT_METHOD
+    row = conn.execute(f"SELECT method FROM {DEFAULT_TABLE}").fetchone()
+    return DEFAULT_METHOD if row is None else str(row[0])
+
+
+def promote(url: str, method: str) -> str | None:
+    """Set the one row of enrich.retrieval_default. Returns the previous method, if there was
+    one."""
+    with psycopg.connect(url) as conn:
+        row = conn.execute(f"SELECT method FROM {DEFAULT_TABLE}").fetchone()
+        conn.execute(
+            f"INSERT INTO {DEFAULT_TABLE} (singleton, method) VALUES (true, %s) "
+            "ON CONFLICT (singleton) DO UPDATE SET method = excluded.method, promoted_at = now()",
+            (method,),
+        )
+    return None if row is None else str(row[0])

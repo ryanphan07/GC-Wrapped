@@ -1,4 +1,5 @@
-"""Fixed-line output for `make embed`, `retrieval-eval` and `retrieval-compare`.
+"""Fixed-line output for `make embed`, `retrieval-eval`, `retrieval-compare` and
+`retrieval-promote`.
 
 Every line is a fixed label plus numbers or a name from a closed list, checked with fullmatch
 before anything is printed, so no question, message text, sender, ID or path can reach the terminal
@@ -44,6 +45,7 @@ EVAL_SHAPES = (
     r"questions source: (synthetic|real)",
     rf"method: ({_METHODS})",
     r"embed version: [0-9a-f]{12}",
+    r"messages not embedded: \d+",
     r"questions: \d+",
     r"questions dropped \(gold not embedded or ineligible\): \d+",
     r"questions scored: \d+",
@@ -67,10 +69,16 @@ COMPARE_SHAPES = (
     rf"winner: ({_METHODS})",
     r"retrieval-compare: ok",
 )
-COMMANDS = ("embed", "retrieval-eval", "retrieval-compare")
+PROMOTE_SHAPES = (
+    rf"target database: ({_DATABASES})",
+    rf"promoted method: ({_METHODS})",
+    rf"previous method: ({_METHODS}|none)",
+    r"retrieval-promote: ok",
+)
+COMMANDS = ("embed", "retrieval-eval", "retrieval-compare", "retrieval-promote")
 STEPS = (
     "method|database|label directory|embed url|questions|predictions|docker|embedding|"
-    "retrieval|scoring|render"
+    "retrieval|corpus|scoring|verdict|promote|render"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 
@@ -96,6 +104,11 @@ def _interval(estimate: Estimate) -> str:
     return f"[{low:.3f}, {high:.3f}]"
 
 
+def unembedded_line(missing: int) -> str:
+    """The D109 line, printed alone when a run is refused and among the others when it is not."""
+    return check_lines([f"messages not embedded: {missing}"], (r"messages not embedded: \d+",))[0]
+
+
 def render_eval(
     database: str, source: str, method: str, version: str, result: EvalResult
 ) -> list[str]:
@@ -104,6 +117,7 @@ def render_eval(
         f"questions source: {source}",
         f"method: {method}",
         f"embed version: {version}",
+        unembedded_line(0),  # a run with any other count was refused before it searched (D109)
         f"questions: {result.questions}",
         f"questions dropped (gold not embedded or ineligible): {result.dropped}",
         f"questions scored: {result.scored}",
@@ -132,6 +146,16 @@ def render_compare(a: str, b: str, result: CompareResult) -> list[str]:
         "retrieval-compare: ok",
     ]
     return check_lines(lines, COMPARE_SHAPES)
+
+
+def render_promote(database: str, method: str, previous: str | None) -> list[str]:
+    lines = [
+        f"target database: {database}",
+        f"promoted method: {method}",
+        f"previous method: {previous or 'none'}",
+        "retrieval-promote: ok",
+    ]
+    return check_lines(lines, PROMOTE_SHAPES)
 
 
 def failure_line(command: str, step: str, exc: BaseException) -> str:

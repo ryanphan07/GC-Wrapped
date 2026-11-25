@@ -8,12 +8,15 @@ what was sent. Modes let a test provoke the failures the client must handle:
   invalid       always an invalid answer
   error500      HTTP 500
   redirect      HTTP 302 to `redirect_to` (the client must not follow it)
+With `reply` set, the message content is what it returns for the request body, in any mode that
+answers (the answer pipeline's tests, D111).
 Run as a script (`python tests/tagging_stub.py --port 8099`) to serve until killed.
 """
 
 import argparse
 import json
 import zlib
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from types import TracebackType
@@ -52,7 +55,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         user = body["messages"][-1]["content"]
-        content = json.dumps(answer_for(user))
+        content = srv.reply(body) if srv.reply else json.dumps(answer_for(user))
         if srv.mode == "invalid" or (srv.mode == "invalid_once" and n == 1):
             content = json.dumps({"topic": "not-a-topic", "sentiment": "positive"})
         payload = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]})
@@ -63,10 +66,17 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class StubLlm(ThreadingHTTPServer):
-    def __init__(self, port: int = 0, mode: str = "ok", redirect_to: str = "") -> None:
+    def __init__(
+        self,
+        port: int = 0,
+        mode: str = "ok",
+        redirect_to: str = "",
+        reply: Callable[[dict[str, Any]], str] | None = None,
+    ) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.mode = mode
         self.redirect_to = redirect_to
+        self.reply = reply
         self.requests: list[dict[str, Any]] = []
 
     @property

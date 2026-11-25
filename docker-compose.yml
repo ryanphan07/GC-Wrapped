@@ -94,6 +94,8 @@ services:
   # No text leaves through this server: --no-slots removes the endpoint that shows in-flight
   # prompts, --no-webui removes the chat UI, and --props and --metrics stay off (their default).
   # Logging stays at the default level, which does not print prompts (a local test checks the logs).
+  # --ctx-size holds the largest answer prompt (D111, D114): five 2000-character windows, even of
+  # text that costs several tokens per character, plus the system prompt and the answer.
   llm:
     profiles: ["llm"]
     image: ghcr.io/ggml-org/llama.cpp:server@sha256:c7d58273d753d33a352e5c41ab300c5ae040a16fa4b202231bb606478065c124
@@ -107,7 +109,7 @@ services:
       - --port
       - "8080"
       - --ctx-size
-      - "2048"
+      - "32768"
       - --parallel
       - "1"
       - --threads

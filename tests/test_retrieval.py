@@ -3,10 +3,12 @@ the local client, fusion, the eval and compare arithmetic, private files, fixed 
 """
 
 import hashlib
+import json
 import math
 import re
 import stat
 import subprocess
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from gcwrapped.retrieval.client import (
 )
 from gcwrapped.retrieval.embed import EmbedResult
 from gcwrapped.retrieval.window import SourceMessage, build_window, build_windows
+from gcwrapped.tagging import evaluation as tag_evaluation
 from gcwrapped.tagging import model
 from gcwrapped.tagging.commands import ModelFileMissingError
 from gcwrapped.tagging.evaluation import OutsideRepoError
@@ -35,6 +38,7 @@ REPO = Path(__file__).resolve().parents[1]
 EMBED_ID = model.EMBED_MODEL_ID
 SENTINEL = "SENTINELTEXT"
 VERSION = "0123456789ab"
+CORPUS = "ba9876543210"
 
 
 def _id(n: int) -> str:
@@ -307,10 +311,14 @@ def test_questions_without_an_eligible_source_or_a_searchable_gold_are_dropped()
 
 
 def _predictions(
-    method: str, ranks: list[int | None], seconds: float = 0.1, version: str = VERSION
+    method: str,
+    ranks: list[int | None],
+    seconds: float = 0.1,
+    version: str = VERSION,
+    corpus: str = CORPUS,
 ) -> evaluation.Predictions:
     rows = tuple(_row(n, rank, seconds) for n, rank in enumerate(ranks, start=1))
-    return evaluation.Predictions(method, version, "synthetic", rows)
+    return evaluation.Predictions(method, version, "synthetic", corpus, rows)
 
 
 def _everything(*predictions: evaluation.Predictions) -> set[str]:
@@ -376,6 +384,87 @@ def test_different_embed_versions_or_question_sets_cannot_be_compared() -> None:
             evaluation.compare(a, changed, set())
 
 
+# --- the corpus (D109) -------------------------------------------------------------------------
+
+
+def test_the_corpus_hash_names_the_set_of_searchable_ids() -> None:
+    expected = hashlib.sha256(f"{min(_id(1), _id(2))}\n{max(_id(1), _id(2))}".encode()).hexdigest()
+    assert evaluation.corpus_hash([_id(1), _id(2)]) == expected[:12]
+    assert evaluation.corpus_hash([_id(2), _id(1)]) == expected[:12]  # order does not matter
+    assert evaluation.corpus_hash([_id(1)]) != expected[:12]
+
+
+def test_unembedded_counts_the_eligible_messages_search_cannot_return() -> None:
+    assert evaluation.unembedded([_id(1), _id(2), _id(3)], {_id(2), _id(4)}) == 2
+    assert evaluation.unembedded([_id(1)], {_id(1), _id(4)}) == 0
+
+
+def test_files_made_over_different_corpora_cannot_be_compared() -> None:
+    a = _predictions("vector", [1, 2])
+    b = _predictions("hybrid", [1, 2], corpus="f" * 12)
+    with pytest.raises(evaluation.CorpusMismatch):
+        evaluation.compare(a, b, _everything(a, b))
+
+
+# --- verdicts (D110) ---------------------------------------------------------------------------
+
+
+def _write_verdict(root: Path, hybrid_wins: bool) -> None:
+    a = _predictions("vector", [None] * 20)
+    b = _predictions("hybrid", [1 if hybrid_wins else None] * 20)
+    evaluation.write_verdict(root, a, evaluation.compare(a, b, _everything(a, b)))
+
+
+def test_a_verdict_holds_numbers_method_names_version_and_corpus_only(tmp_path: Path) -> None:
+    _write_verdict(tmp_path, hybrid_wins=True)
+    (path,) = (tmp_path / "experiments").iterdir()
+    assert re.fullmatch(r"retrieval-compare-\d{8}T\d{12}Z\.json", path.name)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    body = json.loads(path.read_text())
+    assert {k for k, v in body.items() if isinstance(v, str)} == {
+        "a",
+        "b",
+        "winner",
+        "embed_version",
+        "corpus_hash",
+    }
+    assert (body["winner"], body["embed_version"], body["corpus_hash"]) == (
+        "hybrid",
+        VERSION,
+        CORPUS,
+    )
+    assert evaluation.latest_verdict(tmp_path) == ("hybrid", VERSION)
+
+
+def test_the_latest_retrieval_verdict_decides_and_tag_verdicts_are_ignored(tmp_path: Path) -> None:
+    with pytest.raises(evaluation.VerdictError):
+        evaluation.latest_verdict(tmp_path)
+    _write_verdict(tmp_path, hybrid_wins=True)
+    time.sleep(0.002)  # the next verdict file must sort after the first
+    _write_verdict(tmp_path, hybrid_wins=False)
+    (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").write_text("{}")
+    assert evaluation.latest_verdict(tmp_path) == ("vector", VERSION)
+    with pytest.raises(tag_evaluation.VerdictError):  # and the tagger never reads retrieval ones
+        (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").unlink()
+        tag_evaluation.latest_winner(tmp_path)
+
+
+def test_a_malformed_latest_verdict_fails_closed(tmp_path: Path) -> None:
+    _write_verdict(tmp_path, hybrid_wins=True)
+    (path,) = (tmp_path / "experiments").iterdir()
+    good = path.read_text()
+    for bad in (
+        "not json",
+        "[]",
+        good.replace('"winner": "hybrid"', '"winner": "other"'),
+        good.replace('"b": "hybrid"', '"b": "vector"'),
+        good.replace(VERSION, "new"),
+    ):
+        path.write_text(bad)
+        with pytest.raises(evaluation.VerdictError):
+            evaluation.latest_verdict(tmp_path)
+
+
 # --- private files -----------------------------------------------------------------------------
 
 
@@ -387,7 +476,7 @@ def test_predictions_round_trip_privately_and_hold_no_text(tmp_path: Path) -> No
         lambda query, k: [search.Hit(_id(1), 1.0)], questions, clock=iter([1.0, 1.25]).__next__
     )
     assert rows[0].seconds == 0.25
-    stored = evaluation.Predictions("vector", VERSION, "real", tuple(rows))
+    stored = evaluation.Predictions("vector", VERSION, "real", CORPUS, tuple(rows))
     evaluation.write_predictions(tmp_path, stored)
     path = tmp_path / "retrieval" / "vector.json"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -411,6 +500,8 @@ def test_a_missing_or_malformed_predictions_file_fails_closed(tmp_path: Path) ->
         good.replace(_id(1001), SENTINEL),
         good.replace('"seconds": 0.1', '"seconds": -1'),
         good.replace('"seconds": 0.1', '"seconds": NaN'),
+        good.replace('"corpus_hash"', '"corpus"'),  # required (D109): a pre-D109 file fails
+        good.replace(CORPUS, SENTINEL),
     ):
         path.write_text(bad)
         with pytest.raises(evaluation.RetrievalPredictionsError):
@@ -456,6 +547,7 @@ def test_the_eval_lines_are_the_fixed_ones() -> None:
         "questions source",
         "method",
         "embed version",
+        "messages not embedded",
         "questions",
         "questions dropped (gold not embedded or ineligible)",
         "questions scored",

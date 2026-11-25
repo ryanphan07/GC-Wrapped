@@ -25,6 +25,7 @@ def test_migrate_creates_raw_tables_and_is_idempotent(clean_db: str) -> None:
         "004_enrich_message_tags",
         "005_enrich_tag_default",
         "006_enrich_message_embeddings",
+        "007_enrich_retrieval_default",
     ]
     assert second == []
     assert _applied(clean_db) == [
@@ -34,6 +35,7 @@ def test_migrate_creates_raw_tables_and_is_idempotent(clean_db: str) -> None:
         "004_enrich_message_tags",
         "005_enrich_tag_default",
         "006_enrich_message_embeddings",
+        "007_enrich_retrieval_default",
     ]
     with psycopg.connect(clean_db) as conn:
         tables = {
@@ -58,7 +60,7 @@ def test_cli_migrate_is_idempotent(clean_db: str, capsys: pytest.CaptureFixture[
     assert "applied: 004_enrich_message_tags" in first
     assert "applied: 005_enrich_tag_default" in first
     assert "applied: 006_enrich_message_embeddings" in first
-    assert "migrations applied: 6" in first
+    assert "migrations applied: 7" in first
     assert "migrations applied: 0" in second
     assert "applied: 001" not in second
 

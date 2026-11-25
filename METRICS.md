@@ -67,6 +67,7 @@ Commit citations (D73): merges are squashes, so a PR-branch commit is cited as "
 | metric | value | date | how measured | commit |
 |---|---|---|---|---|
 |  |  |  |  |  |
+| Embedding run, real warehouse, qwen3-embedding-0.6b-q8_0 (sha256 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439), embed version e3ac6a56e412, one vector per message over its D103 window, laptop CPU, pinned llama.cpp image | 6015 local-eligible text messages embedded; 0 failures; 1117.72 s; 5.38 messages/s; rerun: 0 embedded, 6015 already current, 0.38 s | 2026-11-24 | make embed ENV_FILE=<real env> twice, run by Ryan in his own terminal, fixed lines only | ac9f07e |
 
 ## Serving
 

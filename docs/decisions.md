@@ -636,3 +636,48 @@ Decision: A CI job runs make embed twice (the second must embed nothing) and mak
 Alternative: stub embeddings only in CI; gating hybrid or MRR too.
 Why: it catches a broken window builder, query prefix, client, migration or search query on every PR, which a stub cannot.
 Tradeoff: one more CI job and a larger cached model. A pass shows the pipeline works, not that real retrieval is good; real numbers live in METRICS.md.
+
+## D109 — 2026-11-24 — Retrieval eval refuses an incomplete or changed corpus
+Decision: make retrieval-eval refuses (fixed failure line, nothing stored) unless every local-eligible user-text message has a searchable row of the current embed version; on success it prints "messages not embedded: 0". Each retrieval predictions file stores a corpus hash: the first 12 hex characters of the sha256 of the sorted searchable message IDs. retrieval-compare refuses two files whose corpus hashes differ.
+Alternative: rely on running make embed first and changing nothing between the two eval runs (S5 behavior).
+Why: a partial corpus silently cuts gold and drops questions, and a smaller corpus is easier to search, so the numbers would look better than they are while the command prints "ok". A procedure that depends on remembering an order is not a guarantee.
+Tradeoff: any consent change or ingest between the two eval runs forces make embed and both evals again; a hash of IDs shows that two corpora differ, not how.
+
+## D110 — 2026-11-24 — The default retrieval method changes only by promotion
+Decision: The method answers use is stored in the warehouse (enrich.retrieval_default, one row, like enrich.tag_default); with no row it is vector, the D104 baseline. retrieval-compare records its verdict (numbers, method names, embed version and corpus hash only) in GCW_LABEL_DIR/experiments/, as tag-compare does. make retrieval-promote METHOD=<m> is refused unless the latest retrieval-compare verdict names <m> the winner under D104 and was made on the current embed version.
+Alternative: a config or env setting; choosing the method in code.
+Why: the same protocol as tag-promote (D93): a default changes only through a recorded, pre-registered comparison, never by editing config.
+Tradeoff: a migration and a table for one value.
+
+## D111 — 2026-11-24 — Answers: local model, numbered source messages, schema-constrained citations
+Decision: An answer uses the top 5 results of the default retrieval method (D110). The messages of their windows are deduplicated, grouped into excerpts (contiguous runs of one thread and session; excerpts ordered by their best retrieval rank, messages in time order) and numbered 1..N across all excerpts, one line each: "[n] sender, date time: text". Source text is rebuilt from raw.messages for the request and stored nowhere. The local llm service (the tag default model, thinking off, temperature 0) must return JSON matching a schema enforced by llama.cpp's grammar, fields in this order: answerable (boolean), citations (at most 5 integers, each in 1..N), answer (text with [n] markers, length capped). The code accepts an answer only if answerable is true, citations is non-empty and every [n] in the text is a citation. answerable false with no citations is an abstention ("not in the chat"). Anything else is an invalid output: shown as a fixed failure, never retried. Each citation maps to one message ID. The system prompt marks the excerpts as quoted chat data, never instructions.
+Alternative: free text with [n] markers checked afterwards; the retrieved messages plus a one-line summary and no generated answer; numbering whole windows instead of messages.
+Why: the grammar makes citing a message the model was not shown impossible rather than unlikely; per-message numbers make citations precise and absorb overlapping windows; choosing answerable and the citations before writing ties the text to its sources; temperature 0 makes eval runs repeatable up to CPU nondeterminism.
+Tradeoff: stiffer prose; a constrained citation can still point at the wrong message among those shown, which the eval measures; up to 25 numbered lines lengthen the prompt and the CPU latency.
+
+## D112 — 2026-11-24 — Answer eval, automatic part; generated answers are never stored
+Decision: make answer-eval [SYNTHETIC=1] runs the answer pipeline once per scorable question (the retrieval-eval drop rules and the D109 corpus guard apply) and prints fixed lines: questions, dropped, scored, invalid outputs, answered, abstained, context has gold (any gold message among the numbered sources), citation hit (answered and cites at least one gold message), each rate over scored questions with a 95% bootstrap interval, and p50/p95 seconds per question (query embedding, SQL and generation). Results go to GCW_LABEL_DIR/answers/<model id>__<answer prompt version>.json, mode 0600: question ID and hash, source and gold IDs, numbered source IDs, cited IDs, outcome, seconds, embed version, corpus hash and retrieval method; never the generated answer text. consent-prune removes rows that refer to an ineligible message, as it does for retrieval predictions. Correctness by hand grading is a later session and stores grades, not answers.
+Alternative: store answer text for later grading; judge correctness with a local model.
+Why: generated answers are derived from chat text, so not storing them leaves nothing new to prune or leak; "context has gold" next to "citation hit" separates retrieval misses from generation misses.
+Tradeoff: citation hit is not correctness (a right citation can come with a wrong answer); hand grading will regenerate answers, which can differ slightly from this run under CPU nondeterminism.
+
+## D113 — 2026-11-24 — make ask: questions from a prompt, content to the terminal only
+Decision: make ask [SYNTHETIC=1] is an interactive loop. It reads each question from a prompt (never from argv or a make variable), prints the answer and its cited messages (sender, date, text) to the terminal, and writes nothing anywhere else: no file, no log line with text. A blank line ends it, and it prints fixed summary lines: questions asked, answered, abstained, invalid outputs, p50 and p95 seconds. Real-data runs are Ryan's.
+Alternative: make ask Q="...".
+Why: a question about the chat is itself personal data, and argv is saved in shell history and visible in the process list.
+Tradeoff: not scriptable; scripted runs use make answer-eval.
+
+## D114 — 2026-11-24 — Implementation details D109-D113 leave open (S6)
+Decision:
+- Excerpts are built from the stored window members of the retrieved rows. Every member is read again through the eligibility rule when the request is built. Two messages are contiguous when no other eligible message of their thread and session lies between them. An excerpt ranks by the best retrieval rank of any window that reaches one of its messages.
+- A source line shows the local time dbt already derives (fct_messages.sent_at_local, the gcw_timezone var) as YYYY-MM-DD HH:MM. Sender and text are put on one line, one message's text is cut at the window cap (2000 characters), and "<|" is broken to "< |" in senders, text and the question, so chat text cannot open a chat-template turn.
+- The answer text is capped at 600 characters and a request at 768 output tokens, with a 600 s timeout. A refused or timed-out request is an invalid output. With no source messages the answer is an abstention and the model is not asked.
+- Beyond D111's rules, a blank answer text is invalid. A marker is [n] or a comma-separated group such as [1, 2], and every number in it must be a citation.
+- The llm service's context size is 32768 tokens, sized from a token count of the worst-case synthetic prompt in several scripts (docs/STATUS.md).
+- The answer prompt version hashes the system prompt, the schema the builder makes for two messages, the user-turn markers, the line and date formats, the text cap, the excerpt rule, the top 5 and the output token limit; a model's template setting changes it, as for the tagger (D98).
+- A refused corpus (D109) prints "messages not embedded: N" and then the failure line. The corpus hash joins the sorted IDs with newlines. Verdict files are experiments/retrieval-compare-<UTC timestamp>.json, which tag-promote does not read. retrieval-promote has no synthetic form, like tag-promote.
+- make ask reads the promoted model and method once at start, checks consent on every question, ends on a blank line, end of input or Ctrl-C, replaces control characters in everything it prints from the chat or the model, and ends with "ask: ok" after the D113 summary lines. consent-prune counts answer rows under "prediction rows to prune".
+Alternative: a smaller context that holds ordinary text only; retrying a refused request; reading the window members without a second eligibility check.
+Why: each is fixed before any real answer, keeps one eligibility rule wherever text is read, and bounds the prompt by what D111 shows the model.
+Tradeoff: the larger context costs memory on every llm start, tagging included; a prompt near the worst case would be slow enough on the laptop CPU to hit the timeout.
+

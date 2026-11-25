@@ -3,14 +3,15 @@
 SQL, pgvector, full-text search, the runner, the commands and the embedding client run for real,
 against the stub server in tests/embedding_stub.py. The dbt objects are stood in for by views over
 the raw tables: eligibility and user text with the dbt definitions (see test_tagging_integration),
-and analytics.fct_messages.session_id with the dbt 60-minute rule. Sender names and message text
-are sentinels that must never be printed.
+and analytics.fct_messages with the dbt 60-minute session rule and local send time. Sender names
+and message text are sentinels that must never be printed.
 """
 
 import hashlib
 import logging
 import re
 import stat
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -77,7 +78,8 @@ SESSION_VIEW_SQL = """
 CREATE VIEW analytics.fct_messages AS
 SELECT message_key,
        thread_id || ':s' || sum(starts) OVER (PARTITION BY thread_id ORDER BY sent_at, message_key)
-           AS session_id
+           AS session_id,
+       sent_at AT TIME ZONE 'America/Los_Angeles' AS sent_at_local
 FROM (
     SELECT message_key, thread_id, sent_at,
            coalesce(sent_at - lag(sent_at) OVER (PARTITION BY thread_id
@@ -407,7 +409,9 @@ def test_prune_drops_stored_retrieval_rows_that_refer_to_an_ineligible_message(
         row(3, "e1", "cy", "e2"),  # gold
         row(4, "cy", "e1", "e2"),  # source
     )
-    evaluation.write_predictions(tmp_path, evaluation.Predictions("vector", "0" * 12, "real", rows))
+    evaluation.write_predictions(
+        tmp_path, evaluation.Predictions("vector", "0" * 12, "real", "1" * 12, rows)
+    )
     path = tmp_path / "retrieval" / "vector.json"
     _revoke(warehouse, "SENDERCY")
     before = path.read_bytes()
@@ -575,11 +579,12 @@ def test_retrieval_eval_and_compare_print_fixed_lines_and_store_ids_only(
         out = capsys.readouterr()
         lines = out.out.splitlines()
         check_lines(lines, report.EVAL_SHAPES)
-        assert lines[:7] == [
+        assert lines[:8] == [
             "target database: gcw_test",
             "questions source: real",
             f"method: {method}",
             f"embed version: {window.embed_version()}",
+            "messages not embedded: 0",
             "questions: 4",
             "questions dropped (gold not embedded or ineligible): 1",
             "questions scored: 3",
@@ -602,25 +607,191 @@ def test_retrieval_eval_and_compare_print_fixed_lines_and_store_ids_only(
     _assert_clean(out.out, out.err, caplog.text, extra=secrets)
 
 
-def test_a_question_whose_gold_has_no_vector_is_dropped(
-    warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
+def _refused(missing: int) -> str:
+    return (
+        f"messages not embedded: {missing}\n"
+        "retrieval-eval: failed at corpus (IncompleteCorpusError)\n"
+    )
+
+
+@pytest.mark.parametrize("method", ["vector", "hybrid"])
+def test_a_partly_embedded_corpus_is_refused_and_nothing_is_written(
+    warehouse: str,
+    stub: StubEmbed,
+    label_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    method: str,
 ) -> None:
     run_embed(warehouse, _client(stub))
     with psycopg.connect(warehouse, autocommit=True) as conn:
         conn.execute("DELETE FROM enrich.message_embeddings WHERE message_key = %s", (ID["a3"],))
+    stub.requests.clear()
+    assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 1
+    assert capsys.readouterr().out == _refused(1)
+    assert not (label_dir / "retrieval").exists()
+    assert stub.requests == []  # refused before any question was searched
+
+
+def test_a_row_of_an_old_version_or_with_a_revoked_neighbour_does_not_count(
+    warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_embed(warehouse, _client(stub))
+    with psycopg.connect(warehouse, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE enrich.message_embeddings SET embed_version = 'old' WHERE message_key = %s",
+            (ID["e1"],),
+        )
+    assert commands.run_retrieval_eval("vector", start_db=None, start_service=None) == 1
+    assert capsys.readouterr().out == _refused(1)
+    run_embed(warehouse, _client(stub))
+    _revoke(warehouse, "SENDERCY")  # a1, d1 and a2 are eligible, their windows are not
+    assert commands.run_retrieval_eval("vector", start_db=None, start_service=None) == 1
+    assert capsys.readouterr().out == _refused(3)
+    run_embed(warehouse, _client(stub))  # embedding again makes the corpus complete
     assert commands.run_retrieval_eval("vector", start_db=None, start_service=None) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert "questions dropped (gold not embedded or ineligible): 2" in lines
+    assert "messages not embedded: 0" in capsys.readouterr().out.splitlines()
 
 
-def test_eval_with_no_vectors_fails_with_a_fixed_line_and_writes_nothing(
+def test_eval_with_no_vectors_is_refused(
     warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert commands.run_retrieval_eval("vector", start_db=None, start_service=None) == 1
-    assert capsys.readouterr().out == (
-        "retrieval-eval: failed at scoring (NoScorableQuestionsError)\n"
-    )
+    assert capsys.readouterr().out == _refused(8)
     assert not (label_dir / "retrieval").exists()
+
+
+def test_compare_refuses_runs_made_over_different_corpora(
+    warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_embed(warehouse, _client(stub))
+    assert commands.run_retrieval_eval("vector", start_db=None, start_service=None) == 0
+    _revoke(warehouse, "SENDEREVE")  # between the runs: a smaller corpus is easier to search
+    run_embed(warehouse, _client(stub))
+    assert commands.run_retrieval_eval("hybrid", start_db=None, start_service=None) == 0
+    first = evaluation.read_predictions(label_dir, "vector")
+    second = evaluation.read_predictions(label_dir, "hybrid")
+    assert first.corpus_hash == evaluation.corpus_hash(ID[n] for n in ELIGIBLE)
+    assert second.corpus_hash == evaluation.corpus_hash(ID[n] for n in ELIGIBLE - {"e1", "e2"})
+    capsys.readouterr()
+    assert commands.run_retrieval_compare("vector", "hybrid", start_db=None) == 1
+    assert capsys.readouterr().out == "retrieval-compare: failed at scoring (CorpusMismatch)\n"
+    assert not (label_dir / "experiments").exists()  # no verdict for a refused comparison
+
+
+# --- promotion (D110) --------------------------------------------------------------------------
+
+
+def _default_rows(url: str) -> list[tuple[str]]:
+    with psycopg.connect(url) as conn:
+        return conn.execute("SELECT method FROM enrich.retrieval_default").fetchall()
+
+
+def _compare_on(label_dir: Path, hybrid_wins: bool) -> None:
+    """Run the real compare command over stored runs built so that the named side wins."""
+
+    def stored(method: str, found: bool) -> evaluation.Predictions:
+        rows = tuple(
+            evaluation.Row(
+                f"q{n:03d}",
+                "0" * 64,
+                ID["e1"],
+                (ID["e1"],),
+                (ID["e1"] if found else ID["e2"],),
+                0.1,
+            )
+            for n in range(1, 11)
+        )
+        return evaluation.Predictions(method, window.embed_version(), "real", "1" * 12, rows)
+
+    evaluation.write_predictions(label_dir, stored("vector", False))
+    evaluation.write_predictions(label_dir, stored("hybrid", hybrid_wins))
+    assert commands.run_retrieval_compare("vector", "hybrid", start_db=None) == 0
+
+
+def test_retrieval_promote_refuses_without_a_verdict_or_when_it_names_the_other_method(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 1
+    assert capsys.readouterr().out == "retrieval-promote: failed at verdict (VerdictError)\n"
+    _compare_on(label_dir, hybrid_wins=False)
+    capsys.readouterr()
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 1
+    assert capsys.readouterr().out == "retrieval-promote: failed at verdict (NotWinnerError)\n"
+    assert _default_rows(warehouse) == []
+
+
+def test_retrieval_promote_refuses_a_verdict_made_on_another_embed_version(
+    warehouse: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _compare_on(label_dir, hybrid_wins=True)
+    capsys.readouterr()
+    monkeypatch.setattr(window, "QUERY_INSTRUCTION", "Query:")  # the code has moved on
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 1
+    assert capsys.readouterr().out == (
+        "retrieval-promote: failed at verdict (EmbedVersionMismatch)\n"
+    )
+    assert _default_rows(warehouse) == []
+
+
+def test_retrieval_promote_sets_the_one_row_and_a_later_verdict_can_replace_it(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with psycopg.connect(warehouse) as conn:
+        assert evaluation.default_method(conn) == "vector"  # nothing promoted
+    _compare_on(label_dir, hybrid_wins=True)
+    capsys.readouterr()
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 0
+    lines = capsys.readouterr().out.splitlines()
+    check_lines(lines, report.PROMOTE_SHAPES)
+    assert lines[1:3] == ["promoted method: hybrid", "previous method: none"]
+    assert _default_rows(warehouse) == [("hybrid",)]
+    with psycopg.connect(warehouse) as conn:
+        assert evaluation.default_method(conn) == "hybrid"
+
+    time.sleep(0.002)  # the next verdict file must sort after the first
+    _compare_on(label_dir, hybrid_wins=False)
+    capsys.readouterr()
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 1
+    assert commands.run_retrieval_promote("vector", start_db=None) == 0
+    assert "previous method: hybrid" in capsys.readouterr().out.splitlines()
+    assert _default_rows(warehouse) == [("vector",)]  # still exactly one row
+
+
+def test_retrieval_promote_applies_migration_007_on_a_database_that_lacks_it(
+    warehouse: str, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with psycopg.connect(warehouse, autocommit=True) as conn:
+        conn.execute("DROP TABLE enrich.retrieval_default")
+        conn.execute("DELETE FROM schema_migrations WHERE version = '007_enrich_retrieval_default'")
+    with psycopg.connect(warehouse) as conn:
+        assert evaluation.default_method(conn) == "vector"  # no table yet
+    _compare_on(label_dir, hybrid_wins=True)
+    capsys.readouterr()
+    assert commands.run_retrieval_promote("hybrid", start_db=None) == 0
+    assert _default_rows(warehouse) == [("hybrid",)]
+
+
+def test_retrieval_promote_refuses_before_starting_anything(
+    warehouse: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def start() -> None:
+        pytest.fail("a service was started")
+
+    monkeypatch.setenv("GCW_LABEL_DIR", "")
+    assert commands.run_retrieval_promote("other", start_db=start) == 1
+    assert commands.run_retrieval_promote("vector", start_db=start) == 1
+    monkeypatch.setenv("GCW_DB_NAME", "gcw_other")
+    monkeypatch.setenv("DATABASE_URL", "")
+    get_database_settings.cache_clear()
+    assert commands.run_retrieval_promote("vector", start_db=start) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "retrieval-promote: failed at method (UnknownMethodError)",
+        "retrieval-promote: failed at label directory (LabelDirError)",
+        "retrieval-promote: failed at database (UnexpectedDatabaseError)",
+    ]
 
 
 def test_compare_fails_with_a_fixed_line_on_mismatched_predictions(

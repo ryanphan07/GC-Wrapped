@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -25,8 +25,9 @@ up:
 	mkdir -p data/landing data/archive
 	$(COMPOSE) up -d --wait
 
+# Also stops the llm and embed services: compose leaves profile services alone unless named.
 down:
-	$(COMPOSE) down
+	$(COMPOSE) --profile llm --profile embed down
 
 # Airflow UI on http://localhost:8080. Mounts GCW_LANDING_HOST_DIR (default data/landing) read-only.
 airflow-up:
@@ -227,8 +228,10 @@ tag-promote:
 # embeds nothing new) and prints fixed lines only. retrieval-eval searches each question with one
 # method over those vectors, stores the results (IDs only) and prints recall@k and MRR@10;
 # retrieval-compare applies the D104 win rule to the two stored runs. SYNTHETIC=1 means gcw_dev
-# only (and for the eval: the committed synthetic questions and a temporary directory). The embed
-# service stays running (docker compose --env-file <env> --profile embed down stops it).
+# only (and for the eval: the committed synthetic questions and a temporary directory). retrieval-eval
+# is refused unless every eligible message has a current vector (D109); retrieval-compare records
+# its verdict, and retrieval-promote METHOD=<m> makes <m> the method answers use, only if the latest
+# verdict names it the winner (D110). The embed service stays running (make down stops it).
 # Real-data runs are Ryan's: make embed ENV_FILE=<env file outside the repo>
 embed:
 	@uv run gcw embed $(if $(filter 1,$(SYNTHETIC)),--synthetic)
@@ -240,3 +243,19 @@ retrieval-eval:
 retrieval-compare:
 	@test -n "$(A)" -a -n "$(B)" || { echo "error: set A=vector and B=hybrid (make retrieval-compare A=vector B=hybrid [SYNTHETIC=1])"; exit 1; }
 	@uv run gcw retrieval-compare --a $(A) --b $(B) $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+retrieval-promote:
+	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
+	@uv run gcw retrieval-promote --method $(METHOD)
+
+# Answers with citations from the local model (D111-D113). Both start only the db, llm and embed
+# services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
+# messages to the terminal only, writes nothing, and ends with fixed summary lines. answer-eval
+# answers each question once, stores IDs, hashes and numbers (never answer text) and prints fixed
+# lines. SYNTHETIC=1 means gcw_dev only (and for the eval: the committed synthetic questions and a
+# temporary directory). Real-data runs are Ryan's: make ask ENV_FILE=<env file outside the repo>
+ask:
+	@uv run gcw ask $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+answer-eval:
+	@uv run gcw answer-eval $(if $(filter 1,$(SYNTHETIC)),--synthetic)

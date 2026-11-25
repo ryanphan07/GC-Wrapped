@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from gcwrapped.retrieval.window import DIMENSIONS, QUERY_INSTRUCTION
-from gcwrapped.tagging.llamacpp import _opener, check_local_url
+from gcwrapped.tagging.llamacpp import check_local_url, local_opener
 from gcwrapped.tagging.provider import ProviderUnavailable
 
 REQUEST_TIMEOUT_SECONDS = 600  # a batch of long windows on a busy laptop CPU
@@ -66,7 +66,7 @@ class LlamaCppEmbedder:
         self._base = check_local_url(base_url)
         self.model_id = model_id
         self._timeout = timeout
-        self._opener = _opener()
+        self._opener = local_opener()
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         request = urllib.request.Request(
