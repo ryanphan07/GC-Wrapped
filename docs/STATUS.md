@@ -22,10 +22,10 @@ embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x synthetic] ha
 - a22d573, this session: make test 1086 passed; dbt build PASS=215; dbt ls counts in METRICS.md.
 - Branch: make lint pass; make test 1154 passed, 295 deselected; make test-warehouse 22 passed; make dbt-build PASS=215 WARN=0 ERROR=0 TOTAL=215. make test-integration, llm and embed up: third run 295 passed, 0 skipped. Runs 1 and 2 had 294 passed, 1 failed each (test_load_run_duration_covers_the_parse..., test_tag_promote_sets_the_one_row...); each passed alone; dmesg shows "Time jumped backwards" during the runs.
 - `make eval-all SYNTHETIC=1`, 2 attempts: embed ok (223 eligible, 0 embedded), then `retrieval-eval: failed at memory (SwapInUse)`: swap in use at start 296 MiB, then 325 MiB; available 7848, 7882 MiB.
-- Dev smoke: `make ask SYNTHETIC=1`, 1 question: answered, all invalid reasons 0, 581 prompt tokens, 20.896 s. Real docker: plain start_llm kept the container, fresh replaced it. GET /slots 501 on 8081 and 8082. CI: see the PR.
+- Dev smoke: `make ask SYNTHETIC=1`, 1 question: answered, all invalid reasons 0, 581 prompt tokens, 20.896 s. Real docker: plain start_llm kept the container, fresh replaced it. GET /slots 501 on 8081 and 8082. CI (PR #52, commit before this line; runs 45730191629, 45730215782): 14 checks pass; unit 1154 passed, 1 skipped; integration 290 passed, 5 skipped (local server tests); warehouse 22; dbt PASS=215; eval-gate topic 0.683, sentiment 0.733 (same as main run 45721378563); retrieval-gate passed under the guard (swap 0 MiB at start and end), recall@5 0.968 (floor 0.85). No floor changed.
 
 ## Not verified
-- After `wsl --shutdown`: `make eval-all SYNTHETIC=1` should print memory lines for four passes and end `answer-compare: ok`; note B's invalid-reason counts. No eval pass has run under the guard with real models. README quickstart not run from a fresh clone; Mermaid not rendered; grading keys never pressed by hand.
+- After `wsl --shutdown`: `make eval-all SYNTHETIC=1` should print memory lines for four passes and end `answer-compare: ok`; note B's invalid-reason counts. Under the guard with a real model, only CI's retrieval pass has run; no answer-eval pass has. README quickstart not run from a fresh clone; Mermaid not rendered; grading keys never pressed by hand.
 - Real data (Ryan), dev stack down, in order: eval-all, grade-answers, grade-summary, real-ingest, dashboard-up.
 
 ## Open issues and questions
