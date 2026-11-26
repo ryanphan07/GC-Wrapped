@@ -3,6 +3,7 @@ configuration and what `make dashboard-up` starts.
 """
 
 import os
+import re
 import subprocess
 import tomllib
 from datetime import date
@@ -13,7 +14,8 @@ import pytest
 
 from gcwrapped.answers import commands as answers
 from gcwrapped.cli import build_parser
-from gcwrapped.dashboard import services, wrapped
+from gcwrapped.config import get_database_settings
+from gcwrapped.dashboard import ask_role, services, wrapped
 from gcwrapped.tagging import model
 from gcwrapped.tagging.llamacpp import NonLocalUrlError, check_local_url
 
@@ -137,6 +139,93 @@ def _dashboard_service() -> str:
     return compose.split("\n  dashboard:\n")[1].split("\n  # ")[0]
 
 
+def test_the_dashboard_container_gets_no_pipeline_credentials() -> None:
+    service = _dashboard_service()
+    assert "GCW_ASK_PASSWORD: ${GCW_ASK_PASSWORD:-}" in service
+    for name in ("POSTGRES_USER", "POSTGRES_PASSWORD", "DATABASE_URL: ", "env_file"):
+        assert name not in service
+
+
+def test_dbt_grants_gcw_ask_the_dbt_relations_answering_reads() -> None:
+    project = (REPO / "dbt" / "dbt_project.yml").read_text(encoding="utf-8")
+    (anchor,) = re.findall(
+        r"^      (\w+): &ask_grant\n        \+grants:\n          select: \['gcw_ask'\]$",
+        project,
+        re.M,
+    )
+    granted = {anchor, *re.findall(r"^      (\w+): \*ask_grant$", project, re.M)}
+    assert granted == {
+        name.removeprefix("analytics.")
+        for name in ask_role.RELATIONS
+        if name.startswith("analytics.")
+    }
+    assert 'grant usage on schema analytics to gcw_reader, gcw_ask"' in project
+
+
+def test_the_readme_lists_every_relation_gcw_ask_reads() -> None:
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    (access,) = [line for line in readme.splitlines() if line.startswith("- **Dashboard access.**")]
+    for relation in ask_role.RELATIONS:
+        assert f"`{relation}`" in access
+
+
+def _passwords(monkeypatch: pytest.MonkeyPatch, ask_password: str) -> None:
+    monkeypatch.setenv("ENV_FILE", ".env")
+    monkeypatch.setenv("GCW_ASK_PASSWORD", ask_password)
+    monkeypatch.setenv("POSTGRES_PASSWORD", "pipeline-pw")
+    monkeypatch.setenv("GCW_READER_PASSWORD", "reader-pw")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:url-pw@localhost/gcw_dev")
+    monkeypatch.setenv("DASHBOARD_DATABASE_URL", "")
+
+
+def test_an_ask_password_of_its_own_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _passwords(monkeypatch, "ask-pw")
+    assert ask_role.require_password() == "ask-pw"
+
+
+@pytest.mark.parametrize(
+    ("password", "error"),
+    [
+        ("", ask_role.AskPasswordUnset),
+        ("pipeline-pw", ask_role.AskPasswordReused),
+        ("reader-pw", ask_role.AskPasswordReused),
+        ("url-pw", ask_role.AskPasswordReused),
+    ],
+)
+def test_a_missing_or_shared_ask_password_is_refused(
+    monkeypatch: pytest.MonkeyPatch, password: str, error: type[Exception]
+) -> None:
+    _passwords(monkeypatch, password)
+    with pytest.raises(error):
+        ask_role.require_password()
+
+
+@pytest.mark.parametrize(
+    ("password", "name"), [("", "AskPasswordUnset"), ("pipeline-pw", "AskPasswordReused")]
+)
+def test_the_services_refuse_a_bad_ask_password_before_starting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    password: str,
+    name: str,
+) -> None:
+    def start(*_: object, **__: object) -> None:
+        pytest.fail("a service was started")
+
+    _passwords(monkeypatch, password)
+    monkeypatch.setenv("GCW_DB_NAME", "gcw_dev")
+    monkeypatch.setenv("POSTGRES_USER", "u")
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("GCW_LLM_URL", "")
+    monkeypatch.setenv("GCW_EMBED_URL", "")
+    get_database_settings.cache_clear()
+    try:
+        assert services.run(answers.Services(db=start, llm=start, embed=start)) == 1
+    finally:
+        get_database_settings.cache_clear()
+    assert capsys.readouterr().out == f"dashboard-up: failed at ask password ({name})\n"
+
+
 def test_the_dashboard_port_is_published_on_this_machine_only() -> None:
     service = _dashboard_service()
     ports = service.split("ports:\n")[1].split("healthcheck:")[0].strip().splitlines()
@@ -184,8 +273,6 @@ def test_the_services_refuse_a_non_local_url_before_starting_anything(
     monkeypatch.setenv("POSTGRES_PASSWORD", "p")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("GCW_EMBED_URL", "http://example.com")
-    from gcwrapped.config import get_database_settings
-
     get_database_settings.cache_clear()
     try:
         assert services.run(answers.Services(db=start, llm=start, embed=start)) == 1

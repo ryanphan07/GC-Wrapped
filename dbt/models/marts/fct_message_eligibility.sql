@@ -2,7 +2,7 @@
 
 -- A view (D75), so the flags always reflect the ledger currently loaded in raw.sender_consent:
 -- a revoked consent takes effect when consent-load commits, with no dbt build in between.
--- gcw_reader gets no SELECT on it (see the grants list in dbt_project.yml).
+-- gcw_reader gets no SELECT on it; gcw_ask does (see the grants in dbt_project.yml).
 -- The one definition of which messages may be processed (D69, D88). local_ok is true when the
 -- sender is "yes" or "local" in the consent ledger for that thread: work on this machine
 -- (labeling, tagging, embeddings, answers, profiles). external_ok is true only for "yes": the

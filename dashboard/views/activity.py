@@ -61,8 +61,8 @@ def _median_reply(thread_id: str) -> float | None:
 
 st.title("GC Wrapped")
 st.caption(
-    "Privacy: this page reads aggregate tables only. No message text is displayed here, and "
-    "the database role it connects as cannot read it."
+    "Only members who opted in are counted or named, as of the last dbt build. No message text "
+    "is displayed here, and the database role this page connects as cannot read it."
 )
 
 try:
@@ -73,7 +73,10 @@ except Exception as exc:  # settings validation or connection failure; never sho
     st.stop()
 
 if threads.empty:
-    st.info("No activity yet. Run the pipeline (ingest, then dbt build) and reload.")
+    st.info(
+        "No activity yet. Only members who opted in are counted: run the pipeline, load the "
+        "consent ledger, rebuild (dbt build) and reload."
+    )
     st.stop()
 
 thread_id = st.selectbox("Thread", threads["thread_id"].tolist())

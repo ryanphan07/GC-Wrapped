@@ -43,6 +43,7 @@ jobs:
       DATABASE_URL: postgresql://gcw:ci-password@localhost:5432/gcw_dev
       GCW_READER_PASSWORD: ci-reader-password
       DASHBOARD_DATABASE_URL: postgresql://gcw_reader:ci-reader-password@localhost:5432/gcw_dev
+      GCW_ASK_PASSWORD: ci-ask-password
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -82,7 +83,15 @@ jobs:
       - run: uv run gcw ingest tests/fixtures/synthetic/export_a
       - run: make dbt-deps
       - run: make dbt-build
-      # Dashboard queries, permission-denied checks for gcw_reader, and the Streamlit AppTest.
+      # D128: the reader-visible marts hold opted-in senders only, so they have rows only after a
+      # ledger is loaded and the marts are rebuilt (consent-load validates against the built marts).
+      - name: Load the synthetic consent ledger and rebuild
+        env:
+          GCW_CONSENT_LEDGER: ./tests/fixtures/synthetic_consent/senders.csv
+        run: |
+          uv run gcw consent-load --no-start
+          make dbt-build
+      # Dashboard queries, permission-denied checks for gcw_reader and gcw_ask, the Streamlit AppTest.
       - run: make test-warehouse
       # D89: tagging against a stub llama.cpp server (schema-valid JSON, no model is ever downloaded).
       # Loads the synthetic consent ledger, tags every local-eligible message, and a rerun tags none.
@@ -188,6 +197,7 @@ jobs:
           POSTGRES_PASSWORD=ci-password
           POSTGRES_PORT=5432
           GCW_READER_PASSWORD=ci-reader-password
+          GCW_ASK_PASSWORD=ci-ask-password
           GCW_LANDING_HOST_DIR=$LANDING
           GCW_CONSENT_LEDGER=$CONSENT
           EOF
@@ -215,13 +225,43 @@ jobs:
           test "$(psql "SELECT string_agg(viewname, ',' ORDER BY viewname) FROM pg_views WHERE schemaname = 'analytics'")" = "fct_message_eligibility,mart_member_wrapped"
           # The reader role: marts yes, the staging schema itself no, the eligibility view no.
           reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
-          test "$(reader 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
-          # No consent ledger is loaded yet, so there is no Wrapped profile; the reader may look.
+          # No consent ledger is loaded yet, so nobody is counted or named (D128) and there is no
+          # Wrapped profile; the reader may look.
+          test "$(reader 'SELECT count(*) FROM analytics.fct_consented_messages')" -eq 0
+          test "$(reader 'SELECT count(*) FROM analytics.agg_member_activity')" -eq 0
           test "$(reader 'SELECT count(*) FROM analytics.mart_member_wrapped')" -eq 0
+          # D128: the relations that hold every sender have no reader grant.
+          for relation in fct_messages dim_members fct_reactions fct_message_text; do
+            reader "SELECT 1 FROM analytics.$relation LIMIT 1" | grep -q "permission denied for table $relation"
+          done
           reader 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
           reader 'SELECT 1 FROM analytics.fct_message_eligibility LIMIT 1' | grep -q "permission denied for view fct_message_eligibility"
           test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -gt 0
           grep -qx "target database: gcw_dev" e2e-1.log
+      # D127: gcw_ask as `make dashboard-up` sets it up (without the models, which this job lacks).
+      - name: gcw_ask reads what answering reads and nothing else
+        run: |
+          uv run python -c 'from gcwrapped.dashboard import ask_role; from gcwrapped.db import database_url; ask_role.ensure(database_url(), ask_role.require_password())'
+          # Each -c is its own transaction, so the first really turns read-only off for the second.
+          asker() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-ask-password db psql -U gcw_ask -d gcw_dev -tA "$@" 2>&1; }
+          writer() { asker -c 'SET default_transaction_read_only = off' -c "$1"; }
+          test "$(asker -c 'SELECT count(*) FROM raw.messages')" -gt 0
+          test "$(asker -c 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
+          asker -c 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
+          asker -c 'SELECT 1 FROM raw.sender_consent LIMIT 1' | grep -q "permission denied for table sender_consent"
+          asker -c 'SELECT 1 FROM raw.load_runs LIMIT 1' | grep -q "permission denied for table load_runs"
+          asker -c 'SELECT 1 FROM analytics.agg_member_activity LIMIT 1' | grep -q "permission denied for table agg_member_activity"
+          asker -c 'DELETE FROM raw.messages' | grep -q "cannot execute DELETE in a read-only transaction"
+          writer 'DELETE FROM raw.messages' | grep -q "permission denied for table messages"
+          writer 'UPDATE enrich.tag_default SET model_id = model_id' | grep -q "permission denied for table tag_default"
+          writer 'CREATE TABLE public.probe (x int)' | grep -q "permission denied for schema public"
+          writer 'CREATE TABLE analytics.probe (x int)' | grep -q "permission denied for schema analytics"
+          writer 'CREATE TEMPORARY TABLE probe (x int)' | grep -q "permission denied to create temporary tables"
+          # The dashboard container: no pipeline credentials, and its gcw_ask password works over the
+          # compose network (psql inside the db container above is trusted without one).
+          inside() { docker compose --env-file "$ENV_FILE" exec -T dashboard "$@"; }
+          test "$(inside sh -c 'env | grep -cE "^(POSTGRES_USER|POSTGRES_PASSWORD|DATABASE_URL)=" || true')" -eq 0
+          test "$(inside uv run --no-sync python -c 'import psycopg; from gcwrapped.dashboard import ask; print(psycopg.connect(ask.database_url()).execute("SELECT current_user").fetchone()[0])')" = gcw_ask
       - name: make e2e (second run inserts nothing)
         run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-2.log; test "${PIPESTATUS[0]}" -eq 0
       - name: Second run was idempotent
@@ -256,6 +296,15 @@ jobs:
           test "$profiles" -gt 0
           consented="$(psql "SELECT count(DISTINCT (m.thread_id, m.sender_name)) FROM raw.messages m JOIN raw.sender_consent c ON c.thread_id = m.thread_id AND c.sender_name = m.sender_name JOIN analytics.fct_message_text t USING (message_key) WHERE c.consent IN ('yes', 'local') AND t.has_user_text")"
           test "$profiles" -eq "$consented"
+          # D128: after the rebuild the reader sees the opted-in messages, all of them and no other.
+          reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
+          local_ok="$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE local_ok')"
+          test "$local_ok" -gt 0
+          test "$local_ok" -lt "$(psql 'SELECT count(*) FROM raw.messages')"
+          test "$(reader 'SELECT count(*) FROM analytics.fct_consented_messages')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(messages) FROM analytics.agg_activity_daily')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(messages) FROM analytics.agg_member_activity')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(message_count) FROM analytics.fct_sessions')" -eq "$local_ok"
       # D75: the eligibility mart is a view, so a consent change shows up the moment consent-load
       # commits. Flip one "yes" sender to "no" in a copy of the synthetic ledger, load the copy, and
       # query with no e2e or dbt build in between.
@@ -291,6 +340,25 @@ jobs:
           test "$(psql "$profile")" -eq 0
           make metrics ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-metrics2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "external-eligible messages: $expected" consent-metrics2.log
+          # D128: the table marts follow at the next dbt build (make e2e runs it). Then the sender
+          # flipped to "no" is in no relation the reader can read, by name or key, and the totals
+          # are the remaining opted-in messages.
+          reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
+          key="$(psql "SELECT member_key FROM analytics.dim_members WHERE thread_id = '$thread' AND member_name = '$sender'")"
+          test -n "$key"
+          found() { reader "SELECT count(*) FROM $1 AS t WHERE strpos(to_jsonb(t)::text, '$key') > 0 OR (to_jsonb(t)->>'thread_id' = '$thread' AND '$sender' IN (to_jsonb(t)->>'sender_name', to_jsonb(t)->>'member_name'))"; }
+          test "$(found analytics.fct_consented_messages)" -gt 0
+          make e2e ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee e2e-4.log; test "${PIPESTATUS[0]}" -eq 0
+          relations="$(reader "SELECT table_schema || '.' || table_name FROM information_schema.role_table_grants WHERE grantee = 'gcw_reader' AND privilege_type = 'SELECT' ORDER BY 1")"
+          test "$(wc -l <<< "$relations")" -eq 7
+          for relation in $relations; do
+            test "$(found "$relation")" -eq 0
+          done
+          local_ok="$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE local_ok')"
+          test "$(reader 'SELECT count(*) FROM analytics.fct_consented_messages')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(messages) FROM analytics.agg_activity_daily')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(messages) FROM analytics.agg_member_activity')" -eq "$local_ok"
+          test "$(reader 'SELECT sum(message_count) FROM analytics.fct_sessions')" -eq "$local_ok"
       # D70: every ingested message goes through the redaction module in memory; no member-name
       # token may survive, and every raw message is scanned.
       - name: Redaction audit
@@ -335,6 +403,7 @@ jobs:
           POSTGRES_HOST=localhost
           POSTGRES_PORT=5432
           GCW_READER_PASSWORD=ci-reader-password
+          GCW_ASK_PASSWORD=ci-ask-password
           GCW_LANDING_HOST_DIR=$RUNNER_TEMP/unused-landing
           GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv
           GCW_MODEL_DIR=$RUNNER_TEMP/models
@@ -399,6 +468,7 @@ jobs:
           POSTGRES_HOST=localhost
           POSTGRES_PORT=5432
           GCW_READER_PASSWORD=ci-reader-password
+          GCW_ASK_PASSWORD=ci-ask-password
           GCW_LANDING_HOST_DIR=$RUNNER_TEMP/unused-landing
           GCW_CONSENT_LEDGER=./tests/fixtures/synthetic_consent/senders.csv
           GCW_MODEL_DIR=$RUNNER_TEMP/models
@@ -481,6 +551,7 @@ jobs:
           POSTGRES_PASSWORD=ci-password
           POSTGRES_PORT=5544
           GCW_READER_PASSWORD=ci-reader-password
+          GCW_ASK_PASSWORD=ci-ask-password
           GCW_LANDING_HOST_DIR=$LANDING
           EOF
           uv run python tests/synthetic/sentinel.py --out "$LANDING/export_sentinel"

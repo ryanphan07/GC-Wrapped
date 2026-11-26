@@ -157,7 +157,8 @@ COMMANDS = (
 )
 STEPS = (
     "count|variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|"
-    "corpus|grades|memory|answering|scoring|predictions|verdict|promote|render"
+    "corpus|grades|memory|answering|scoring|predictions|verdict|promote|render|ask password|"
+    "ask role"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 

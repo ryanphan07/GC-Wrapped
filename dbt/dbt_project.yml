@@ -45,27 +45,35 @@ models:
       +materialized: table
       +schema: analytics
       # The dashboard's read-only role sees marts only (no message text). Staging and
-      # intermediate get no grants. The role is created outside dbt (docker init / CI setup).
-      # Grants are listed per model, not for the whole folder, because dbt merges a model-level
-      # grants config into the folder's instead of replacing it, so fct_message_eligibility (D75)
-      # could not opt out. A new mart gets no reader grant until it is added here (fails closed).
+      # intermediate get no grants. The roles are created outside dbt (gcw_reader: docker init /
+      # CI setup; gcw_ask: migration 009). Grants are listed per model, not for the whole folder,
+      # because dbt merges a model-level grants config into the folder's instead of replacing it,
+      # so a model could not opt out. A new mart gets no grant until it is added here (fails
+      # closed).
+      #
+      # gcw_reader (D128): a relation listed here counts and names only local_ok senders. Add one
+      # only together with its check in tests/reader_relations_are_consented.sql.
       agg_activity_daily: &reader_grant
         +grants:
           select: ['gcw_reader']
       agg_member_activity: *reader_grant
       agg_tags_by_sender: *reader_grant
       agg_tags_by_thread: *reader_grant
-      dim_members: *reader_grant
-      fct_messages: *reader_grant
-      fct_reactions: *reader_grant
+      fct_consented_messages: *reader_grant
       fct_sessions: *reader_grant
       # mart_member_wrapped: one aggregate profile per consented member (D123), no message text.
       mart_member_wrapped: *reader_grant
-      # fct_message_tags: per-message labels with keys, deliberately absent (aggregates only).
-      # fct_message_eligibility: a view (set in the model), deliberately absent from this list.
-      # fct_message_text: per-message flags with keys, deliberately absent (no reader access).
+      # gcw_ask (D127): the dbt relations answering reads (gcwrapped.dashboard.ask_role), granted
+      # here too so that a rebuild keeps them. They hold every message, so no reader grant (D128).
+      fct_messages: &ask_grant
+        +grants:
+          select: ['gcw_ask']
+      fct_message_eligibility: *ask_grant
+      fct_message_text: *ask_grant
+      # No grant at all: dim_members and fct_reactions (every sender, D128) and fct_message_tags
+      # (per-message labels; the aggregates above are what the dashboard reads).
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
-# analytics only; the reader is never granted anything on staging. Idempotent, safe every build.
+# analytics only; neither role is ever granted anything on staging. Idempotent, safe every build.
 on-run-end:
-  - "grant usage on schema analytics to gcw_reader"
+  - "grant usage on schema analytics to gcw_reader, gcw_ask"

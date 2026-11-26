@@ -73,14 +73,14 @@ Business logic lives in the `gcwrapped` Python package. Airflow tasks only call 
 ## Privacy
 
 - **Thread allowlist.** Ingestion is deny by default. It loads only thread IDs listed in `GCW_THREAD_ALLOWLIST`, fails if the list is empty, and has no bypass. Threads are selected by folder name before any file inside is opened. The format survey tools (`make inspect`, `make parse-check`) are the exception: they read a whole export, print aggregates and store nothing.
-- **Per-sender consent ledger.** A CSV outside the repo holds one row per thread and sender: `yes` (local work, and redacted external calls), `local` (this machine only), `no` or blank. Blank or missing means no (D69, D88). One dbt view, `fct_message_eligibility`, is the single definition, and it gates labeling, tagging, embeddings, answers and Wrapped cards. It does not gate the Activity marts: message counts, reply times, reaction emoji and member names there cover every sender in an allowlisted thread.
+- **Per-sender consent ledger.** A CSV outside the repo holds one row per thread and sender: `yes` (local work, and redacted external calls), `local` (this machine only), `no` or blank. Blank or missing means no (D69, D88). One dbt view, `fct_message_eligibility`, is the single definition, and it gates labeling, tagging, embeddings, answers, Wrapped cards and the Activity marts. Nothing the dashboard's reader role can read counts or names a sender who has not opted in (D128): Activity totals are opted-in totals, a reaction counts only when both people opted in, and a session's opener is blank if that person did not. Conversation sessions and reply times are still worked out over all messages, so another sender's timestamp, never their name, text or a count of their messages, can shape them (D125); session numbers can therefore have gaps. A dbt test checks the reader-visible relations against the ledger.
 - **Local models only.** The llama.cpp services publish on `127.0.0.1`. The client accepts only local hosts and compose service names, ignores proxy settings and follows no redirect.
 - **No cached prompts exposed.** Both services run with the slots endpoint disabled, so nothing on the machine can ask a server for the prompt it last processed.
 - **The expected model, one stack at a time.** Before a command or the Ask page sends text to a server, it checks that the server reports the expected model. Commands that start or use the model services refuse while another GC Wrapped stack's model containers are running, judged from container names and compose-project labels only. The Ask page and the Airflow tag task run inside their own stack's network, so they make the model check only (D126).
 - **Redaction gate before any hosted API.** `gcwrapped.redaction` is the only allowed route for message text to leave the machine: member names become pseudonyms, identifiers such as phone numbers, emails and URLs become placeholders, and a pinned spaCy model looks for other names (D70, D77). The quality gate that name detection must pass before a hosted provider is enabled is not built (D76, D84), so no message text is sent anywhere and the hosted provider is a stub that always raises. Known gap: nicknames and misspellings outside the member directory can slip through. `make redaction-audit` redacts every ingested message in memory and prints counts only.
 - **Fixed-line outputs.** The ingestion, eval, consent and maintenance commands print counts and fixed labels, never message text or sender names, and an unhandled `gcw` error prints its exception type only. A real-data pipeline run goes through `make real-ingest`, which writes the full output to a private log and prints only lines that match fixed patterns. The places that show chat text do so on purpose and on the local screen: the labeling tools, `make ask`, `make grade-answers` and the Ask page. Generated answers are not stored (D112).
 - **Sentinel-leak tests.** Tests plant marker strings in synthetic names and messages and fail if one appears in a command's output.
-- **Dashboard access.** The dashboard is bound to `127.0.0.1`. Activity and Wrapped connect as `gcw_reader`, which cannot read `raw` or staging. Ask needs message text, so it uses the pipeline's database credentials in a session set read-only (D124).
+- **Dashboard access.** The dashboard is bound to `127.0.0.1`, and its container gets no pipeline credentials. Activity and Wrapped connect as `gcw_reader`, which cannot read `raw` or staging. Ask needs message text, so it connects as `gcw_ask` (D127), a role with read-only transactions by default and `SELECT` on exactly what answering reads: `raw.messages`, `enrich.message_embeddings`, `enrich.tag_default`, `enrich.retrieval_default`, `enrich.answer_prompt_default`, `analytics.fct_messages`, `analytics.fct_message_eligibility` and `analytics.fct_message_text`. It has no right to write, even in a session that turns read-only off. `raw.messages` holds every ingested message, so the consent filter on answers is the query's, not the role's. `make dashboard-up` creates or updates the role from `GCW_ASK_PASSWORD`, which must differ from the other passwords.
 - **Coding-assistant boundary.** The AI coding assistant used on this repo is a third-party API. It works on synthetic data only; real-data commands are run by the repo owner, who shares aggregate numbers.
 
 ### Deleting data
@@ -95,13 +95,13 @@ make consent-prune ENV_FILE=<env file> APPLY=1      # delete
 make real-ingest ENV_FILE=<env file>                # rebuilds the dbt tables
 ```
 
-After `consent-load`, search, answers, new tagging runs and Wrapped cards already exclude the sender. `consent-prune` requires `GCW_LABEL_DIR`. It also removes the vectors of other senders' messages whose window included one of the ineligible messages; `make embed` recreates them without it. On the synthetic stack, rebuild with `make dbt-build` instead of `make real-ingest`.
+After `consent-load`, search, answers, new tagging runs and Wrapped cards already exclude the sender; the Activity page and the other dbt tables follow at the rebuild in step 4. `consent-prune` requires `GCW_LABEL_DIR`. It also removes the vectors of other senders' messages whose window included one of the ineligible messages; `make embed` recreates them without it. On the synthetic stack, rebuild with `make dbt-build` instead of `make real-ingest`.
 
 | | `consent-prune APPLY=1` (D101, D105) | `purge-unlisted CONFIRM=1` (D91, D106) |
 |---|---|---|
 | Applies to | messages that are no longer eligible | threads no longer on the allowlist |
 | Deletes | tag rows; embedding rows whose window includes such a message; and, in `GCW_LABEL_DIR`, the hand tag labels, question gold references (and questions left without gold or source), stored tag, retrieval and answer eval rows, and hand grades that refer to one | raw messages with their reactions, tag rows, embedding rows and consent rows of those threads |
-| Keeps | the raw messages and reactions; the Activity marts; the consent ledger; ID-only sample and skip files; experiment verdicts; the consent priority list | load-run records; the consent ledger CSV; everything in `GCW_LABEL_DIR`; the export files |
+| Keeps | the raw messages and reactions; dbt tables until the next build; the consent ledger; ID-only sample and skip files; experiment verdicts; the consent priority list | load-run records; the consent ledger CSV; everything in `GCW_LABEL_DIR`; the export files |
 
 - An old-format retrieval or answer eval file that refers to an ineligible message is deleted whole (D118).
 - Neither command rebuilds dbt tables. Until the next dbt build, tables such as the tag aggregates still hold what they were last built from.
@@ -117,7 +117,7 @@ Requires Docker with compose, make, git and [uv](https://docs.astral.sh/uv/). Mo
 
 ```
 git clone https://github.com/ryanphan07/GC-Wrapped.git && cd GC-Wrapped
-cp .env.example .env        # then change POSTGRES_PASSWORD and GCW_READER_PASSWORD
+cp .env.example .env        # then change POSTGRES_PASSWORD, GCW_READER_PASSWORD and GCW_ASK_PASSWORD
 make sync                   # uv sync --group dbt --group dashboard
 
 make e2e                    # synthetic exports and ledger, database, dashboard, one DAG run
@@ -129,14 +129,14 @@ make llm-model MODEL=qwen3-embedding-0.6b-q8_0     # embedding model
 make embed SYNTHETIC=1      # one vector per eligible message
 make tag                    # topic and sentiment per eligible message
 make dbt-deps
-make dbt-build              # brings the new tags into the marts
+make dbt-build              # brings the consent ledger and the new tags into the marts
 
 make dashboard-up           # starts the model services and the dashboard
 ```
 
 Open <http://localhost:8501> (Activity), <http://localhost:8501/wrapped> and <http://localhost:8501/ask>.
 
-- With the default `.env`, `make e2e` regenerates `data/landing` and writes the synthetic consent ledger named by `GCW_CONSENT_LEDGER`, so a separate `make synth` is not needed. It does not load the ledger, download models, tag or embed. Until consent is loaded, no sender is eligible and there are no Wrapped cards.
+- With the default `.env`, `make e2e` regenerates `data/landing` and writes the synthetic consent ledger named by `GCW_CONSENT_LEDGER`, so a separate `make synth` is not needed. It does not load the ledger, download models, tag or embed. Until consent is loaded, no sender is eligible: there are no Wrapped cards, and Activity stays empty until the ledger is loaded and the marts are rebuilt. The Ask page needs `make dashboard-up`, on a built warehouse.
 - If a default port is taken, set it in `.env`: `POSTGRES_HOST_PORT` together with `POSTGRES_PORT`, `DASHBOARD_PORT`, `GCW_LLM_PORT` (default 8081) or `GCW_EMBED_PORT` (default 8082).
 - `GCW_DB_NAME` alone decides which database gcw, dbt and the dashboard use. `.env.example` documents every variable.
 
@@ -171,7 +171,7 @@ Integration tests that need the model servers are skipped when those servers are
 Real data gets its own compose project, with its own containers, Postgres volume and superuser password, so the dev credentials cannot reach it. Exports and the env file live outside the repo, and the file is passed as `ENV_FILE`; host-side commands read settings from that file (plus the process environment), so it must be complete. It sets:
 
 - `COMPOSE_PROJECT_NAME=gc-wrapped-real` and `GCW_DB_NAME=gcw_real`
-- its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`
+- its own `POSTGRES_USER`, `POSTGRES_PASSWORD`, `GCW_READER_PASSWORD` and `GCW_ASK_PASSWORD`
 - `POSTGRES_HOST_PORT` and `DASHBOARD_PORT` that differ from the dev stack's (`make real-ingest` requires this), with `POSTGRES_PORT` equal to the former
 - `GCW_LLM_PORT` and `GCW_EMBED_PORT`, different from the dev stack's, so neither stack's client can reach the other's server
 - `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export
@@ -196,7 +196,7 @@ make down ENV_FILE=<env file>              # stop the real stack when done
 
 ![Activity page](docs/img/dashboard.png)
 
-*Activity: counts and timings per thread. Synthetic data.*
+*Activity: counts and timings per thread. Synthetic data, captured before Activity was limited to opted-in senders (D128).*
 
 ![Wrapped page](docs/img/wrapped.png)
 

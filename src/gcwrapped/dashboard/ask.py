@@ -2,9 +2,9 @@
 
 The same guards, the same pipeline and so the same consent check and citation path: the database
 must be one of ALLOWED_DATABASES, both model URLs local, and the model, retrieval method and prompt
-variant the promoted ones. It reads messages, so it uses the pipeline's credentials rather than the
-dashboard's reader role, in a session set read-only (D124). It writes nothing, logs nothing and
-keeps nothing: the answer exists in the returned lines only.
+variant the promoted ones. It connects as gcw_ask (D127), a role that can read what answering reads
+and can write nothing (`ask_role`), and also sets its session read-only. It writes nothing, logs
+nothing and keeps nothing: the answer exists in the returned lines only.
 """
 
 import psycopg
@@ -12,6 +12,8 @@ import psycopg
 from gcwrapped.answers import commands as answers
 from gcwrapped.answers import comparison
 from gcwrapped.answers.pipeline import Answer, AnswerPipeline
+from gcwrapped.config import AskSettings
+from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.retrieval import evaluation as retrieval
 from gcwrapped.retrieval.search import Retriever
@@ -27,8 +29,16 @@ UNAVAILABLE = (
 )
 
 
+def database_url() -> str:
+    """gcw_ask's connection to an allowed database. Never log it: it contains the password."""
+    settings = AskSettings()
+    if settings.gcw_db_name not in ALLOWED_DATABASES:
+        raise UnexpectedDatabaseError
+    return settings.ask_database_url()
+
+
 def answer_question(question: str) -> Answer:
-    url, _ = tagging.check_database(synthetic=False)
+    url = database_url()
     check_local_url(retrieval_commands.embed_url())
     check_local_url(tagging.llm_url())
     model_id = tag_evaluation.promoted_model(url, model.MODEL_ID)
