@@ -3,7 +3,7 @@
 Each text becomes a bag-of-words vector: one dimension per word (by crc32), so texts that share
 words are close and a test can say which result should rank first. The query instruction prefix is
 removed first, so a query is compared on its own words. The vectors are not normalized; the client
-does that. Every request body is recorded. Modes:
+does that. Every request body is recorded. GET /v1/models lists `served` (D126). Modes:
   ok         a vector per input
   error500   HTTP 500 for every request
   reject     HTTP 500 for any request with an input containing `reject_text`
@@ -20,6 +20,7 @@ from types import TracebackType
 from typing import Any, Self
 
 from gcwrapped.retrieval.window import DIMENSIONS, QUERY_INSTRUCTION
+from gcwrapped.tagging.model import EMBED_MODEL_ID
 
 
 def vector_for(text: str) -> list[float]:
@@ -34,6 +35,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         return  # never log request lines
+
+    def do_GET(self) -> None:
+        if self.path != "/v1/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps({"data": [{"id": self.server.served}]}).encode("utf-8"))
 
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -66,6 +76,7 @@ class StubEmbed(ThreadingHTTPServer):
         self.reject_text = reject_text
         self.redirect_to = redirect_to
         self.requests: list[dict[str, Any]] = []
+        self.served = EMBED_MODEL_ID
 
     @property
     def url(self) -> str:

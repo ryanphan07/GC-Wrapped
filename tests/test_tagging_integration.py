@@ -327,7 +327,7 @@ def test_make_tag_failure_line_has_a_step_and_a_class_name_only(
     # Nothing listening: the run fails at tagging, naming only the exception class.
     monkeypatch.setenv("GCW_LLM_URL", "http://127.0.0.1:1")
     assert commands.run_tag(start_db=None, start_llm=None) == 1
-    assert capsys.readouterr().out == "tag: failed at tagging (ProviderUnavailable)\n"
+    assert capsys.readouterr().out == "tag: failed at model (ProviderUnavailable)\n"
 
 
 def test_make_tag_refuses_a_non_local_url_before_starting_anything(

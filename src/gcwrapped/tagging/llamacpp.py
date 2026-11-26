@@ -13,6 +13,7 @@ makes an invalid answer near impossible. The answer is still validated. A tag ge
 the message counts as a failure and stays untagged. An answer is never retried (see `answers`).
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -29,6 +30,7 @@ REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 2  # the first try plus one retry
 MAX_TOKENS = 48
 MAX_RESPONSE_BYTES = 1 << 20
+SERVED_MODEL_TIMEOUT_SECONDS = 30
 
 
 class NonLocalUrlError(ValueError):
@@ -58,6 +60,32 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def local_opener() -> urllib.request.OpenerDirector:
     """An opener that follows no proxy and no redirect: a request stays where it was sent."""
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+class ServedModelMismatch(Exception):
+    """The server at this URL does not report serving the expected model (D126)."""
+
+
+def require_served_model(base_url: str, model_id: str) -> None:
+    """Fail closed unless GET /v1/models lists exactly `model_id`, the --alias the compose file
+    gives each server (the pinned image reports the alias, not the file name).
+
+    ProviderUnavailable if nothing answers; ServedModelMismatch for any answer that is not that
+    one model, an HTTP error or an unreadable body included.
+    """
+    url = f"{check_local_url(base_url)}/v1/models"
+    try:
+        with local_opener().open(url, timeout=SERVED_MODEL_TIMEOUT_SECONDS) as response:
+            body = json.loads(response.read(MAX_RESPONSE_BYTES))
+        served = [entry["id"] for entry in body["data"]]
+    except urllib.error.HTTPError:
+        raise ServedModelMismatch from None
+    except (OSError, http.client.HTTPException):  # URLError and timeouts are OSErrors
+        raise ProviderUnavailable from None
+    except (ValueError, KeyError, TypeError):
+        raise ServedModelMismatch from None
+    if served != [model_id]:
+        raise ServedModelMismatch
 
 
 def parse_tag(body: object) -> Tag:

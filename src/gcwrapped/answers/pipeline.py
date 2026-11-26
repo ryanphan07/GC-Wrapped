@@ -34,6 +34,28 @@ TIMED_OUT = "timed_out"
 OUTCOMES = (ANSWERED, ABSTAINED, INVALID, TIMED_OUT)
 SCHEMA_NAME = "answer"
 REQUEST_TIMEOUT_SECONDS = 600  # a long prompt on a busy laptop CPU
+# Why an output is invalid (D126): a closed list, one per check below. Counted and printed by
+# answer-eval and ask; never stored, and no part of the D121 rule.
+REQUEST_REFUSED = "request refused"
+TRUNCATED = "truncated at the token limit"
+NOT_JSON = "not JSON"
+SCHEMA_MISMATCH = "schema mismatch"
+CITATION_OUT_OF_RANGE = "citation out of range"
+CITED_ABSTENTION = "citations on an abstention"
+NO_CITATIONS = "no citations"
+EMPTY_ANSWER = "empty answer"
+MARKER_NOT_CITED = "marker not cited"
+INVALID_REASONS = (
+    REQUEST_REFUSED,
+    TRUNCATED,
+    NOT_JSON,
+    SCHEMA_MISMATCH,
+    CITATION_OUT_OF_RANGE,
+    CITED_ABSTENTION,
+    NO_CITATIONS,
+    EMPTY_ANSWER,
+    MARKER_NOT_CITED,
+)
 _MARKER = re.compile(r"\[(\s*\d+(?:\s*,\s*\d+)*\s*)\]")  # [3], and the grouped form [1, 2]
 
 
@@ -57,6 +79,7 @@ class Answer:
     citations: tuple[int, ...]  # numbers into `sources`, each once; empty unless answered
     prompt_tokens: int | None = None  # the server's count (D116); None if it reported none
     completion_tokens: int | None = None
+    invalid_reason: str | None = None  # one of INVALID_REASONS when invalid, else None
 
     @property
     def cited(self) -> tuple[Source, ...]:
@@ -66,17 +89,6 @@ class Answer:
 def markers(text: str) -> set[int]:
     """Every number written as a [n] marker in the text."""
     return {int(n) for group in _MARKER.findall(text) for n in group.split(",")}
-
-
-def _output(body: object) -> dict[str, object] | None:
-    """The three fields of a response whose content is exactly that JSON object, else None."""
-    try:
-        output = json.loads(body["choices"][0]["message"]["content"])  # type: ignore[index]
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    if not isinstance(output, dict) or set(output) != {"answerable", "citations", "answer"}:
-        return None
-    return output
 
 
 def token_usage(body: object) -> tuple[int | None, int | None]:
@@ -92,29 +104,56 @@ def token_usage(body: object) -> tuple[int | None, int | None]:
     return prompt, completion
 
 
-def parse_answer(body: object, source_count: int) -> tuple[str, str, tuple[int, ...]]:
-    """(outcome, text, citations) of a chat response. Checks everything the grammar should
-    already guarantee, and what it cannot: that the markers match the citations."""
-    invalid: tuple[str, str, tuple[int, ...]] = (INVALID, "", ())
-    output = _output(body)
-    if output is None:
-        return invalid
+def _check(body: object, source_count: int) -> tuple[str, str, tuple[int, ...]] | str:
+    """(outcome, text, citations) of a valid response, else why it is not one. Checks everything
+    the grammar should already guarantee, and what it cannot: that the markers match the
+    citations."""
+    try:
+        output = json.loads(body["choices"][0]["message"]["content"])  # type: ignore[index]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return NOT_JSON
+    if not isinstance(output, dict) or set(output) != {"answerable", "citations", "answer"}:
+        return SCHEMA_MISMATCH
     answerable, citations, text = output["answerable"], output["citations"], output["answer"]
     if not isinstance(answerable, bool) or not isinstance(text, str):
-        return invalid
+        return SCHEMA_MISMATCH
     if not isinstance(citations, list) or len(citations) > MAX_CITATIONS:
-        return invalid
-    # `type(n) is int`: a JSON true is an int to isinstance
-    if not all(type(n) is int and 1 <= n <= source_count for n in citations):
-        return invalid
+        return SCHEMA_MISMATCH
+    if not all(type(n) is int for n in citations):  # a JSON true is an int to isinstance
+        return SCHEMA_MISMATCH
+    if not all(1 <= n <= source_count for n in citations):
+        return CITATION_OUT_OF_RANGE
     if not answerable:
-        return invalid if citations else (ABSTAINED, "", ())
+        return CITED_ABSTENTION if citations else (ABSTAINED, "", ())
     unique = tuple(dict.fromkeys(citations))  # repeats are dropped, first order kept
-    if not unique or not text.strip() or len(text) > MAX_ANSWER_CHARS:
-        return invalid
+    if not unique:
+        return NO_CITATIONS
+    if not text.strip():
+        return EMPTY_ANSWER
+    if len(text) > MAX_ANSWER_CHARS:
+        return SCHEMA_MISMATCH
     if not markers(text) <= set(unique):
-        return invalid
+        return MARKER_NOT_CITED
     return ANSWERED, text, unique
+
+
+def parse_answer(body: object, source_count: int) -> tuple[str, str, tuple[int, ...]]:
+    """(outcome, text, citations) of a chat response; an invalid one keeps neither."""
+    found = _check(body, source_count)
+    return (INVALID, "", ()) if isinstance(found, str) else found
+
+
+def invalid_reason(body: object, source_count: int) -> str | None:
+    """None for a valid response, else its reason. A response the server cut off at the token
+    limit is reported as that, whatever check it then failed."""
+    found = _check(body, source_count)
+    if not isinstance(found, str):
+        return None
+    try:
+        finish = body["choices"][0]["finish_reason"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        finish = None
+    return TRUNCATED if finish == "length" else found
 
 
 class AnswerPipeline:
@@ -156,6 +195,13 @@ class AnswerPipeline:
         except ChatTimeout:
             return Answer(TIMED_OUT, "", sources, ())
         except ChatFailure:
-            return Answer(INVALID, "", sources, ())
+            return Answer(INVALID, "", sources, (), invalid_reason=REQUEST_REFUSED)
         outcome, text, citations = parse_answer(body, len(sources))
-        return Answer(outcome, text, sources, citations, *token_usage(body))
+        return Answer(
+            outcome,
+            text,
+            sources,
+            citations,
+            *token_usage(body),
+            invalid_reason=invalid_reason(body, len(sources)),
+        )

@@ -18,6 +18,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
+from conftest import after_memory_lines
 from embedding_stub import StubEmbed
 from gcwrapped import consent_prune, purge
 from gcwrapped.config import get_database_settings
@@ -561,7 +562,7 @@ def test_an_unreachable_server_prints_one_fixed_failure_line(
     with StubEmbed() as gone:
         monkeypatch.setenv("GCW_EMBED_URL", gone.url)
     assert commands.run_embed(start_db=None, start_service=None) == 1
-    assert capsys.readouterr().out == "embed: failed at embedding (ProviderUnavailable)\n"
+    assert capsys.readouterr().out == "embed: failed at model (ProviderUnavailable)\n"
 
 
 def test_retrieval_eval_and_compare_print_fixed_lines_and_store_ids_only(
@@ -577,7 +578,7 @@ def test_retrieval_eval_and_compare_print_fixed_lines_and_store_ids_only(
     for method in ("vector", "hybrid"):
         assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 0
         out = capsys.readouterr()
-        lines = out.out.splitlines()
+        lines = after_memory_lines(out.out)
         check_lines(lines, report.EVAL_SHAPES)
         assert lines[:8] == [
             "target database: gcw_test",

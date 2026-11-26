@@ -21,7 +21,12 @@ import pytest
 from gcwrapped.answers import pipeline, prompt
 from gcwrapped.answers.excerpts import Source, SourceMessage
 from gcwrapped.tagging import commands, model
-from gcwrapped.tagging.llamacpp import LlamaCppChat, LlamaCppProvider
+from gcwrapped.tagging.llamacpp import (
+    LlamaCppChat,
+    LlamaCppProvider,
+    ServedModelMismatch,
+    require_served_model,
+)
 from gcwrapped.tagging.prompt import SYSTEM_PROMPT, build_user_content
 
 pytestmark = pytest.mark.integration
@@ -89,6 +94,12 @@ def test_the_sentinel_never_reaches_the_server_logs_and_prompt_endpoints_are_clo
     assert _status(f"{llm}/") == 404  # --no-webui
     with urllib.request.urlopen(f"{llm}/props", timeout=5) as props:  # settings, never prompts
         assert SENTINEL not in props.read().decode("utf-8", "replace")
+
+
+def test_the_real_server_reports_the_served_model(llm: str) -> None:
+    require_served_model(llm, model.MODEL_ID)
+    with pytest.raises(ServedModelMismatch):
+        require_served_model(llm, model.SMALL_MODEL_ID)
 
 
 def test_an_answer_request_is_schema_constrained_and_never_reaches_the_server_logs(

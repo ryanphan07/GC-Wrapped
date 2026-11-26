@@ -98,7 +98,8 @@ services:
   # model file is mounted read-only from GCW_MODEL_DIR (`make llm-model` puts it there); the file and
   # the --alias come from GCW_LLM_MODEL_FILE and GCW_LLM_MODEL_ALIAS, which `gcw tag` and `gcw tag-eval`
   # set per model (D93), defaulting to the D98 model. The port is
-  # published on 127.0.0.1 only. A real-data stack sets its own GCW_LLM_PORT so two stacks can coexist.
+  # published on 127.0.0.1 only. A real-data stack sets its own GCW_LLM_PORT; the commands refuse to run
+  # while another GC Wrapped stack's model containers do (D126).
   # No text leaves through this server: --no-slots removes the endpoint that shows in-flight
   # prompts, --no-webui removes the chat UI, and --props and --metrics stay off (their default).
   # Logging stays at the default level, which does not print prompts (a local test checks the logs).
@@ -140,7 +141,7 @@ services:
   # to run together; `make embed` and `make retrieval-eval` name it explicitly, so `make up`,
   # `make e2e` and the other CI jobs never start it. The whole window must fit in one physical batch
   # (--ubatch-size), and with one slot the slot's context is --ctx-size. Same no-leak flags as llm;
-  # the port is published on 127.0.0.1 only (GCW_EMBED_PORT lets two stacks coexist).
+  # the port is published on 127.0.0.1 only (a real-data stack sets its own GCW_EMBED_PORT, D126).
   embed:
     profiles: ["embed"]
     image: ghcr.io/ggml-org/llama.cpp:server@sha256:c7d58273d753d33a352e5c41ab300c5ae040a16fa4b202231bb606478065c124

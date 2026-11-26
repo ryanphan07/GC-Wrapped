@@ -14,6 +14,7 @@ import pytest
 from gcwrapped.retrieval import commands
 from gcwrapped.retrieval.client import LlamaCppEmbedder, embed_query
 from gcwrapped.tagging import model
+from gcwrapped.tagging.llamacpp import ServedModelMismatch, require_served_model
 
 pytestmark = pytest.mark.integration
 
@@ -37,6 +38,12 @@ def server() -> str:
     except OSError:
         pytest.skip("embed service is not running")
     return url
+
+
+def test_the_real_server_reports_the_served_model(server: str) -> None:
+    require_served_model(server, model.EMBED_MODEL_ID)
+    with pytest.raises(ServedModelMismatch):
+        require_served_model(server, model.MODEL_ID)
 
 
 def test_real_vectors_are_unit_length_related_texts_are_closer_and_nothing_is_logged(

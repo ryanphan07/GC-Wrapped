@@ -77,8 +77,8 @@ PROMOTE_SHAPES = (
 )
 COMMANDS = ("embed", "retrieval-eval", "retrieval-compare", "retrieval-promote")
 STEPS = (
-    "method|database|label directory|embed url|questions|predictions|docker|embedding|"
-    "retrieval|corpus|scoring|verdict|promote|render"
+    "method|database|label directory|embed url|questions|predictions|docker|model|memory|"
+    "embedding|retrieval|corpus|scoring|verdict|promote|render"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 

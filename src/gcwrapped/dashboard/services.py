@@ -2,12 +2,13 @@
 embed services the dashboard needs, the llm one serving the promoted model, as `make ask` does.
 The Makefile then builds and starts the dashboard itself, with compose output on screen.
 
-The guards are the other commands'; a failure prints `dashboard-up: failed at <step> (<exception
-type>)`.
+The guards are the other commands', the other-stack and served-model checks of D126 included; a
+failure prints `dashboard-up: failed at <step> (<exception type>)`.
 """
 
 from gcwrapped.answers import commands as answers
 from gcwrapped.answers import report
+from gcwrapped.docker import require_no_other_stack
 from gcwrapped.retrieval import commands as retrieval_commands
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import evaluation as tag_evaluation
@@ -25,6 +26,7 @@ def run(services: answers.Services | None = None) -> int:
         step = answers.STEP_LLM_URL
         check_local_url(tagging.llm_url())
         step = answers.STEP_DOCKER
+        require_no_other_stack()
         if services.db is not None:
             services.db()
         step = answers.STEP_MODEL
@@ -34,6 +36,8 @@ def run(services: answers.Services | None = None) -> int:
             services.llm(model_id)
         if services.embed is not None:
             services.embed()
+        step = answers.STEP_MODEL
+        answers.require_served_models(model_id)
     except Exception as exc:  # type name only: driver and OS messages can echo values
         print(report.failure_line("dashboard-up", step, exc))
         return 1

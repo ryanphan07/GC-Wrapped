@@ -191,6 +191,19 @@ def test_tag_eval_prints_fixed_lines_and_stores_private_predictions_without_text
     assert _promoted_rows(warehouse) == []  # an eval never promotes
 
 
+def test_tag_eval_refuses_another_served_model_before_sending_a_message(
+    warehouse: str,
+    label_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with StubLlm(served=B_ID) as other:
+        monkeypatch.setenv("GCW_LLM_URL", other.url)
+        assert commands.run_tag_eval(A_ID, start_db=None, start_llm=None) == 1
+    assert capsys.readouterr().out == "tag-eval: failed at model (ServedModelMismatch)\n"
+    assert other.requests == [] and not (label_dir / "predictions").exists()
+
+
 def test_tag_eval_refuses_a_database_outside_the_allowed_list_before_starting_anything(
     warehouse: str,
     label_dir: Path,
@@ -265,6 +278,7 @@ def test_a_synthetic_run_uses_a_temporary_directory_and_never_touches_labels_or_
     with StubLlm() as stub:
         monkeypatch.setenv("GCW_LLM_URL", stub.url)
         for model_id in (A_ID, B_ID):
+            stub.served = model_id
             assert (
                 commands.run_tag_eval(model_id, synthetic=True, start_db=None, start_llm=None) == 0
             )
@@ -435,11 +449,15 @@ def test_make_tag_uses_the_promoted_model_unless_one_is_given(
     started: list[str] = []
 
     def tag(model_id: str | None = None) -> None:
+        def start(chosen: str) -> None:
+            started.append(chosen)
+            stub.served = chosen  # as the real service does with its --alias
+
         assert (
             commands.run_tag(
                 model_id=model_id,
                 start_db=lambda: started.append("db"),
-                start_llm=lambda m: started.append(m),
+                start_llm=start,
             )
             == 0
         )

@@ -30,6 +30,8 @@ Every value must be an exact number with its source (`raw.load_runs`, dbt output
 | Consent replies, real data: ledger rows 58; consented yes 58, local 0, no 0, blank 0; local-eligible text messages 10328 of 10328 (100%; counted before D95's placeholder filter); threads with a local-eligible message 11 of 11 | 2026-11-15 | make consent-load and make consent-coverage ENV_FILE=<real env>, run by Ryan, aggregates only | 5cafcc0 |
 | Real pipeline rerun after D95 (idempotent): 11 allowlisted threads; rows parsed 10796, inserted 0, duplicates skipped 10796; dbt build PASS=190 WARN=0 ERROR=0; pipeline seconds 96.97 | 2026-11-18 | make real-ingest ENV_FILE=<real env>, run by Ryan, aggregates only | c31d12b |
 | Text audit (D95), real data: messages 10796; non-blank content 10328; placeholders total 4313 (sent_attachment 3537, liked_message 519, reacted_message 212, video_chat_started 22, group_member_added 9, group_named 8, video_chat_missed 4, group_member_left 1, group_photo_changed 1, the other 10 patterns 0); user text messages 6015 (1-3 characters 735, 4-10 characters 1369, 11+ characters 3911; emoji-only 288; URL-only 18) | 2026-11-18 | make text-audit ENV_FILE=<real env>, run by Ryan, aggregates only | c31d12b |
+| pytest unit tests on main after PR #51 | make test: 1086 passed (271 deselected) | 2026-11-25 | make test (default .env) | a22d573 |
+| pytest integration tests on the same tree, llm and embed up | 271 passed, 0 skipped | 2026-11-25 | make test-integration, run by Ryan on the synthetic stack with llm and embed up | a22d573 |
 
 raw.load_runs durations from 2026-11-05 runs (0.00 / 0.01 s) were wrong (bug fixed later); not recorded.
 
@@ -46,6 +48,11 @@ Commit citations (D73): merges are squashes, so a PR-branch commit is cited as "
 | dbt data test count (generic + singular) | 125 (123 generic, 2 singular) | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
 | dbt unit test count | 6 | 2026-11-09 | make metrics (gcw_dev) | 468bca3 |
 | dbt buildable nodes | 143 | 2026-11-09 | make metrics (gcw_dev); make e2e dbt build PASS=143 TOTAL=143 | 468bca3 |
+| dbt model count | 18 | 2026-11-25 | `dbt ls --resource-type model --quiet \| wc -l` (gcw_dev); make dbt-build (gcw_dev): PASS=215 WARN=0 ERROR=0 TOTAL=215 | a22d573 |
+| dbt data test count (generic + singular) | 184 (181 generic, 3 singular) | 2026-11-25 | `dbt ls --resource-type test --quiet \| wc -l` (gcw_dev), split with `--select test_type:generic` and `test_type:singular`; make dbt-build (gcw_dev): PASS=215 WARN=0 ERROR=0 TOTAL=215 | a22d573 |
+| dbt unit test count | 11 | 2026-11-25 | `dbt ls --resource-type unit_test --quiet \| wc -l` (gcw_dev); make dbt-build (gcw_dev): PASS=215 WARN=0 ERROR=0 TOTAL=215 | a22d573 |
+| dbt seed count | 1 | 2026-11-25 | `dbt ls --resource-type seed --quiet \| wc -l` (gcw_dev); make dbt-build (gcw_dev): PASS=215 WARN=0 ERROR=0 TOTAL=215 | a22d573 |
+| dbt build PASS total | 215 (WARN=0 ERROR=0 TOTAL=215) | 2026-11-25 | make dbt-build (gcw_dev): PASS=215 WARN=0 ERROR=0 TOTAL=215 | a22d573 |
 
 ## Tagging eval
 

@@ -11,6 +11,7 @@ what was sent. Modes let a test provoke the failures the client must handle:
   slow          no response until the stub is closed (the client's timeout fires first)
   not_json      HTTP 200 with a body that is not JSON
 With `usage` set, the response carries it, as llama.cpp's does (D116).
+GET /v1/models lists `served` (the default model), as llama.cpp lists its --alias (D126).
 With `reply` set, the message content is what it returns for the request body, in any mode that
 answers (the answer pipeline's tests, D111).
 Run as a script (`python tests/tagging_stub.py --port 8099`) to serve until killed.
@@ -26,6 +27,7 @@ from types import TracebackType
 from typing import Any, Self
 
 from gcwrapped.labeling.schema import SENTIMENTS, TOPICS
+from gcwrapped.tagging.model import MODEL_ID
 
 
 def answer_for(user: str) -> dict[str, str]:
@@ -40,6 +42,11 @@ class _Handler(BaseHTTPRequestHandler):
         return  # never log request lines
 
     def do_GET(self) -> None:
+        if self.path == "/v1/models":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": [{"id": self.server.served}]}).encode("utf-8"))
+            return
         self.send_response(200 if self.path == "/health" else 404)
         self.end_headers()
 
@@ -89,12 +96,14 @@ class StubLlm(ThreadingHTTPServer):
         redirect_to: str = "",
         reply: Callable[[dict[str, Any]], str] | None = None,
         usage: dict[str, Any] | None = None,
+        served: str = MODEL_ID,
     ) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.mode = mode
         self.redirect_to = redirect_to
         self.reply = reply
         self.usage = usage
+        self.served = served
         self.closing = Event()
         self.requests: list[dict[str, Any]] = []
 

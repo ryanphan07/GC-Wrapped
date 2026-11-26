@@ -15,12 +15,14 @@ writes only the grade, IDs and numbers (D120).
 """
 
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 import psycopg
 
+from gcwrapped import memory
 from gcwrapped.answers import comparison, evaluation, grades, report
 from gcwrapped.answers.excerpts import Source
 from gcwrapped.answers.pipeline import (
@@ -41,7 +43,7 @@ from gcwrapped.answers.prompt import (
     UnknownVariantError,
     prompt_version_for,
 )
-from gcwrapped.docker import start_database
+from gcwrapped.docker import require_no_other_stack, start_database
 from gcwrapped.labeling.files import read_questions
 from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.labeling.source import load_eligible
@@ -60,7 +62,7 @@ from gcwrapped.retrieval.window import embed_version
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import evaluation as tag_evaluation
 from gcwrapped.tagging import model
-from gcwrapped.tagging.llamacpp import LlamaCppChat, check_local_url
+from gcwrapped.tagging.llamacpp import LlamaCppChat, check_local_url, require_served_model
 from gcwrapped.tagging.runner import Timings
 
 STEP_COUNT = "count"
@@ -72,6 +74,7 @@ STEP_LLM_URL = "llm url"
 STEP_QUESTIONS = "questions"
 STEP_DOCKER = "docker"
 STEP_MODEL = "model"
+STEP_MEMORY = "memory"
 STEP_RETRIEVAL = "retrieval"
 STEP_CORPUS = "corpus"
 STEP_GRADES = "grades"
@@ -95,12 +98,16 @@ GRADE_KEYS = {"c": grades.CORRECT, "p": grades.PARTIAL, "w": grades.WRONG}
 SUPPORT_KEYS = dict(zip("yn", grades.SUPPORTED, strict=True))
 
 
+class StartChatModel(Protocol):
+    def __call__(self, model_id: str, *, fresh: bool = False) -> None: ...
+
+
 @dataclass(frozen=True)
 class Services:
     """What a command starts, in order. None = do not start that one (it is already running)."""
 
     db: Callable[[], None] | None = start_database
-    llm: Callable[[str], None] | None = tagging.start_llm
+    llm: StartChatModel | None = tagging.start_llm
     embed: Callable[[], None] | None = retrieval_commands.start_embed
 
 
@@ -111,6 +118,12 @@ def chat_model(model_id: str) -> LlamaCppChat:
         timeout=REQUEST_TIMEOUT_SECONDS,
         chat_template_kwargs=model.spec_for(model_id).chat_template_kwargs,
     )
+
+
+def require_served_models(model_id: str) -> None:
+    """Both servers a question goes through serve the expected model (D126)."""
+    require_served_model(tagging.llm_url(), model_id)
+    retrieval_commands.require_embed_model()
 
 
 def _prompt_version(model_id: str, variant: str) -> str:
@@ -145,6 +158,7 @@ def run_answer_eval(
         if not questions:
             raise retrieval.NoScorableQuestionsError
         step = STEP_DOCKER
+        require_no_other_stack()
         if services.db is not None:
             services.db()  # the promoted model is read from the database, so it comes up first
         step = STEP_MODEL
@@ -154,11 +168,14 @@ def run_answer_eval(
         chat = chat_model(model_id)
         step = STEP_DOCKER
         if services.llm is not None:
-            services.llm(model_id)
+            services.llm(model_id, fresh=True)  # D126: every pass starts a new server
         if services.embed is not None:
             services.embed()
+        step = STEP_MODEL
+        require_served_models(model_id)
         step = STEP_RETRIEVAL
         eligible = load_eligible(url)
+        reasons: Counter[str] = Counter()
         with psycopg.connect(url, autocommit=True) as conn:
             retriever = Retriever(conn, embedder)
             method = retrieval.default_method(conn)
@@ -168,7 +185,19 @@ def run_answer_eval(
             kept, _ = retrieval.split_questions(questions, eligible, searchable)
             step = STEP_ANSWERING
             pipeline = AnswerPipeline(conn, retriever, chat, method, variant=variant)
-            rows = evaluation.run_questions(pipeline.answer, kept)
+
+            def answer(question: str) -> Answer:
+                found = pipeline.answer(question)
+                if found.invalid_reason is not None:
+                    reasons[found.invalid_reason] += 1
+                return found
+
+            step = STEP_MEMORY
+            before = memory.start_pass()
+            step = STEP_ANSWERING
+            rows = evaluation.run_questions(answer, kept)
+            step = STEP_MEMORY
+            memory.end_pass(before)
         step = STEP_SCORING
         result = evaluation.score(rows, len(questions))
         step = STEP_PREDICTIONS
@@ -181,7 +210,7 @@ def run_answer_eval(
         )
         step = STEP_RENDER
         lines = report.render_eval(
-            database, source, model_id, version, method, retriever.version, result
+            database, source, model_id, version, method, retriever.version, result, reasons
         )
     except Exception as exc:  # type name only: driver and OS messages can echo values
         print(report.failure_line("answer-eval", step, exc))
@@ -225,6 +254,7 @@ def ask_loop(
 ) -> list[str]:
     """Ask until a blank line, end of input or Ctrl-C; return the summary lines."""
     counts = dict.fromkeys(OUTCOMES, 0)
+    reasons: Counter[str] = Counter()
     timings = Timings([])
     prompt_tokens: list[int] = []
     try:
@@ -234,6 +264,8 @@ def ask_loop(
             seconds = clock() - began
             timings.seconds.append(seconds)
             counts[found.outcome] += 1
+            if found.invalid_reason is not None:
+                reasons[found.invalid_reason] += 1
             if found.prompt_tokens is not None:
                 prompt_tokens.append(found.prompt_tokens)
             numbers = report.answer_line(len(found.sources), found.prompt_tokens, seconds)
@@ -241,7 +273,7 @@ def ask_loop(
                 terminal.out(line)
     except KeyboardInterrupt:
         pass  # the usual way to stop a slow answer: still report the finished ones
-    return report.render_ask(counts, timings, prompt_tokens)
+    return report.render_ask(counts, timings, prompt_tokens, reasons)
 
 
 def run_ask(
@@ -261,6 +293,7 @@ def run_ask(
         step = STEP_LLM_URL
         check_local_url(tagging.llm_url())
         step = STEP_DOCKER
+        require_no_other_stack()
         if services.db is not None:
             services.db()
         step = STEP_MODEL
@@ -272,6 +305,8 @@ def run_ask(
             services.llm(model_id)
         if services.embed is not None:
             services.embed()
+        step = STEP_MODEL
+        require_served_models(model_id)
         step = STEP_RETRIEVAL
         with psycopg.connect(url, autocommit=True) as conn:  # each question sees consent as it is
             retriever = Retriever(conn, embedder)
@@ -458,6 +493,7 @@ def run_grade_answers(
         if not questions:
             raise retrieval.NoScorableQuestionsError
         step = STEP_DOCKER
+        require_no_other_stack()
         if services.db is not None:
             services.db()
         step = STEP_MODEL
@@ -472,6 +508,8 @@ def run_grade_answers(
             services.llm(model_id)
         if services.embed is not None:
             services.embed()
+        step = STEP_MODEL
+        require_served_models(model_id)
         step = STEP_RETRIEVAL
         eligible = load_eligible(url)
         with psycopg.connect(url, autocommit=True) as conn:
