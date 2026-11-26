@@ -20,6 +20,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from conftest import after_memory_lines
 from gcwrapped import consent_prune
 from gcwrapped.answers import commands, comparison, evaluation, grades, report
 from gcwrapped.answers.excerpts import load_excerpts
@@ -27,6 +28,7 @@ from gcwrapped.answers.pipeline import (
     ABSTAINED,
     ANSWERED,
     INVALID,
+    REQUEST_REFUSED,
     TIMED_OUT,
     Answer,
     AnswerPipeline,
@@ -194,6 +196,7 @@ def test_a_refused_request_is_an_invalid_output_and_is_not_retried(
     with StubLlm(mode="error500") as broken:
         found = _answer(embedded, stub, broken, "when is the midterm")
     assert (found.outcome, found.citations, len(broken.requests)) == (INVALID, (), 1)
+    assert found.invalid_reason == REQUEST_REFUSED
     assert (found.prompt_tokens, found.completion_tokens) == (None, None)
 
 
@@ -225,7 +228,7 @@ def test_answer_eval_prints_fixed_lines_and_stores_ids_hashes_and_numbers_only(
     caplog.set_level(logging.DEBUG)
     assert commands.run_answer_eval(services=NO_SERVICES) == 0
     out = capsys.readouterr()
-    lines = out.out.splitlines()
+    lines = after_memory_lines(out.out)
     check_lines(lines, report.EVAL_SHAPES)
     assert lines[:10] == [
         "target database: gcw_test",
@@ -241,6 +244,8 @@ def test_answer_eval_prints_fixed_lines_and_stores_ids_hashes_and_numbers_only(
     ]
     for name in ("invalid outputs", "answered", "abstained", "citation hit"):
         assert f"{name}: 1" in lines
+    assert "invalid outputs, citation out of range: 1" in lines  # the stub cited [999]
+    assert "invalid outputs, no citations: 0" in lines
     assert "timed out: 0" in lines
     assert lines[-4:-1] == [
         "p50 prompt tokens: 321",
@@ -281,7 +286,7 @@ def test_answer_eval_counts_timeouts_apart_from_invalid_outputs(
     with StubLlm(mode="slow") as slow:
         monkeypatch.setenv("GCW_LLM_URL", slow.url)
         assert commands.run_answer_eval(services=NO_SERVICES) == 0
-    lines = capsys.readouterr().out.splitlines()
+    lines = after_memory_lines(capsys.readouterr().out)
     check_lines(lines, report.EVAL_SHAPES)
     assert "invalid outputs: 0" in lines and "timed out: 3" in lines
     assert "timed out rate: 1.000" in lines
@@ -322,7 +327,7 @@ def test_answer_eval_without_a_model_server_fails_with_a_fixed_line(
     with StubLlm() as gone:
         monkeypatch.setenv("GCW_LLM_URL", gone.url)
     assert commands.run_answer_eval(services=NO_SERVICES) == 1
-    assert capsys.readouterr().out == ("answer-eval: failed at answering (ProviderUnavailable)\n")
+    assert capsys.readouterr().out == ("answer-eval: failed at model (ProviderUnavailable)\n")
     assert not (label_dir / "answers").exists()
 
 
@@ -347,7 +352,7 @@ def test_a_synthetic_answer_eval_uses_a_temporary_directory(
 
 
 def _never() -> commands.Services:
-    def start(*_: object) -> None:
+    def start(*_: object, **__: object) -> None:
         pytest.fail("a service was started")
 
     return commands.Services(db=start, llm=start, embed=start)
@@ -440,16 +445,17 @@ def test_ask_answers_at_the_prompt_and_writes_and_logs_nothing(
     assert len(all_numbers) == 3
     for line in all_numbers:
         check_lines([line], (report.ANSWER_SHAPE,))
-    summary = terminal.printed[-10:]
+    summary = terminal.printed[-len(report.ASK_SHAPES) :]
     check_lines(summary, report.ASK_SHAPES)
-    assert summary[:5] == [
+    assert summary[:4] == [
         "questions asked: 3",
         "answered: 1",
         "abstained: 1",
         "invalid outputs: 1",
-        "timed out: 0",
     ]
-    assert summary[7:9] == ["p50 prompt tokens: 321", "p95 prompt tokens: 321"]
+    assert "invalid outputs, citation out of range: 1" in summary  # the stub cited [999]
+    assert "timed out: 0" in summary
+    assert summary[-3:-1] == ["p50 prompt tokens: 321", "p95 prompt tokens: 321"]
     _assert_clean("\n".join(summary), extra=(REPLY_SENTINEL, "midterm", "ramen"))
 
 
@@ -489,7 +495,7 @@ def test_ask_reports_a_model_server_that_goes_away_as_one_fixed_line(
         monkeypatch.setenv("GCW_LLM_URL", gone.url)
     terminal = ScriptedTerminal(f"when is the midterm {SENTINEL}ASKED", "")
     assert commands.run_ask(terminal=terminal, services=NO_SERVICES) == 1
-    assert capsys.readouterr().out == "ask: failed at answering (ProviderUnavailable)\n"
+    assert capsys.readouterr().out == "ask: failed at model (ProviderUnavailable)\n"
     assert terminal.printed == []
 
 

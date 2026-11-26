@@ -32,6 +32,7 @@ def answer_question(question: str) -> Answer:
     check_local_url(retrieval_commands.embed_url())
     check_local_url(tagging.llm_url())
     model_id = tag_evaluation.promoted_model(url, model.MODEL_ID)
+    answers.require_served_models(model_id)  # every question: a server can change under the page
     chat = answers.chat_model(model_id)
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute("SET default_transaction_read_only = on")  # this page writes nothing

@@ -17,7 +17,12 @@ from pathlib import Path
 
 from gcwrapped.config import LabelSettings, TaggingSettings, env_file_path
 from gcwrapped.db import database_name, database_url
-from gcwrapped.docker import COMPOSE_TIMEOUT_SECONDS, require_docker, start_database
+from gcwrapped.docker import (
+    COMPOSE_TIMEOUT_SECONDS,
+    require_docker,
+    require_no_other_stack,
+    start_database,
+)
 from gcwrapped.labeling.commands import resolve_label_dir
 from gcwrapped.labeling.files import read_tags
 from gcwrapped.labeling.schema import TAG_LABELS_FILE
@@ -26,7 +31,7 @@ from gcwrapped.ledger import REPO_ROOT
 from gcwrapped.metrics import ALLOWED_DATABASES, UnexpectedDatabaseError
 from gcwrapped.migrate import migrate
 from gcwrapped.tagging import evaluation, model, report
-from gcwrapped.tagging.llamacpp import check_local_url
+from gcwrapped.tagging.llamacpp import check_local_url, require_served_model
 from gcwrapped.tagging.prompt import prompt_version_for
 from gcwrapped.tagging.provider import TagProvider, make_provider
 from gcwrapped.tagging.runner import run_tagging
@@ -60,11 +65,12 @@ class ModelFileMissingError(Exception):
     """The registered model's file is not in GCW_MODEL_DIR: run make llm-model MODEL=<id>."""
 
 
-def start_llm(model_id: str) -> None:
+def start_llm(model_id: str, *, fresh: bool = False) -> None:
     """(Re)start only the llm service of the compose project ENV_FILE names, serving `model_id`.
 
     The file and --alias come from the environment, so one service serves either model; compose
-    recreates the container when they differ from the running one. Waits for the health check.
+    recreates the container when they differ from the running one, and always with `fresh`
+    (answer-eval, D126: a new server, so a cold prompt cache). Waits for the health check.
     Output is captured, never shown. `make down` stops it.
     """
     spec = model.spec_for(model_id)
@@ -82,6 +88,7 @@ def start_llm(model_id: str) -> None:
             "up",
             "-d",
             "--wait",
+            *(["--force-recreate"] if fresh else []),
             "llm",
         ],
         check=True,
@@ -126,6 +133,7 @@ def run_tag(
         step = STEP_URL
         check_local_url(llm_url())
         step = STEP_DOCKER
+        require_no_other_stack()
         if start_db is not None:
             start_db()  # the promoted model is read from the database, so it comes up first
         step = STEP_MODEL
@@ -135,6 +143,8 @@ def run_tag(
         step = STEP_DOCKER
         if start_llm is not None:
             start_llm(chosen)
+        step = STEP_MODEL
+        require_served_model(llm_url(), chosen)
         step = STEP_TAGGING
         result = run_tagging(url, provider, limit=limit, prompt_version=_version(chosen))
         step = STEP_RENDER
@@ -220,6 +230,7 @@ def run_tag_eval(
         step = STEP_LABELS
         labels = _read_labels(target.labels)
         step = STEP_DOCKER
+        require_no_other_stack()
         if start_db is not None:
             start_db()
         step = STEP_ELIGIBLE
@@ -230,6 +241,8 @@ def run_tag_eval(
         step = STEP_DOCKER
         if start_llm is not None:
             start_llm(model_id)
+        step = STEP_MODEL
+        require_served_model(llm_url(), model_id)
         step = STEP_TAGGING
         rows = evaluation.run_model(provider, index, ids)
         step = STEP_PREDICTIONS

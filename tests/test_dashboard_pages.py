@@ -176,7 +176,7 @@ def test_make_dashboard_up_starts_the_models_then_the_dashboard() -> None:
 def test_the_services_refuse_a_non_local_url_before_starting_anything(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def start(*_: object) -> None:
+    def start(*_: object, **__: object) -> None:
         pytest.fail("a service was started")
 
     monkeypatch.setenv("GCW_DB_NAME", "gcw_dev")

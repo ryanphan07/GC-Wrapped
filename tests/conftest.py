@@ -10,9 +10,11 @@ import pytest
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
+from gcwrapped import docker, memory
 from gcwrapped.config import get_database_settings
 from gcwrapped.db import database_url
 from gcwrapped.migrate import migrate
+from gcwrapped.tagging.report import check_lines
 from isolation_guard import IsolationError, check_database_url, check_session
 from synthetic.instagram import SYNTHETIC_THREAD_IDS
 
@@ -30,6 +32,32 @@ def _test_isolation_guard() -> None:
         check_session(os.environ, cwd=Path.cwd(), repo_root=REPO_ROOT)
     except IsolationError as exc:
         pytest.exit(f"test-isolation guard: {exc}", returncode=3)
+
+
+def meminfo_text(swap_used_kib: int = 0, available_kib: int = 4 * 1024 * 1024) -> str:
+    """A /proc/meminfo with the fields the memory guard reads (D126)."""
+    total = 3 * 1024 * 1024
+    return (
+        f"MemTotal:       10000000 kB\nMemAvailable:   {available_kib} kB\n"
+        f"SwapTotal:      {total} kB\nSwapFree:       {total - swap_used_kib} kB\n"
+    )
+
+
+def after_memory_lines(output: str) -> list[str]:
+    """An eval command's lines after the four memory lines every pass prints first (D126)."""
+    lines = output.splitlines()
+    check_lines(lines[:4], memory.SHAPES * 2)
+    return lines[4:]
+
+
+@pytest.fixture(autouse=True)
+def _quiet_host(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commands read this machine's swap and running containers (D126); no test may depend on
+    either. The tests of those two checks put their own fakes over these."""
+    meminfo = tmp_path_factory.mktemp("host") / "meminfo"
+    meminfo.write_text(meminfo_text(), encoding="ascii")
+    monkeypatch.setattr(memory, "MEMINFO", meminfo)
+    monkeypatch.setattr(docker, "running_containers", lambda: "")
 
 
 TEST_DB_NAME = "gcw_test"

@@ -13,8 +13,14 @@ from pathlib import Path
 
 import psycopg
 
+from gcwrapped import memory
 from gcwrapped.config import EmbeddingSettings, env_file_path
-from gcwrapped.docker import COMPOSE_TIMEOUT_SECONDS, require_docker, start_database
+from gcwrapped.docker import (
+    COMPOSE_TIMEOUT_SECONDS,
+    require_docker,
+    require_no_other_stack,
+    start_database,
+)
 from gcwrapped.labeling.files import read_questions
 from gcwrapped.labeling.schema import QUESTIONS_FILE
 from gcwrapped.labeling.source import EligibleIndex, load_eligible
@@ -27,7 +33,7 @@ from gcwrapped.retrieval.search import Retriever
 from gcwrapped.retrieval.window import embed_version
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import model
-from gcwrapped.tagging.llamacpp import check_local_url
+from gcwrapped.tagging.llamacpp import check_local_url, require_served_model
 
 SYNTHETIC_QUESTIONS = REPO_ROOT / "tests" / "fixtures" / "eval" / QUESTIONS_FILE
 
@@ -38,6 +44,8 @@ STEP_URL = "embed url"
 STEP_QUESTIONS = "questions"
 STEP_PREDICTIONS = "predictions"
 STEP_DOCKER = "docker"
+STEP_MODEL = "model"
+STEP_MEMORY = "memory"
 STEP_EMBEDDING = "embedding"
 STEP_RETRIEVAL = "retrieval"
 STEP_SCORING = "scoring"
@@ -85,6 +93,10 @@ def local_embedder() -> Embedder:
     return LlamaCppEmbedder(embed_url(), model_id=model.EMBED_MODEL_ID)
 
 
+def require_embed_model() -> None:
+    require_served_model(embed_url(), model.EMBED_MODEL_ID)
+
+
 def run_embed(
     synthetic: bool = False,
     start_db: StartDb = start_database,
@@ -98,10 +110,13 @@ def run_embed(
         check_local_url(embed_url())
         embedder = local_embedder()
         step = STEP_DOCKER
+        require_no_other_stack()
         if start_db is not None:
             start_db()
         if start_service is not None:
             start_service()
+        step = STEP_MODEL
+        require_embed_model()
         step = STEP_EMBEDDING
         migrate(url)  # the table is migration 006; consent-load and purge do the same
         result = embed_job(url, embedder)
@@ -153,10 +168,13 @@ def run_retrieval_eval(
         if not questions:
             raise evaluation.NoScorableQuestionsError
         step = STEP_DOCKER
+        require_no_other_stack()
         if start_db is not None:
             start_db()
         if start_service is not None:
             start_service()
+        step = STEP_MODEL
+        require_embed_model()
         step = STEP_RETRIEVAL
         eligible = load_eligible(url)
         with psycopg.connect(url, autocommit=True) as conn:
@@ -167,7 +185,12 @@ def run_retrieval_eval(
             step = STEP_RETRIEVAL
             kept, _ = evaluation.split_questions(questions, eligible, searchable)
             search = retriever.vector if method == evaluation.VECTOR else retriever.hybrid
+            step = STEP_MEMORY
+            before = memory.start_pass()
+            step = STEP_RETRIEVAL
             rows = evaluation.run_method(search, kept)
+            step = STEP_MEMORY
+            memory.end_pass(before)
         step = STEP_SCORING
         result = evaluation.score(rows, len(questions))
         step = STEP_PREDICTIONS

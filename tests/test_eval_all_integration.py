@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from gcwrapped import eval_all
+from gcwrapped import eval_all, memory
 from gcwrapped.answers import commands, comparison, report
 from gcwrapped.cli import build_parser
 from gcwrapped.retrieval import commands as retrieval_commands
@@ -56,6 +56,7 @@ SHAPES = (
     *report.EVAL_SHAPES,
     *report.COMPARE_SHAPES,
     *report.PROMOTE_SHAPES,
+    *memory.SHAPES,
 )
 
 
@@ -141,7 +142,7 @@ def test_the_synthetic_form_skips_both_promote_steps(
     ("broken", "failure"),
     [
         ("questions", "retrieval-eval: failed at questions (NoScorableQuestionsError)"),
-        ("llm", "answer-eval: failed at answering (ProviderUnavailable)"),
+        ("llm", "answer-eval: failed at model (ProviderUnavailable)"),
     ],
 )
 def test_the_first_failure_prints_one_line_and_stops_the_run(

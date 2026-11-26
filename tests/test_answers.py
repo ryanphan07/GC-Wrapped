@@ -20,10 +20,20 @@ from gcwrapped.answers.excerpts import Source, SourceMessage, build_excerpts
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
     ANSWERED,
+    CITATION_OUT_OF_RANGE,
+    CITED_ABSTENTION,
+    EMPTY_ANSWER,
     INVALID,
+    INVALID_REASONS,
+    MARKER_NOT_CITED,
+    NO_CITATIONS,
+    NOT_JSON,
     OUTCOMES,
+    SCHEMA_MISMATCH,
     TIMED_OUT,
+    TRUNCATED,
     Answer,
+    invalid_reason,
     parse_answer,
     token_usage,
 )
@@ -297,6 +307,46 @@ def test_a_response_of_the_wrong_shape_is_invalid(body: object) -> None:
     assert parse_answer(body, 3) == (INVALID, "", ())
 
 
+def _response(content: object, finish: str = "stop") -> object:
+    text = content if isinstance(content, str) else json.dumps(content)
+    return {"choices": [{"message": {"content": text}, "finish_reason": finish}]}
+
+
+def _fields(answerable: object, citations: object, answer: object) -> dict[str, object]:
+    return {"answerable": answerable, "citations": citations, "answer": answer}
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        ("not json", NOT_JSON),
+        ("[1]", SCHEMA_MISMATCH),
+        ({"answerable": True, "citations": [1]}, SCHEMA_MISMATCH),
+        (_fields("yes", [1], "a [1]"), SCHEMA_MISMATCH),
+        (_fields(True, "1", "a [1]"), SCHEMA_MISMATCH),
+        (_fields(True, [True], "a [1]"), SCHEMA_MISMATCH),
+        (_fields(True, [1] * 6, "a [1]"), SCHEMA_MISMATCH),
+        (_fields(True, [1], "x" * 601), SCHEMA_MISMATCH),
+        (_fields(True, [4], "a [4]"), CITATION_OUT_OF_RANGE),
+        (_fields(False, [1], ""), CITED_ABSTENTION),
+        (_fields(True, [], "a"), NO_CITATIONS),
+        (_fields(True, [1], "  "), EMPTY_ANSWER),
+        (_fields(True, [1], "a [2]"), MARKER_NOT_CITED),
+    ],
+)
+def test_every_invalid_output_has_one_fixed_reason(content: object, reason: str) -> None:
+    body = _response(content)
+    assert invalid_reason(body, 3) == reason in INVALID_REASONS
+    assert parse_answer(body, 3) == (INVALID, "", ())
+
+
+def test_a_cut_off_output_is_reported_as_truncated_and_a_valid_one_has_no_reason() -> None:
+    assert invalid_reason(_response('{"answerable": true, "cit', "length"), 3) == TRUNCATED
+    assert invalid_reason(_response(_fields(True, [1], "a [1]"), "length"), 3) is None
+    assert invalid_reason(_response(_fields(False, [], "")), 3) is None
+    assert invalid_reason({}, 3) == NOT_JSON
+
+
 def _complete(url: str, timeout: float = 5) -> object:
     return LlamaCppChat(url, model_id=MODEL_ID, timeout=timeout).complete(
         "s", "u", schema_name="answer", schema=prompt.response_schema(1), max_tokens=1
@@ -498,7 +548,9 @@ def test_results_are_never_written_inside_the_repo() -> None:
 
 def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
     result = evaluation.score([_row(1), _row(2, ABSTAINED, seconds=3.0)], questions=3)
-    lines = report.render_eval("gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, result)
+    lines = report.render_eval(
+        "gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, result, {}
+    )
     rates = (
         "invalid outputs",
         "timed out",
@@ -519,6 +571,7 @@ def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
         "questions dropped (gold not embedded or ineligible)",
         "questions scored",
         *(f"{r}{suffix}" for r in rates for suffix in ("", " rate", " rate 95% interval")),
+        *(f"invalid outputs, {reason}" for reason in INVALID_REASONS),
         "p50 seconds per question",
         "p95 seconds per question",
         "p50 prompt tokens",
@@ -532,7 +585,7 @@ def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
     assert "timed out rate 95% interval: [0.000, 0.658]" in lines
     counted = evaluation.score([_row(1, tokens=4321)], questions=1)
     again = report.render_eval(
-        "gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, counted
+        "gcw_dev", "synthetic", MODEL_ID, VERSION, "vector", VERSION, counted, {}
     )
     assert "p50 prompt tokens: 4321" in again and "max prompt tokens: 4321" in again
 
@@ -540,11 +593,12 @@ def test_the_answer_eval_lines_are_the_fixed_ones() -> None:
 def test_the_ask_summary_lines_are_the_fixed_ones() -> None:
     counts = {ANSWERED: 2, ABSTAINED: 1, INVALID: 0, TIMED_OUT: 1}
     timings, tokens = Timings([1.0, 2.0, 4.0, 600.0]), [900, 100, 500]
-    assert report.render_ask(counts, timings, tokens) == [
+    assert report.render_ask(counts, timings, tokens, {}) == [
         "questions asked: 4",
         "answered: 2",
         "abstained: 1",
         "invalid outputs: 0",
+        *(f"invalid outputs, {reason}: 0" for reason in INVALID_REASONS),
         "timed out: 1",
         "p50 seconds per question: 2.000",
         "p95 seconds per question: 600.000",
@@ -552,9 +606,9 @@ def test_the_ask_summary_lines_are_the_fixed_ones() -> None:
         "p95 prompt tokens: 900",
         "ask: ok",
     ]
-    empty = report.render_ask(dict.fromkeys(OUTCOMES, 0), Timings([]), [])
-    assert empty[5] == "p50 seconds per question: n/a"
-    assert empty[7] == "p50 prompt tokens: n/a"
+    empty = report.render_ask(dict.fromkeys(OUTCOMES, 0), Timings([]), [], {})
+    assert "p50 seconds per question: n/a" in empty
+    assert "p50 prompt tokens: n/a" in empty
     with pytest.raises(ShapeError):
         check_lines([SENTINEL] * len(report.ASK_SHAPES), report.ASK_SHAPES)
 
@@ -611,7 +665,7 @@ def _answers(question: str) -> Answer:
         return Answer(ABSTAINED, "", sources, (), 200, 9)
     if question == "late":
         return Answer(TIMED_OUT, "", sources, ())
-    return Answer(INVALID, "", sources, ())
+    return Answer(INVALID, "", sources, (), invalid_reason=NO_CITATIONS)
 
 
 @pytest.mark.parametrize("end", ["", "   ", None, KeyboardInterrupt()])
@@ -629,6 +683,7 @@ def test_the_loop_ends_on_a_blank_line_end_of_input_or_ctrl_c(
         "answered: 1",
         "abstained: 1",
         "invalid outputs: 1",
+        *(f"invalid outputs, {r}: {int(r == NO_CITATIONS)}" for r in INVALID_REASONS),
         "timed out: 1",
         "p50 seconds per question: 2.000",
         "p95 seconds per question: 600.000",

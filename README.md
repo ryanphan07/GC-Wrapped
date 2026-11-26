@@ -59,6 +59,8 @@ Business logic lives in the `gcwrapped` Python package. Airflow tasks only call 
 
 `make eval-all` runs the retrieval and answer evals and comparisons in order and stops at the first failure; on real data it also promotes the winners (D122).
 
+**Clean runs only.** Every retrieval and answer eval pass reads the host's memory, prints available memory and swap in use at its start and end, and refuses to start, or fails and stores nothing, when swap use crosses the fixed limits, so `eval-all` stops before any comparison or promotion and the whole run is repeated. Each answer eval pass starts a new model server. `answer-eval` and `ask` also count invalid outputs per fixed reason, as a diagnostic only (D126).
+
 ## RAG
 
 - **Message windows.** Each eligible message gets one vector, computed from that message plus its eligible neighbors in the same thread and conversation session, one `sender: text` line each (D103). Short replies carry little meaning alone, and one vector per message keeps eval gold and citations at message level. A local Qwen3 embedding model produces the vectors, stored in pgvector and searched exactly, with no approximate index.
@@ -73,6 +75,8 @@ Business logic lives in the `gcwrapped` Python package. Airflow tasks only call 
 - **Thread allowlist.** Ingestion is deny by default. It loads only thread IDs listed in `GCW_THREAD_ALLOWLIST`, fails if the list is empty, and has no bypass. Threads are selected by folder name before any file inside is opened. The format survey tools (`make inspect`, `make parse-check`) are the exception: they read a whole export, print aggregates and store nothing.
 - **Per-sender consent ledger.** A CSV outside the repo holds one row per thread and sender: `yes` (local work, and redacted external calls), `local` (this machine only), `no` or blank. Blank or missing means no (D69, D88). One dbt view, `fct_message_eligibility`, is the single definition, and it gates labeling, tagging, embeddings, answers and Wrapped cards. It does not gate the Activity marts: message counts, reply times, reaction emoji and member names there cover every sender in an allowlisted thread.
 - **Local models only.** The llama.cpp services publish on `127.0.0.1`. The client accepts only local hosts and compose service names, ignores proxy settings and follows no redirect.
+- **No cached prompts exposed.** Both services run with the slots endpoint disabled, so nothing on the machine can ask a server for the prompt it last processed.
+- **The expected model, one stack at a time.** Before a command or the Ask page sends text to a server, it checks that the server reports the expected model. Commands that start or use the model services refuse while another GC Wrapped stack's model containers are running, judged from container names and compose-project labels only. The Ask page and the Airflow tag task run inside their own stack's network, so they make the model check only (D126).
 - **Redaction gate before any hosted API.** `gcwrapped.redaction` is the only allowed route for message text to leave the machine: member names become pseudonyms, identifiers such as phone numbers, emails and URLs become placeholders, and a pinned spaCy model looks for other names (D70, D77). The quality gate that name detection must pass before a hosted provider is enabled is not built (D76, D84), so no message text is sent anywhere and the hosted provider is a stub that always raises. Known gap: nicknames and misspellings outside the member directory can slip through. `make redaction-audit` redacts every ingested message in memory and prints counts only.
 - **Fixed-line outputs.** The ingestion, eval, consent and maintenance commands print counts and fixed labels, never message text or sender names, and an unhandled `gcw` error prints its exception type only. A real-data pipeline run goes through `make real-ingest`, which writes the full output to a private log and prints only lines that match fixed patterns. The places that show chat text do so on purpose and on the local screen: the labeling tools, `make ask`, `make grade-answers` and the Ask page. Generated answers are not stored (D112).
 - **Sentinel-leak tests.** Tests plant marker strings in synthetic names and messages and fail if one appears in a command's output.
@@ -140,7 +144,7 @@ Terminal questions and evals (try questions from `tests/fixtures/eval/questions.
 
 ```
 make ask SYNTHETIC=1            # interactive; a blank line ends it
-make eval-all SYNTHETIC=1       # retrieval and answer evals and comparisons; promotes nothing
+make eval-all SYNTHETIC=1       # retrieval and answer evals and comparisons; promotes nothing, needs little swap in use
 make grade-answers SYNTHETIC=1  # optional hand grading
 make grade-summary SYNTHETIC=1
 make tag-eval MODEL=qwen3.5-4b-q4_k_m SYNTHETIC=1
@@ -169,10 +173,12 @@ Real data gets its own compose project, with its own containers, Postgres volume
 - `COMPOSE_PROJECT_NAME=gc-wrapped-real` and `GCW_DB_NAME=gcw_real`
 - its own `POSTGRES_USER`, `POSTGRES_PASSWORD` and `GCW_READER_PASSWORD`
 - `POSTGRES_HOST_PORT` and `DASHBOARD_PORT` that differ from the dev stack's (`make real-ingest` requires this), with `POSTGRES_PORT` equal to the former
-- `GCW_LLM_PORT` and `GCW_EMBED_PORT`, different from the dev stack's if both stacks run at once
+- `GCW_LLM_PORT` and `GCW_EMBED_PORT`, different from the dev stack's, so neither stack's client can reach the other's server
 - `GCW_LANDING_HOST_DIR`: an absolute path to a folder with one subfolder per export
 - `GCW_THREAD_ALLOWLIST`: the thread IDs you have consent to ingest
 - `GCW_LOG_DIR`, `GCW_CONSENT_LEDGER` and `GCW_LABEL_DIR`: paths outside the repo for the private run log, the ledger, and labels and eval files
+
+Only one stack's model servers may run at a time: run `make down` for the dev stack before the real model, eval or dashboard commands, and the reverse afterwards. Run the evals on an otherwise idle machine; if a pass is refused or fails on memory, free memory (restarting the machine or WSL clears swap) and repeat the whole `make eval-all`.
 
 Run these in your own terminal, never through a coding assistant:
 

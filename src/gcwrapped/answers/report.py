@@ -14,7 +14,13 @@ from collections.abc import Mapping, Sequence
 from gcwrapped.answers.comparison import CompareResult
 from gcwrapped.answers.evaluation import EvalResult, Rate
 from gcwrapped.answers.grades import Summary
-from gcwrapped.answers.pipeline import ABSTAINED, ANSWERED, INVALID, TIMED_OUT
+from gcwrapped.answers.pipeline import (
+    ABSTAINED,
+    ANSWERED,
+    INVALID,
+    INVALID_REASONS,
+    TIMED_OUT,
+)
 from gcwrapped.answers.prompt import VARIANTS
 from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.retrieval import report as retrieval_report
@@ -42,6 +48,8 @@ _RATES = (
     "citation hit",
 )
 
+_REASON_SHAPES = tuple(rf"invalid outputs, {re.escape(reason)}: \d+" for reason in INVALID_REASONS)
+
 EVAL_SHAPES = (
     rf"target database: ({_DATABASES})",
     r"questions source: (synthetic|real)",
@@ -62,6 +70,7 @@ EVAL_SHAPES = (
             rf"{name} rate 95% interval: {_INTERVAL}",
         )
     ),
+    *_REASON_SHAPES,
     rf"p50 seconds per question: {_NUM}",
     rf"p95 seconds per question: {_NUM}",
     rf"p50 prompt tokens: {_TOKENS}",
@@ -75,6 +84,7 @@ ASK_SHAPES = (
     r"answered: \d+",
     r"abstained: \d+",
     r"invalid outputs: \d+",
+    *_REASON_SHAPES,
     r"timed out: \d+",
     rf"p50 seconds per question: {_MAYBE}",
     rf"p95 seconds per question: {_MAYBE}",
@@ -147,7 +157,7 @@ COMMANDS = (
 )
 STEPS = (
     "count|variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|"
-    "corpus|grades|answering|scoring|predictions|verdict|promote|render"
+    "corpus|grades|memory|answering|scoring|predictions|verdict|promote|render"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 
@@ -165,6 +175,11 @@ def _tokens(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.0f}"
 
 
+def _reason_lines(reasons: Mapping[str, int]) -> list[str]:
+    """Every reason of the closed list, zeros included (D126)."""
+    return [f"invalid outputs, {name}: {reasons.get(name, 0)}" for name in INVALID_REASONS]
+
+
 def render_eval(
     database: str,
     source: str,
@@ -173,6 +188,7 @@ def render_eval(
     method: str,
     embed_version: str,
     result: EvalResult,
+    reasons: Mapping[str, int],
 ) -> list[str]:
     rates = (
         result.invalid,
@@ -198,6 +214,7 @@ def render_eval(
             for name, rate in zip(_RATES, rates, strict=True)
             for line in _rate_lines(name, rate)
         ),
+        *_reason_lines(reasons),
         f"p50 seconds per question: {result.p50:.3f}",
         f"p95 seconds per question: {result.p95:.3f}",
         f"p50 prompt tokens: {_tokens(result.prompt_tokens_p50)}",
@@ -217,9 +234,13 @@ def answer_line(sources: int, prompt_tokens: int | None, seconds: float) -> str:
 
 
 def render_ask(
-    counts: Mapping[str, int], timings: Timings, prompt_tokens: Sequence[int]
+    counts: Mapping[str, int],
+    timings: Timings,
+    prompt_tokens: Sequence[int],
+    reasons: Mapping[str, int],
 ) -> list[str]:
-    """The summary. `counts` is per outcome; `prompt_tokens` holds the reported counts only."""
+    """The summary. `counts` is per outcome, `reasons` per invalid reason; `prompt_tokens` holds
+    the reported counts only."""
 
     def seconds(percent: int) -> str:
         value = timings.percentile(percent)
@@ -230,6 +251,7 @@ def render_ask(
         f"answered: {counts[ANSWERED]}",
         f"abstained: {counts[ABSTAINED]}",
         f"invalid outputs: {counts[INVALID]}",
+        *_reason_lines(reasons),
         f"timed out: {counts[TIMED_OUT]}",
         f"p50 seconds per question: {seconds(50)}",
         f"p95 seconds per question: {seconds(95)}",

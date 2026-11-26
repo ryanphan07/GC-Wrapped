@@ -109,6 +109,12 @@ class LabelSettings(_HostSettings):
     gcw_label_dir: str = ""
 
 
+class ComposeSettings(_HostSettings):
+    """The compose project this run's env file names; empty means the compose file's own `name:`."""
+
+    compose_project_name: str = ""
+
+
 class TaggingSettings(_HostSettings):
     """Where the local llama.cpp server is (D89) and where the model file lives (D90).
 
