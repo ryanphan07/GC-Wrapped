@@ -1,40 +1,40 @@
 # Status
-Last session: 2026-11-25 — Trustworthy real eval runs: served-model check, stack isolation, memory guard, invalid reasons (D126, synthetic)
+Last session: 2026-11-26 — Least-privilege Ask role (gcw_ask, D127) and consent-gated Activity marts (D128, D129; synthetic)
 
 ## Phase & state
-Phase 3: everything the burst needs is built (D119-D126). This session's synthetic acceptance run did NOT pass: the new guard refused it (swap). What is left is that run, then Ryan's real runs and review.
-embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x synthetic] hand grading [x synthetic] Ask + Wrapped [x] README [x] eval guards [x built] real questions [ ] real evals [ ] real grades [ ] METRICS rows [ ] deploy, usage window (later, D119)
+Phase 3: everything the burst needs is built (D119-D129). What is left: the synthetic eval run under the D126 guard, then Ryan's real runs and review.
+embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x synthetic] hand grading [x synthetic] Ask + Wrapped [x] README [x] eval guards [x built] gcw_ask + gated Activity [x] real questions [ ] real evals [ ] real grades [ ] METRICS rows [ ] deploy, usage window (later, D119)
 
 ## Done this session
-- gcwrapped/: tagging/llamacpp.py `require_served_model` (tag, tag-eval, embed, retrieval-eval, answer-eval, ask, grade-answers, dashboard-up, each Ask page question). docker.py `require_no_other_stack`. New memory.py (retrieval-eval, answer-eval). start_llm `fresh` (answer-eval). answers/ nine invalid reasons, printed by answer-eval and ask. config.py ComposeSettings.
-- tests/: new served-model, stack-isolation, memory-guard and eval-guard integration tests; stubs answer /v1/models; conftest.py fakes meminfo and docker ps for every test; local-server served-model tests.
-- README, CLAUDE.md (real-container privacy rule, command lines), .env.example and compose comments; deleted docs/images/dashboard-synthetic.png; METRICS rows for a22d573; D126.
-- Resolved: wrong server on a taken port; Ask page and `tag --no-start` not checking the model; A/B p95 under memory pressure (D126); D119 wording (D126); unreferenced screenshot; last session's unrun synthetic steps (Ryan, below).
+- migrations/009_ask_role.sql, gcwrapped/dashboard/ask_role.py (new): the role, its grants, password checks. services.py runs it (steps "ask password", "ask role"); ask.py connects as gcw_ask; config.py AskSettings, PasswordSettings.
+- dbt/: new fct_consented_messages; agg_activity_daily, agg_member_activity, fct_sessions read it; reader grant removed from fct_messages, dim_members, fct_reactions; gcw_ask grants; singular test reader_relations_are_consented; 4 unit tests. Dashboard: queries and Activity page read opted-in rows and say so. docker-compose.yml: no pipeline credentials in the dashboard service. .env.example, CI env files: GCW_ASK_PASSWORD.
+- CI: gcw_ask permission and container checks; opted-in totals; flipped sender absent from all 7 reader relations after a rebuild; integration job loads consent and rebuilds before the warehouse tests. The reader's `fct_messages` > 0 check became denial checks (D128). tests/: ask_permissions.py (new), gcw_ask, password-leak, compose, config and warehouse tests; migration list. README, CLAUDE.md, D127-D129.
+- Resolved: Ask page database credentials (D127); Activity marts counting non-consented senders (D128).
 
 ## Deviations from brief
-- Model identity: the pinned server's /v1/models `data[].id` is the --alias, not the file name. Expected, as the only entry: llm = the registry id start_llm passes as GCW_LLM_MODEL_ALIAS; embed = the compose alias qwen3-embedding-0.6b-q8_0.
-- Task 5: both services already had --no-slots (D89, D102) with static and local-server tests; compose flags unchanged. Pinned --help confirms `--slots, --no-slots` (default enabled).
-- A server that is not listening now fails "at model (ProviderUnavailable)" (was answering, embedding or tagging); tests updated. Where there is no docker binary (Airflow tag task, dashboard) the other-stack check does nothing; the Ask page makes the model check only. Compare and promote commands use no model service and check neither.
-- Acceptance `make eval-all SYNTHETIC=1` not met (below). B's invalid-reason counts not measured.
+- New table fct_consented_messages (not named in the brief): the page's hour chart and median reply need per-message rows. fct_sessions lists only sessions with an opted-in message; started_by_member_key can be null (not_null test dropped); the session relationship test moved from fct_messages to the new table (D129).
+- People who reacted but never sent a message are no longer listed or counted. If the real chat has any, real numbers change, against the brief's "do not change".
+- Added: migration 009; TEMPORARY and large-object creation revoked from PUBLIC in the target database; only a SCRAM verifier is sent to the server; D129. CI's "after dbt-build" check builds through `make e2e`.
+- The auto mode check denied one scripted multi-file test edit; the same additions were then made file by file with the Edit tool. No guard or isolation test was touched.
 
-## Checks
-- Ryan, 2026-11-25, on a22d573 after a WSL restart with swap empty: `make eval-all SYNTHETIC=1` all 7 steps ok; `printf cycycycycy | make grade-answers SYNTHETIC=1 N=5` and `make grade-summary SYNTHETIC=1` ok; `make test-integration` with llm and embed up 271 passed, 0 skipped. answer-compare winner a (citation hit and failure conditions not met; B had 1 invalid output of 31).
-- a22d573, this session: make test 1086 passed; dbt build PASS=215; dbt ls counts in METRICS.md.
-- Branch: make lint pass; make test 1154 passed, 295 deselected; make test-warehouse 22 passed; make dbt-build PASS=215 WARN=0 ERROR=0 TOTAL=215. make test-integration, llm and embed up: third run 295 passed, 0 skipped. Runs 1 and 2 had 294 passed, 1 failed each (test_load_run_duration_covers_the_parse..., test_tag_promote_sets_the_one_row...); each passed alone; dmesg shows "Time jumped backwards" during the runs.
-- `make eval-all SYNTHETIC=1`, 2 attempts: embed ok (223 eligible, 0 embedded), then `retrieval-eval: failed at memory (SwapInUse)`: swap in use at start 296 MiB, then 325 MiB; available 7848, 7882 MiB.
-- Dev smoke: `make ask SYNTHETIC=1`, 1 question: answered, all invalid reasons 0, 581 prompt tokens, 20.896 s. Real docker: plain start_llm kept the container, fresh replaced it. GET /slots 501 on 8081 and 8082. CI (PR #52, commit before this line; runs 45730191629, 45730215782): 14 checks pass; unit 1154 passed, 1 skipped; integration 290 passed, 5 skipped (local server tests); warehouse 22; dbt PASS=215; eval-gate topic 0.683, sentiment 0.733 (same as main run 45721378563); retrieval-gate passed under the guard (swap 0 MiB at start and end), recall@5 0.968 (floor 0.85). No floor changed.
+## Checks (this session, dev stack, synthetic)
+- make lint pass; make test 1166 passed, 307 deselected.
+- make test-integration, llm and embed up: 307 passed, 0 skipped (the run before the migration-list fix: 2 failed, 305 passed). Step names then moved to answers/commands.py; Ask, eval-guard and migrate files rerun: 52 passed.
+- make test-warehouse 28 passed; dbt build PASS=225 WARN=0 ERROR=0 TOTAL=225. Two leaks planted in gcw_dev marts: the singular test failed (4 rows); rebuilt clean.
+- Acceptance: make e2e, consent-load, dbt-build, dashboard-up ok. Pages run with AppTest inside the dashboard container: no POSTGRES_USER/PASSWORD or DATABASE_URL; connects as gcw_ask; one synthetic question answered with 1 citation; Activity and Wrapped no errors; /, /wrapped, /ask, health 200. CI (PR #53, 1dde843; runs 45815558724, 45815587279): 14 checks pass on the first attempt; unit 1166 passed, 1 skipped; integration 302 passed, 5 skipped (local server tests); warehouse 28; dbt PASS=225; eval-gate topic 0.650, sentiment 0.750 (see Open issues); retrieval-gate recall@5 0.968 (floor 0.85), swap 0 MiB at start and end. No floor changed.
 
 ## Not verified
-- After `wsl --shutdown`: `make eval-all SYNTHETIC=1` should print memory lines for four passes and end `answer-compare: ok`; note B's invalid-reason counts. Under the guard with a real model, only CI's retrieval pass has run; no answer-eval pass has. README quickstart not run from a fresh clone; Mermaid not rendered; grading keys never pressed by hand.
-- Real data (Ryan), dev stack down, in order: eval-all, grade-answers, grade-summary, real-ingest, dashboard-up.
+- Real data (Ryan), dev stack down, in order: eval-all, grade-answers, grade-summary, real-ingest, dashboard-up. real-ingest must precede dashboard-up now: until that rebuild Activity reads a missing table and the old reader grants remain.
+- Add GCW_ASK_PASSWORD to the dev .env (a throwaway was passed in the process environment; tests reset the dev cluster's gcw_ask password, dashboard-up sets it again). No browser check; docs/img/dashboard.png predates D128.
+- After `wsl --shutdown`: `make eval-all SYNTHETIC=1` under the D126 guard (no answer-eval pass has run under it with a real model); README quickstart from a fresh clone; Mermaid render; grading keys by hand.
 
 ## Open issues and questions
-- Planning: with the stack down, swap stayed over 256 MiB here (about 7.8 GiB available), and it rose during integration runs with models up (to 594 MiB). Expect a WSL restart before each eval-all; a long real pass may trip SwapGrew. Limits not tuned (D126).
-- WSL clock steps backwards. Latest verdict is chosen by wall-clock file name (tagging/evaluation.py:331, retrieval/evaluation.py:429, answers/comparison.py:192), so a step between two verdicts could make promote read the older one.
-- A refused or failed pass stores nothing, so its earlier stored run stays: after a failed eval-all, do not run a compare by hand. Other-stack and swap checks are point checks: a stack started mid-run, or swap that rises and falls inside a pass, is not seen. Model identity is the alias only.
-- Planning: Activity marts include non-consented senders, against CLAUDE.md "excluded from everything"; Wrapped reply time uses others' timestamps (D125); consent_priorities.csv is never pruned. Do not promote or re-ingest between grading sessions; a reworded question keeps its grade. Revocation plus consent-prune removes stored eval and grade rows: rerun evals. A prompt near the token worst case would likely exceed the 600 s timeout.
-- tests/synthetic/instagram.py:297 "call ended" does not match dbt/seeds/instagram_placeholder_patterns.csv:11, so synthetic calls count as user text.
-- Carried: Read(./data/**) does not cover Bash (`cat data/...`, or `grep -r` from the root: one such command was blocked this session before it ran); P2-5c items; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic slow; label files of a purged thread stay; metrics.py external-eligible only; Qwen3.5-4B slower than D90's model; test_llm_server_local fails if llm serves another model; PR 47 chores.
+- Planning: gcw_ask can read all of raw.messages (and unpruned vectors), non-consented senders included, because answering does; consent rests on the query. A consented view or row-level security would close it.
+- Gaps in session_id/session_index show that sessions with no opted-in message exist; reply times use others' timestamps (D125). gcw_ask keeps PUBLIC rights in the cluster's other databases and can change its own password and settings until the next dashboard-up.
+- The dashboard container logs an "External URL" at start: Streamlit probably asks an outside service for the public IP (not verified); predates this session. Run order matters: test_migrate_integration before test_dashboard_ask_integration fails ..._written_logged_and_kept_nowhere (a log handler on a closed stream); default order passes; not checked on main. The CI tag-eval gate gives topic 0.683 / sentiment 0.733 or 0.650 / 0.750, both on one commit too (926ea50, runs 45576711833, 45576729096); both clear the floors.
+- Swap often exceeds 256 MiB here: expect a WSL restart per eval-all (D126). WSL clock steps backwards and the latest verdict is by file name (tagging/evaluation.py:331, retrieval/evaluation.py:429, answers/comparison.py:192). After a failed eval-all do not compare by hand; swap and other-stack checks are point checks.
+- consent_priorities.csv is never pruned. No promote or re-ingest between grading sessions; a reworded question keeps its grade; revocation plus consent-prune removes eval and grade rows. A worst-case prompt would likely exceed 600 s. tests/synthetic/instagram.py:297 "call ended" misses dbt/seeds/instagram_placeholder_patterns.csv:11.
+- Carried: Read(./data/**) does not cover Bash; P2-5c items; stop-word over-redaction (D82); isolation_guard multi-host URLs; real-ingest-synthetic slow; label files of a purged thread stay; metrics.py external-eligible only; Qwen3.5-4B slower than D90's model; test_llm_server_local fails if llm serves another model; PR 47 chores.
 
 ## Suggested next session
-Ryan: restart WSL, run the synthetic eval-all, then the real batch. Next brief: Ask page database credentials and Activity marts.
+Ryan: restart WSL, run the synthetic eval-all, then the real batch. Next brief: S9 wrap-up (or the gcw_ask message filter, if planning wants it).

@@ -9,7 +9,7 @@ from functools import lru_cache
 from typing import Any
 
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_HOST = "localhost"
@@ -179,6 +179,48 @@ class DashboardSettings(_HostSettings):
             dbname=self.gcw_db_name,
         )
         return self
+
+
+class AskSettings(_HostSettings):
+    """The Ask page's connection (D127): the gcw_ask role, never the pipeline's credentials."""
+
+    gcw_db_name: str
+    gcw_ask_password: SecretStr = Field(min_length=1)
+    postgres_host: str = DEFAULT_HOST
+    postgres_port: int = 5432
+
+    def ask_database_url(self) -> str:
+        """Never log it: it contains the password."""
+        return resolve_url(
+            SecretStr(""),
+            user="gcw_ask",
+            password=self.gcw_ask_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            dbname=self.gcw_db_name,
+        ).get_secret_value()
+
+
+class PasswordSettings(_HostSettings):
+    """Every password the env file holds, so that gcw_ask's can be required to be its own
+    (D127). Empty means unset."""
+
+    gcw_ask_password: SecretStr = SecretStr("")
+    postgres_password: SecretStr = SecretStr("")
+    gcw_reader_password: SecretStr = SecretStr("")
+    database_url: SecretStr = SecretStr("")
+    dashboard_database_url: SecretStr = SecretStr("")
+
+    def other_passwords(self) -> frozenset[str]:
+        """The passwords of every other role, those inside the two optional URLs included."""
+        found = {
+            self.postgres_password.get_secret_value(),
+            self.gcw_reader_password.get_secret_value(),
+        }
+        for url in (self.database_url, self.dashboard_database_url):
+            if url.get_secret_value():
+                found.add(str(conninfo_to_dict(url.get_secret_value()).get("password") or ""))
+        return frozenset(found - {""})
 
 
 @lru_cache

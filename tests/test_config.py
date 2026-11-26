@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from gcwrapped.config import (
+    AskSettings,
     DashboardSettings,
     DatabaseSettings,
     Settings,
@@ -138,6 +139,28 @@ def test_dashboard_url_naming_another_database_fails_fast(monkeypatch: pytest.Mo
 
     with pytest.raises(ValidationError):
         DashboardSettings(_env_file=None)
+
+
+def test_the_ask_url_is_gcw_asks_on_the_same_database_and_needs_no_pipeline_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _db_env(monkeypatch, "gcw_real")
+    for name in ("POSTGRES_USER", "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "ap")
+
+    url = AskSettings(_env_file=None).ask_database_url()
+
+    assert database_name(url) == "gcw_real"
+    assert "user=gcw_ask" in url and "password=ap" in url and "host=db" in url
+
+
+def test_an_empty_ask_password_is_no_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    _db_env(monkeypatch, "gcw_dev")
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "")
+
+    with pytest.raises(ValidationError):
+        AskSettings(_env_file=None)
 
 
 def test_dbt_profile_reads_the_same_variable_with_no_default() -> None:

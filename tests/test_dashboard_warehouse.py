@@ -1,7 +1,9 @@
 """Dashboard tests against the built warehouse (synthetic data only).
 
-These need gcw_dev after `gcw migrate`, `gcw ingest` and `dbt build`, and the gcw_reader role, so
-they carry the `warehouse` marker instead of `integration` (which runs before dbt in CI).
+These need gcw_dev after `gcw migrate`, `gcw ingest`, `dbt build`, `gcw consent-load` and a second
+`dbt build` (the reader-visible marts hold opted-in senders only, D128), the gcw_reader role and
+GCW_ASK_PASSWORD, so they carry the `warehouse` marker instead of `integration` (which runs before
+dbt in CI).
 """
 
 import tomllib
@@ -13,8 +15,10 @@ import streamlit as st
 from psycopg import errors
 from streamlit.testing.v1 import AppTest
 
+from ask_permissions import assert_reads_only_the_listed_relations, assert_writes_nothing
 from gcwrapped.config import get_dashboard_settings
-from gcwrapped.dashboard import queries
+from gcwrapped.dashboard import ask, ask_role, queries
+from gcwrapped.db import database_url
 
 pytestmark = pytest.mark.warehouse
 
@@ -32,7 +36,7 @@ def reader_url() -> str:
 @pytest.fixture(scope="module")
 def thread_id(reader_url: str) -> str:
     threads = queries.list_threads(reader_url)
-    assert not threads.empty, "run ingest and dbt build before the warehouse tests"
+    assert not threads.empty, "run ingest, dbt build, consent-load and dbt build first"
     return str(threads["thread_id"].iloc[0])
 
 
@@ -140,9 +144,65 @@ def test_no_staging_relation_lives_in_analytics(reader_url: str) -> None:
 
 def test_reader_can_read_marts(reader_url: str) -> None:
     with psycopg.connect(reader_url) as conn:
-        row = conn.execute("SELECT count(*) FROM analytics.fct_messages").fetchone()
+        row = conn.execute("SELECT count(*) FROM analytics.fct_consented_messages").fetchone()
     assert row is not None
     assert row[0] > 0
+
+
+# D128: each of these is checked by dbt/tests/reader_relations_are_consented.sql (the tag
+# aggregates through fct_message_tags). A new reader grant needs its check there and its name here.
+READER_RELATIONS = {
+    "analytics.agg_activity_daily",
+    "analytics.agg_member_activity",
+    "analytics.agg_tags_by_sender",
+    "analytics.agg_tags_by_thread",
+    "analytics.fct_consented_messages",
+    "analytics.fct_sessions",
+    "analytics.mart_member_wrapped",
+}
+
+
+def test_the_reader_can_read_exactly_the_consent_gated_relations(reader_url: str) -> None:
+    with psycopg.connect(reader_url) as conn:
+        rows = conn.execute(
+            "SELECT n.nspname || '.' || c.relname FROM pg_class AS c "
+            "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+            "WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f') "
+            "AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+            "AND has_any_column_privilege(c.oid, 'SELECT')"
+        ).fetchall()
+    assert {name for (name,) in rows} == READER_RELATIONS
+
+
+@pytest.mark.parametrize("relation", ["fct_messages", "dim_members", "fct_reactions"])
+def test_the_reader_is_denied_the_relations_that_hold_every_sender(
+    reader_url: str, relation: str
+) -> None:
+    denied = f"permission denied for table {relation}"
+    with (
+        psycopg.connect(reader_url) as conn,
+        pytest.raises(errors.InsufficientPrivilege, match=denied),
+    ):
+        conn.execute(f"SELECT 1 FROM analytics.{relation} LIMIT 1")
+
+
+def test_a_dbt_build_alone_grants_gcw_ask_its_dbt_relations() -> None:
+    # In CI nothing else has granted anything in gcw_dev when this runs: these grants are dbt's.
+    with psycopg.connect(database_url()) as conn:
+        for relation in ask_role.RELATIONS:
+            if relation.startswith("analytics."):
+                row = conn.execute(
+                    "SELECT has_table_privilege('gcw_ask', %s, 'SELECT'), "
+                    "has_schema_privilege('gcw_ask', 'analytics', 'USAGE')",
+                    (relation,),
+                ).fetchone()
+                assert row == (True, True), relation
+
+
+def test_gcw_ask_on_the_built_warehouse_reads_the_listed_relations_and_writes_nothing() -> None:
+    ask_role.ensure(database_url(), ask_role.require_password())
+    assert_reads_only_the_listed_relations(database_url(), ask.database_url())
+    assert_writes_nothing(database_url(), ask.database_url())
 
 
 def test_reader_reads_the_wrapped_mart(reader_url: str) -> None:

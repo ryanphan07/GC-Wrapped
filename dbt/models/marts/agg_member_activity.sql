@@ -1,8 +1,9 @@
--- One row per member. Reaction counts exclude self-reactions. Reply stats are attributed to the
--- member who replied (the sender of the turn's first message).
+-- One row per opted-in sender (D128). Reaction counts exclude self-reactions and count a reaction
+-- only when both the reactor and the reacted-to message's sender have opted in. Reply stats are
+-- attributed to the member who replied (the sender of the turn's first message).
 with messages as (
 
-    select * from {{ ref('fct_messages') }}
+    select * from {{ ref('fct_consented_messages') }}
 
 ),
 
@@ -10,6 +11,8 @@ reactions as (
 
     select * from {{ ref('fct_reactions') }}
     where not is_self_reaction
+        and message_key in (select message_key from messages)
+        and reactor_member_key in (select member_key from messages)
 
 ),
 
@@ -100,11 +103,11 @@ select
     d.member_key,
     d.thread_id,
     d.member_name,
-    coalesce(s.messages, 0) as messages,
-    coalesce(s.words, 0) as words,
-    coalesce(s.media_messages, 0) as media_messages,
-    coalesce(s.share_messages, 0) as share_messages,
-    coalesce(s.sessions_started, 0) as sessions_started,
+    s.messages,
+    s.words,
+    s.media_messages,
+    s.share_messages,
+    s.sessions_started,
     s.median_reply_seconds,
     s.p90_reply_seconds,
     coalesce(g.reactions_given, 0) as reactions_given,
@@ -113,7 +116,7 @@ select
     tr.emoji as top_reaction_received,
     h.hour_of_day as most_active_hour
 from {{ ref('dim_members') }} as d
-left join message_stats as s using (member_key)
+inner join message_stats as s using (member_key)
 left join most_active_hour as h using (member_key)
 left join reactions_given as g using (member_key)
 left join reactions_received as r using (member_key)

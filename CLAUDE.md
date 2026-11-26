@@ -29,7 +29,7 @@ Not yet in scope: analysis of image/video content, a second platform, any hosted
 - Never commit chat data, media, `.env*`, or `members.yaml`. `data/` stays in `.gitignore`.
 - Ingestion is deny-by-default: it loads only threads whose numeric ID is in `GCW_THREAD_ALLOWLIST` and fails if that is unset or empty. Never add a bypass (no "synthetic mode" switch, no flag, no default that skips it); dev `.env`, `.env.example` and CI list the synthetic thread IDs explicitly.
 - No external API calls from pipeline code. Hosted providers fail closed unless the D76 NER gate (P2-2b) has passed (D84); a local model needs no API call.
-- Every piece of work needs the sender's explicit opt-in in the consent ledger, at two levels (D88): `yes` (local work and redacted external calls) or `local` (this machine only). Local work (labeling, tagging, embeddings, answers, profiles) uses `local_ok` AND `has_user_text` (D95: non-blank and not an Instagram placeholder); no message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages `external_ok` (consent yes, D69). Blank, `no` and missing senders are excluded from everything. Claude Code never reads, creates or edits the real ledger.
+- Every piece of work needs the sender's explicit opt-in in the consent ledger, at two levels (D88): `yes` (local work and redacted external calls) or `local` (this machine only). Local work (labeling, tagging, embeddings, answers, profiles) uses `local_ok` AND `has_user_text` (D95: non-blank and not an Instagram placeholder); no message text leaves the machine except through `gcwrapped.redaction` (D70, D77), and only for messages `external_ok` (consent yes, D69). Blank, `no` and missing senders are excluded from everything: no relation `gcw_reader` can read counts or names them, Activity marts included (D128; sessions and reply times are still shaped by their timestamps, D125), and a new reader grant needs its check in `dbt/tests/reader_relations_are_consented.sql`. The Ask page connects as `gcw_ask`, read-only and granted only what answering reads (D127, `gcwrapped.dashboard.ask_role`). Claude Code never reads, creates or edits the real ledger.
 - The Instagram format spec is `docs/formats/instagram-schema.md`. Build against it, not against assumptions.
 
 ## Stack
@@ -49,7 +49,7 @@ make test-warehouse             # warehouse tests (separate marker)
 make lint                       # ruff + mypy
 make dbt-deps / make dbt-build  # against gcw_dev only
 make airflow-up                  # Airflow UI :8080
-make dashboard-up                # starts db, llm (promoted model), embed and the Streamlit dashboard on 127.0.0.1 (activity, Wrapped and Ask pages, D123). Real-data runs are Ryan's; never ask for what its pages show.
+make dashboard-up                # starts db, llm (promoted model), embed and the Streamlit dashboard on 127.0.0.1 (activity, Wrapped and Ask pages, D123), and creates or updates gcw_ask (D127): needs GCW_ASK_PASSWORD, unlike every other password in the env file, and a built warehouse. Real-data runs are Ryan's; never ask for what its pages show.
 make e2e [ENV_FILE=...]         # one-command end to end
 make consent-template / consent-load  # per-sender consent ledger (GCW_CONSENT_LEDGER): create/extend, then validate + load
 make redaction-audit            # redact all ingested messages in memory, aggregate counts only. You run it only with the default .env; real-data runs are Ryan's.

@@ -1,8 +1,9 @@
 """Typed, parameterized queries behind the dashboard.
 
-Every query reads `analytics.*` mart tables and filters by thread with a bound parameter. The
-connection is the read-only gcw_reader role (DASHBOARD_DATABASE_URL), so even a mistaken query
-could not reach message text: it lives only in raw and staging, which that role cannot read.
+Every query reads `analytics.*` mart tables and filters by thread with a bound parameter. Those
+relations count and name only opted-in senders (D128). The connection is the read-only gcw_reader
+role (DASHBOARD_DATABASE_URL), so even a mistaken query could not reach message text: it lives
+only in raw and staging, which that role cannot read.
 """
 
 from typing import Any
@@ -28,7 +29,7 @@ def _frame(sql: str, params: tuple[object, ...], url: str | None) -> pd.DataFram
 
 
 def list_threads(url: str | None = None) -> pd.DataFrame:
-    """Threads that have activity, busiest first. Columns: thread_id, messages."""
+    """Threads that have opted-in activity, busiest first. Columns: thread_id, messages."""
     return _frame(
         "SELECT thread_id, sum(messages)::bigint AS messages FROM analytics.agg_activity_daily "
         "GROUP BY thread_id ORDER BY messages DESC, thread_id",
@@ -86,7 +87,7 @@ def hour_of_day(thread_id: str, url: str | None = None) -> pd.DataFrame:
     return _frame(
         "SELECT h AS hour_of_day, count(m.message_key) AS messages "
         "FROM generate_series(0, 23) AS h "
-        "LEFT JOIN analytics.fct_messages AS m "
+        "LEFT JOIN analytics.fct_consented_messages AS m "
         "ON m.thread_id = %s AND extract(hour FROM m.sent_at_local)::int = h "
         "GROUP BY h ORDER BY h",
         (thread_id,),
@@ -98,7 +99,7 @@ def median_reply_seconds(thread_id: str, url: str | None = None) -> float | None
     """Median reply time across the thread's replies, or None when there are no replies."""
     frame = _frame(
         "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY reply_seconds) AS median_reply_seconds "
-        "FROM analytics.fct_messages WHERE thread_id = %s",
+        "FROM analytics.fct_consented_messages WHERE thread_id = %s",
         (thread_id,),
         url,
     )

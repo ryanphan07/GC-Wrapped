@@ -14,19 +14,33 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg import errors
 
 pytest.importorskip("streamlit")
 
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from ask_permissions import (
+    assert_reads_only_the_listed_relations,
+    assert_writes_nothing,
+    set_up_gcw_ask,
+)
 from gcwrapped.answers import comparison
 from gcwrapped.answers.prompt import system_prompt
 from gcwrapped.config import get_dashboard_settings
-from gcwrapped.dashboard import ask, queries, wrapped
+from gcwrapped.dashboard import ask, ask_role, queries, services, wrapped
 from gcwrapped.retrieval.embed import run_embed
 from tagging_stub import StubLlm
-from test_answers_integration import REPLY_SENTINEL, _output, _reply, _user, embedded, llm
+from test_answers_integration import (
+    NO_SERVICES,
+    REPLY_SENTINEL,
+    _output,
+    _reply,
+    _user,
+    embedded,
+    llm,
+)
 from test_retrieval_integration import (
     ID,
     SENTINEL,
@@ -44,6 +58,13 @@ pytestmark = pytest.mark.integration
 REPO = Path(__file__).resolve().parents[1]
 VIEWS = REPO / "dashboard" / "views"
 ASKED = f"{SENTINEL}ASKED"
+
+
+@pytest.fixture(autouse=True)
+def _gcw_ask(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every Ask test's warehouse has the role the page connects as (D127)."""
+    if "embedded" in request.fixturenames:
+        set_up_gcw_ask(request.getfixturevalue("embedded"), monkeypatch)
 
 
 def _page(name: str) -> AppTest:
@@ -227,6 +248,70 @@ def test_the_pipeline_here_is_make_asks(embedded: str, llm: StubLlm) -> None:
     found = ask.answer_question("when is the midterm")
     assert found.outcome == "answered" and llm.requests
     assert _reply(llm.requests[0])  # the same stub reply the make ask tests use
+
+
+# --- gcw_ask (D127) ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("relation", ask_role.RELATIONS)
+def test_answering_runs_as_gcw_ask_and_needs_each_relation_it_is_granted(
+    embedded: str, llm: StubLlm, relation: str
+) -> None:
+    assert ask.answer_question("when is the midterm").outcome == "answered"
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        conn.execute(f"REVOKE SELECT ON {relation} FROM gcw_ask")
+    with pytest.raises(errors.InsufficientPrivilege):
+        ask.answer_question("when is the midterm")
+
+
+def test_gcw_ask_reads_the_listed_relations_and_nothing_else(embedded: str) -> None:
+    assert_reads_only_the_listed_relations(embedded, ask.database_url())
+
+
+def test_gcw_ask_cannot_write_even_with_read_only_turned_off(embedded: str) -> None:
+    assert_writes_nothing(embedded, ask.database_url())
+
+
+def test_setting_the_role_up_again_removes_other_grants_and_settings(embedded: str) -> None:
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        conn.execute("GRANT SELECT, DELETE ON raw.sender_consent TO gcw_ask")
+        conn.execute("GRANT CREATE ON SCHEMA raw TO gcw_ask")
+        conn.execute("ALTER ROLE gcw_ask SET default_transaction_read_only = off")
+    ask_role.ensure(embedded, ask_role.require_password())
+    assert_reads_only_the_listed_relations(embedded, ask.database_url())
+    assert_writes_nothing(embedded, ask.database_url())
+
+
+def test_the_password_appears_in_no_output_log_or_page(
+    embedded: str,
+    llm: StubLlm,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    password = f"{SENTINEL}PASSWORD"
+    monkeypatch.setenv("GCW_ASK_PASSWORD", password)
+
+    assert services.run(NO_SERVICES) == 0
+    answered = _ask("when is the midterm")
+    assert not answered.error
+    with psycopg.connect(embedded) as conn:
+        row = conn.execute("SELECT rolpassword FROM pg_authid WHERE rolname = 'gcw_ask'").fetchone()
+    assert row is not None and row[0].startswith("SCRAM-SHA-256$") and password not in row[0]
+
+    monkeypatch.setenv("GCW_ASK_PASSWORD", f"{password}-wrong")
+    refused = _ask("when is the midterm")
+    assert [e.value for e in refused.error] == [ask.UNAVAILABLE]
+    monkeypatch.setenv("GCW_ASK_PASSWORD", password)
+    with psycopg.connect(embedded, autocommit=True) as conn:
+        conn.execute("DROP VIEW analytics.fct_message_text CASCADE")
+    assert services.run(NO_SERVICES) == 1
+
+    out = capfd.readouterr()
+    assert out.out == "dashboard-up: failed at ask role (UndefinedTable)\n"
+    shown = (caplog.text, out.out, out.err, _everything(answered), _everything(refused))
+    assert not any(password in text for text in shown)
 
 
 # --- Wrapped -----------------------------------------------------------------------------------

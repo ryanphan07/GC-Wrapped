@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from ask_permissions import set_up_gcw_ask
 from conftest import meminfo_text
 from embedding_stub import StubEmbed
 from gcwrapped import eval_all, memory
@@ -33,6 +34,13 @@ pytestmark = pytest.mark.integration
 
 LIMIT = 256 * 1024
 Command = Callable[[], int]
+
+
+@pytest.fixture(autouse=True)
+def _gcw_ask(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dashboard-up and the Ask page need their role on the warehouse (D127)."""
+    if "embedded" in request.fixturenames:
+        set_up_gcw_ask(request.getfixturevalue("embedded"), monkeypatch)
 
 
 def _ask_command() -> int:

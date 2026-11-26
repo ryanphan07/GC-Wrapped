@@ -1,0 +1,72 @@
+version: 2
+
+# D128: the Activity marts count and name only opted-in senders, while sessions stay cut over all
+# messages. A and C opted in, B did not. Session s1 is opened by B; s2 holds B's message only.
+unit_tests:
+  - name: consented_messages_are_the_local_ok_rows
+    model: fct_consented_messages
+    given:
+      - input: ref('fct_messages')
+        rows:
+          - {message_key: m1, sender_name: B, session_id: "t1:s1"}
+          - {message_key: m2, sender_name: A, session_id: "t1:s1"}
+      - input: ref('fct_message_eligibility')
+        rows:
+          - {message_key: m1, local_ok: false}
+          - {message_key: m2, local_ok: true}
+    expect:
+      rows:
+        - {message_key: m2, sender_name: A, session_id: "t1:s1"}
+
+  - name: a_session_counts_from_its_first_opted_in_message
+    description: >
+      s1 starts on 1 March with B's message, so it counts on 2 March, the day of A's first message
+      in it. Nothing of B's is counted.
+    model: agg_activity_daily
+    given:
+      - input: ref('fct_consented_messages')
+        rows:
+          - {message_key: m2, thread_id: t1, member_key: kA, session_id: "t1:s1", sent_at: "2026-03-02 00:10:00", sent_at_local: "2026-03-02 00:10:00"}
+          - {message_key: m3, thread_id: t1, member_key: kC, session_id: "t1:s1", sent_at: "2026-03-02 00:20:00", sent_at_local: "2026-03-02 00:20:00"}
+          - {message_key: m5, thread_id: t1, member_key: kA, session_id: "t1:s3", sent_at: "2026-03-04 10:00:00", sent_at_local: "2026-03-04 10:00:00"}
+    expect:
+      rows:
+        - {thread_id: t1, activity_date: "2026-03-02", messages: 2, active_members: 2, sessions_started: 1}
+        - {thread_id: t1, activity_date: "2026-03-04", messages: 1, active_members: 1, sessions_started: 1}
+
+  - name: a_session_another_sender_opened_has_no_starter
+    model: fct_sessions
+    given:
+      - input: ref('fct_consented_messages')
+        rows:
+          - {message_key: m2, thread_id: t1, member_key: kA, session_id: "t1:s1", session_index: 1, sent_at: "2026-03-02 00:10:00", is_session_start: false, is_turn_start: true}
+          - {message_key: m3, thread_id: t1, member_key: kC, session_id: "t1:s1", session_index: 1, sent_at: "2026-03-02 00:20:00", is_session_start: false, is_turn_start: true}
+    expect:
+      rows:
+        - {session_id: "t1:s1", thread_id: t1, session_index: 1, duration_seconds: 600, message_count: 2, turn_count: 2, participant_count: 2, started_by_member_key: null}
+
+  - name: member_activity_counts_reactions_between_opted_in_senders_only
+    description: >
+      B has no row. A's reaction to B's message and B's reaction to A's message are not counted,
+      nor is a self-reaction; C's reaction to A is.
+    model: agg_member_activity
+    given:
+      - input: ref('dim_members')
+        rows:
+          - {member_key: kA, thread_id: t1, member_name: A}
+          - {member_key: kB, thread_id: t1, member_name: B}
+          - {member_key: kC, thread_id: t1, member_name: C}
+      - input: ref('fct_consented_messages')
+        rows:
+          - {message_key: m2, member_key: kA, word_count: 3, message_type: text, is_session_start: false, reply_seconds: 40, sent_at_local: "2026-03-02 00:10:00"}
+          - {message_key: m3, member_key: kC, word_count: 1, message_type: text, is_session_start: false, reply_seconds: null, sent_at_local: "2026-03-02 01:20:00"}
+      - input: ref('fct_reactions')
+        rows:
+          - {message_key: m1, reactor_member_key: kA, author_member_key: kB, emoji: x, is_self_reaction: false}
+          - {message_key: m2, reactor_member_key: kB, author_member_key: kA, emoji: x, is_self_reaction: false}
+          - {message_key: m2, reactor_member_key: kA, author_member_key: kA, emoji: x, is_self_reaction: true}
+          - {message_key: m2, reactor_member_key: kC, author_member_key: kA, emoji: y, is_self_reaction: false}
+    expect:
+      rows:
+        - {member_key: kA, member_name: A, messages: 1, words: 3, sessions_started: 0, median_reply_seconds: 40, reactions_given: 0, reactions_received: 1, top_reaction_given: null, top_reaction_received: y, most_active_hour: 0}
+        - {member_key: kC, member_name: C, messages: 1, words: 1, sessions_started: 0, median_reply_seconds: null, reactions_given: 1, reactions_received: 0, top_reaction_given: y, top_reaction_received: null, most_active_hour: 1}
