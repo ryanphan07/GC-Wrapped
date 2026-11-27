@@ -16,7 +16,7 @@ embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x synthetic] ha
 - 0ed8713f77b8 not reproducible: last session's script was not committed. Ryan chose one new script run on main and this branch against the same gcw_dev; D134's Verify line still cites the old hash.
 - Looking for that script, listed file names in earlier sessions' scratchpads under /tmp, outside the repo; opened none.
 - CI also gained the above-0 assertion before the flip, so the zero after it is not vacuous.
-- git switch -c was once chained after make lint test (rule: git steps run alone). Auto mode gave "no verdict" on one read-only command; reissued unchanged, as its notice said.
+- git switch -c was once chained after make lint test (rule: git steps run alone). Auto mode gave "no verdict" on a read-only command, the commit, the push and the PR body write; each was reissued unchanged, as its notice said.
 
 ## Checks (this session, dev stack, synthetic)
 - make lint pass; make test 1168 passed, 307 deselected. make test-integration (llm and embed up) 307 passed. make test-warehouse 31 passed. make dbt-build PASS=239 WARN=0 ERROR=0 TOTAL=239.
