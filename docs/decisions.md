@@ -824,3 +824,9 @@ Decision: D134's identity record is 03420715f321, not the 0ed8713f77b8 its Verif
 Alternative: edit D134 (decisions are append-only); wait without a limit.
 Why: the record Ryan can check against is the one that was measured; an unbounded loop holds a job until the runner's own limit.
 Tradeoff: 03420715f321 cannot be reproduced either, as its script was not committed.
+
+## D136 — 2026-11-27 — make answer-identity records what retrieval returns and what the model would be sent
+Decision: make answer-identity SYNTHETIC=1 (refused otherwise; gcw_dev only) runs, for each committed synthetic question and both retrieval methods, the retrieval eval's search (top 10) and the answer pipeline for each prompt variant against a stand-in that records the request instead of asking the llm. It prints the first 12 hex characters of one sha256 over the ranked IDs, the numbered source IDs and the requests, with question, method and prompt counts, the searchable count, the corpus hash and the embed version. It runs as the pipeline user and, when GCW_ASK_PASSWORD is set, as gcw_ask, and fails if the two differ. It starts db and embed only, checks the served embedding model (D126) and stores nothing. Scores are not hashed.
+Alternative: a script written for each session (D134's was lost); hashing prompts only; hashing scores too.
+Why: a speed change to retrieval needs a check anyone can rerun. The ranked IDs catch a reordering below the five results a prompt is built from, which the eval's recall@10 and MRR@10 would see.
+Tradeoff: the record covers 31 synthetic questions on a small corpus, so it cannot show identity at real scale (the benchmark compares results there); it moves whenever the prompt, the questions or the synthetic data change, so it compares two checkouts over one warehouse, not two dates.

@@ -1,5 +1,5 @@
 """`make ask`, `answer-eval`, `answer-compare`, `answer-promote`, `grade-answers` and
-`grade-summary` (D111-D113, D120, D121).
+`grade-summary` (D111-D113, D120, D121), and `answer-identity` (D136).
 
 The retrieval commands' guards, in the same order: the database must be one of ALLOWED_DATABASES
 (SYNTHETIC=1: gcw_dev only), a label directory must resolve outside the repo, and both model URLs
@@ -23,7 +23,7 @@ from typing import Protocol
 import psycopg
 
 from gcwrapped import memory
-from gcwrapped.answers import comparison, evaluation, grades, report
+from gcwrapped.answers import comparison, evaluation, grades, identity, report
 from gcwrapped.answers.excerpts import Source
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
@@ -43,6 +43,7 @@ from gcwrapped.answers.prompt import (
     UnknownVariantError,
     prompt_version_for,
 )
+from gcwrapped.config import AskSettings, PasswordSettings
 from gcwrapped.docker import require_no_other_stack, start_database
 from gcwrapped.labeling.files import read_questions
 from gcwrapped.labeling.schema import QuestionLabel
@@ -73,7 +74,7 @@ STEP_EMBED_URL = "embed url"
 STEP_LLM_URL = "llm url"
 STEP_QUESTIONS = "questions"
 STEP_DOCKER = "docker"
-STEP_ASK_PASSWORD = "ask password"  # these two: dashboard-up only (D127)
+STEP_ASK_PASSWORD = "ask password"  # these two: dashboard-up (D127), the role also answer-identity
 STEP_ASK_ROLE = "ask role"
 STEP_MODEL = "model"
 STEP_MEMORY = "memory"
@@ -86,6 +87,8 @@ STEP_PREDICTIONS = "predictions"
 STEP_VERDICT = "verdict"
 STEP_PROMOTE = "promote"
 STEP_RENDER = "render"
+STEP_SYNTHETIC = "synthetic"  # these two: answer-identity only (D136)
+STEP_RECORD = "record"
 
 PROMPT = "question (blank line to finish): "
 NOT_IN_CHAT = "not in the chat"
@@ -130,6 +133,62 @@ def require_served_models(model_id: str) -> None:
 
 def _prompt_version(model_id: str, variant: str) -> str:
     return prompt_version_for(model.spec_for(model_id).chat_template_kwargs, variant)
+
+
+class SyntheticOnlyError(Exception):
+    """answer-identity was asked to run without SYNTHETIC=1."""
+
+
+class RecordMismatchError(Exception):
+    """gcw_ask built a different identity record from the pipeline user's (D136)."""
+
+
+def run_answer_identity(synthetic: bool = False, services: Services | None = None) -> int:
+    """`make answer-identity SYNTHETIC=1`: the identity record (D136) of the committed synthetic
+    questions over gcw_dev, as the pipeline user and, if GCW_ASK_PASSWORD is set, as gcw_ask. The
+    llm is never started or asked, and nothing is stored."""
+    services = services or Services()
+    step = STEP_SYNTHETIC
+    try:
+        if not synthetic:
+            raise SyntheticOnlyError
+        step = STEP_DATABASE
+        url, database = tagging.check_database(synthetic)
+        step = STEP_EMBED_URL
+        check_local_url(retrieval_commands.embed_url())
+        embedder = retrieval_commands.local_embedder()
+        step = STEP_QUESTIONS
+        questions = read_questions(retrieval_commands.SYNTHETIC_QUESTIONS)
+        if not questions:
+            raise retrieval.NoScorableQuestionsError
+        step = STEP_DOCKER
+        require_no_other_stack()
+        if services.db is not None:
+            services.db()
+        if services.embed is not None:
+            services.embed()
+        step = STEP_MODEL
+        retrieval_commands.require_embed_model()
+        step = STEP_RETRIEVAL
+        records: dict[str, identity.Record] = {}
+        with psycopg.connect(url, autocommit=True) as conn:
+            retriever = Retriever(conn, embedder)
+            records[report.PIPELINE_CONNECTION] = identity.build_record(conn, retriever, questions)
+        if PasswordSettings().gcw_ask_password.get_secret_value():
+            step = STEP_ASK_ROLE
+            with psycopg.connect(AskSettings().ask_database_url(), autocommit=True) as conn:
+                retriever = Retriever(conn, embedder)
+                records[report.ASK_CONNECTION] = identity.build_record(conn, retriever, questions)
+        step = STEP_RENDER
+        lines = report.render_identity(database, records)
+    except Exception as exc:  # type name only: driver messages can echo values
+        print(report.failure_line("answer-identity", step, exc))
+        return 1
+    print(*lines, sep="\n")
+    if len(set(records.values())) > 1:
+        print(report.failure_line("answer-identity", STEP_RECORD, RecordMismatchError()))
+        return 1
+    return 0
 
 
 def run_answer_eval(

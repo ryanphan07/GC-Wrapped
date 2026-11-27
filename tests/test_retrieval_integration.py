@@ -21,10 +21,12 @@ import pytest
 from psycopg.conninfo import make_conninfo
 
 from ask_permissions import set_up_gcw_ask
-from ask_view_support import create_ask_views, drop_ask_views
+from ask_view_support import create_ask_views, drop_ask_views, model_sql
 from conftest import after_memory_lines
 from embedding_stub import StubEmbed
 from gcwrapped import consent_prune, purge
+from gcwrapped.answers import commands as answer_commands
+from gcwrapped.answers import report as answer_report
 from gcwrapped.config import PasswordSettings, get_database_settings
 from gcwrapped.dashboard import ask_role
 from gcwrapped.labeling.files import write_questions
@@ -961,3 +963,110 @@ def test_eligibility_here_is_the_labelers(warehouse: str) -> None:
     with psycopg.connect(warehouse) as conn:
         centres = {NAME[w.message_id] for w in window.load_windows(conn)}
     assert centres == ELIGIBLE == {NAME[i] for ids in index.ids_by_thread().values() for i in ids}
+
+
+# --- answer-identity (D136) --------------------------------------------------------------------
+
+
+@pytest.fixture
+def synthetic_corpus(
+    warehouse: str, stub: StubEmbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """The test warehouse standing in for gcw_dev, embedded, with a question file standing in for
+    the committed synthetic set. No llm runs: an identity run must not need one."""
+    monkeypatch.setattr(tagging, "SYNTHETIC_DATABASE", "gcw_test")
+    monkeypatch.setattr(commands, "SYNTHETIC_QUESTIONS", _write_questions(tmp_path))
+    monkeypatch.setenv("GCW_LLM_URL", "http://127.0.0.1:9")  # nothing listens there
+    run_embed(warehouse, _client(stub))
+    return warehouse
+
+
+def _identity(capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    services = answer_commands.Services(db=None, llm=None, embed=None)
+    code = answer_commands.run_answer_identity(True, services)
+    out = capsys.readouterr()
+    assert out.err == ""
+    return code, out.out.splitlines()
+
+
+def test_answer_identity_prints_one_record_for_both_connections_and_nothing_else(
+    synthetic_corpus: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    set_up_gcw_ask(synthetic_corpus, monkeypatch)
+    caplog.set_level(logging.DEBUG)
+    code, lines = _identity(capsys)
+    assert code == 0
+    check_lines(lines, answer_report.identity_shapes(2, ok=True))
+    assert lines[:5] == [
+        "target database: gcw_test",
+        "connection: pipeline user",
+        "questions: 4",
+        "methods: 2",
+        "prompts: 16",  # 4 questions, 2 methods, 2 variants
+    ]
+    assert lines[6] == "searchable messages: 8"
+    assert lines[9] == "connection: gcw_ask" and lines[10:17] == lines[2:9]
+    assert lines[17] == "answer-identity: ok"
+    _assert_clean("\n".join(lines), caplog.text, extra=("which friday", "ramen"))
+    assert _identity(capsys) == (0, lines)  # the same warehouse gives the same record
+
+
+def test_answer_identity_without_an_ask_password_runs_as_the_pipeline_user_only(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "")
+    code, lines = _identity(capsys)
+    assert code == 0
+    check_lines(lines, answer_report.identity_shapes(1, ok=True))
+    assert "connection: gcw_ask" not in lines
+    assert lines[-2:] == ["gcw_ask: skipped (GCW_ASK_PASSWORD unset)", "answer-identity: ok"]
+
+
+def test_the_identity_record_follows_the_text_the_model_would_be_shown(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "")
+    _, before = _identity(capsys)
+    with psycopg.connect(synthetic_corpus, autocommit=True) as conn:
+        # Vectors and lexemes are untouched, so search is unchanged: only the prompts differ.
+        conn.execute(
+            "UPDATE raw.messages SET content = content || ' edited' WHERE message_key = %s",
+            (ID["a1"],),
+        )
+    _, after = _identity(capsys)
+    assert before[5].startswith("record sha256: ") and after[5] != before[5]
+    assert after[:5] + after[6:] == before[:5] + before[6:]
+
+
+def test_answer_identity_fails_when_gcw_ask_would_answer_from_other_messages(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_up_gcw_ask(synthetic_corpus, monkeypatch)
+    with psycopg.connect(synthetic_corpus, autocommit=True) as conn:
+        # current_user inside a view is the caller: a view that shows gcw_ask less.
+        conn.execute(
+            "CREATE OR REPLACE VIEW analytics.ask_messages WITH (security_barrier = true) AS "
+            f"SELECT * FROM ({model_sql('ask_messages')}) AS m "
+            "WHERE current_user <> 'gcw_ask' OR m.sender_name <> 'SENDERDEE'"
+        )
+    code, lines = _identity(capsys)
+    assert code == 1
+    assert lines[-1] == "answer-identity: failed at record (RecordMismatchError)"
+    assert "answer-identity: ok" not in lines
+    check_lines(lines[:-1], answer_report.identity_shapes(2, ok=False))
+
+
+def test_answer_identity_refuses_any_database_but_gcw_dev(
+    warehouse: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def start() -> None:
+        pytest.fail("a service was started")
+
+    services = answer_commands.Services(db=start, llm=None, embed=start)
+    assert answer_commands.run_answer_identity(True, services) == 1
+    assert capsys.readouterr().out == (
+        "answer-identity: failed at database (UnexpectedDatabaseError)\n"
+    )

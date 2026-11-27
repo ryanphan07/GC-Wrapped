@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
+.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -252,6 +252,13 @@ retrieval-compare:
 retrieval-promote:
 	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
 	@uv run gcw retrieval-promote --method $(METHOD)
+
+# A hash of what both retrieval methods return and what the model would be sent for the committed
+# synthetic questions (D136), as the pipeline user and, if GCW_ASK_PASSWORD is set, as gcw_ask. Run
+# it before and after a change that must alter no result. Starts db and embed, never the llm; needs
+# gcw_dev built and embedded (make embed SYNTHETIC=1). Refused without SYNTHETIC=1.
+answer-identity:
+	@uv run gcw answer-identity $(if $(filter 1,$(SYNTHETIC)),--synthetic)
 
 # Answers with citations from the local model (D111-D113). ask and answer-eval start only the db,
 # llm and embed services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited
