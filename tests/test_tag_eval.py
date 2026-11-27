@@ -9,7 +9,6 @@ import json
 import math
 import re
 import stat
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -345,9 +344,23 @@ def test_a_verdict_is_private_numbers_only_and_names_the_winner(tmp_path: Path) 
 
 def test_the_latest_verdict_decides(tmp_path: Path) -> None:
     _write_verdict(tmp_path, A_ID, B_ID, fast=True)
-    time.sleep(0.002)
     _write_verdict(tmp_path, A_ID, B_ID, fast=False)
     assert evaluation.latest_winner(tmp_path) == A_ID
+
+
+def test_a_new_verdict_wins_even_after_the_clock_stepped_back(tmp_path: Path) -> None:
+    _write_verdict(tmp_path, A_ID, B_ID, fast=True)
+    (path,) = (tmp_path / "experiments").iterdir()
+    ahead = "compare-29990101T000000000000Z.json"  # written while the clock was ahead
+    path.rename(path.with_name(ahead))
+    for fast, winner in ((False, A_ID), (True, B_ID)):  # and again, behind that one too
+        _write_verdict(tmp_path, A_ID, B_ID, fast=fast)
+        assert evaluation.latest_winner(tmp_path) == winner
+    assert sorted(p.name for p in (tmp_path / "experiments").iterdir()) == [
+        ahead,
+        "compare-29990101T000000000001Z.json",
+        "compare-29990101T000000000002Z.json",
+    ]
 
 
 def test_no_verdict_or_a_malformed_one_is_an_error(tmp_path: Path) -> None:

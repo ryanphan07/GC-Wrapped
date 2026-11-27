@@ -286,6 +286,17 @@ def test_the_latest_verdict_wins_and_a_bad_one_is_refused(tmp_path: Path) -> Non
         comparison.latest_verdict(tmp_path)
 
 
+def test_a_new_answer_verdict_wins_even_after_the_clock_stepped_back(tmp_path: Path) -> None:
+    first = _write_verdict(tmp_path)
+    ahead = first.with_name("answer-compare-29990101T000000000000Z.json")
+    first.rename(ahead)
+    ahead.write_text(json.dumps({**json.loads(ahead.read_text()), "winner": "a"}))
+    a, b = _results(BASE), _results(BETTER)  # B wins this one
+    comparison.write_verdict(tmp_path, model.MODEL_ID, A_VERSION, B_VERSION, a, _compare(a, b))
+    assert comparison.latest_verdict(tmp_path).winner == "b"
+    assert ahead.with_name("answer-compare-29990101T000000000001Z.json").is_file()
+
+
 def test_a_verdict_is_never_written_inside_the_repo() -> None:
     a = _results(BASE)
     with pytest.raises(OutsideRepoError):

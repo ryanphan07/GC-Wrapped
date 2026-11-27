@@ -8,7 +8,6 @@ import math
 import re
 import stat
 import subprocess
-import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -479,13 +478,23 @@ def test_the_latest_retrieval_verdict_decides_and_tag_verdicts_are_ignored(tmp_p
     with pytest.raises(evaluation.VerdictError):
         evaluation.latest_verdict(tmp_path)
     _write_verdict(tmp_path, hybrid_wins=True)
-    time.sleep(0.002)  # the next verdict file must sort after the first
     _write_verdict(tmp_path, hybrid_wins=False)
     (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").write_text("{}")
     assert evaluation.latest_verdict(tmp_path) == ("vector", VERSION)
     with pytest.raises(tag_evaluation.VerdictError):  # and the tagger never reads retrieval ones
         (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").unlink()
         tag_evaluation.latest_winner(tmp_path)
+
+
+def test_a_new_retrieval_verdict_wins_even_after_the_clock_stepped_back(tmp_path: Path) -> None:
+    _write_verdict(tmp_path, hybrid_wins=True)
+    (path,) = (tmp_path / "experiments").iterdir()
+    path.rename(path.with_name("retrieval-compare-29990101T000000000000Z.json"))
+    # a newer name of another kind does not move this one
+    (tmp_path / "experiments" / "answer-compare-39990101T000000000000Z.json").write_text("{}")
+    _write_verdict(tmp_path, hybrid_wins=False)
+    assert evaluation.latest_verdict(tmp_path) == ("vector", VERSION)
+    assert (tmp_path / "experiments" / "retrieval-compare-29990101T000000000001Z.json").is_file()
 
 
 def test_a_malformed_latest_verdict_fails_closed(tmp_path: Path) -> None:

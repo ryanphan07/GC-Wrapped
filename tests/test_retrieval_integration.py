@@ -12,7 +12,6 @@ import hashlib
 import logging
 import re
 import stat
-import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -841,7 +840,6 @@ def test_retrieval_promote_sets_the_one_row_and_a_later_verdict_can_replace_it(
     with psycopg.connect(warehouse) as conn:
         assert evaluation.default_method(conn) == "hybrid"
 
-    time.sleep(0.002)  # the next verdict file must sort after the first
     _compare_on(label_dir, hybrid_wins=False)
     capsys.readouterr()
     assert commands.run_retrieval_promote("hybrid", start_db=None) == 1

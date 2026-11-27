@@ -848,3 +848,9 @@ Decision: make retrieval-misses [SYNTHETIC=1] reads the stored retrieval-eval pr
 Alternative: store ranks to depth 50 in the eval's predictions file; recompute without checking that the corpus is unchanged; per-question lines with question IDs.
 Why: planning needs to know why the right message ranks low on real questions, from aggregates alone. Searching again leaves the eval's file format, and the files already written, as they are; the corpus and question checks make the ranks that run's.
 Tradeoff: any consent change, ingest or question edit since the eval forces another retrieval-eval first; the D126 memory guard is not applied, as nothing timed or stored depends on it; with few questions the counts can point to individual messages to someone who knows the question set.
+
+## D140 — 2026-11-27 — A new verdict's file name always sorts after the verdicts already there
+Decision: tag-compare, retrieval-compare and answer-compare name a verdict with the time now, or one microsecond past the newest verdict name of its kind when that name is not earlier than now. The three promote commands still take the last name, so eval-all's promote reads the verdict its own compare just wrote.
+Alternative: eval-all hands the new file to promote and standalone promote picks by file modification time; a sequence number in the name or a counter file.
+Why: the WSL clock can step backwards, after which an older verdict sorted last and promote acted on it. One change to how a name is chosen covers eval-all and a standalone promote, needs no new format, and existing verdict files keep their meaning. File times come from the same clock.
+Tradeoff: after a step backwards the stamp in a new name is ahead of the real time it was written; a name edited by hand to a far future date would pull later names after it; two compares writing at once could still collide, as before.

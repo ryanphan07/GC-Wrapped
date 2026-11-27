@@ -16,7 +16,6 @@ import json
 import re
 from collections.abc import Container
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -157,8 +156,7 @@ def write_verdict(
     """Record a verdict in root/experiments/. `results` is either of the compared runs (compare has
     checked that embed version and corpus are the same in both)."""
     folder = tag_evaluation.private_subdir(root, tag_evaluation.EXPERIMENTS_DIR)
-    now = datetime.now(UTC)
-    path = folder / f"answer-compare-{now:%Y%m%dT%H%M%S%f}Z.json"
+    path = tag_evaluation.new_verdict_path(folder, "answer-compare")
     body = {
         "a": VARIANT_A,
         "b": VARIANT_B,

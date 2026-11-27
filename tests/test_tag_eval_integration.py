@@ -8,7 +8,6 @@ fixed output run for real. Sender names and message text are sentinels that must
 import logging
 import re
 import stat
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -392,7 +391,6 @@ def test_tag_promote_sets_the_one_row_after_a_winning_verdict_and_replaces_it_la
     assert lines[1:3] == [f"promoted model id: {B_ID}", "previous model id: none"]
     assert _promoted_rows(warehouse) == [(B_ID,)]
 
-    time.sleep(0.002)  # the next verdict file must sort after the first
     _verdict(label_dir, b_wins=False)  # a later experiment says A
     capsys.readouterr()
     assert commands.run_tag_promote(B_ID, start_db=None) == 1  # B can no longer be promoted again

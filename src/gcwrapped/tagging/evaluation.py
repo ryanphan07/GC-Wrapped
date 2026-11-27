@@ -22,7 +22,7 @@ import tempfile
 import time
 from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TextIO
 
@@ -41,6 +41,7 @@ PREDICTION_HEADER = ("message_id", "topic", "sentiment", "seconds")
 _MESSAGE_ID = re.compile(r"[0-9a-f]{64}")
 _MODEL_ID = re.compile(r"[A-Za-z0-9._-]+")
 _VERDICT_FILE = re.compile(r"compare-\d{8}T\d{12}Z\.json")
+_VERDICT_STAMP = "%Y%m%dT%H%M%S%f"  # of every verdict's file name
 DEFAULT_TABLE = "enrich.tag_default"
 
 Labels = Mapping[str, tuple[str, str]]  # message_id -> (topic, sentiment)
@@ -299,13 +300,27 @@ def compare(
     return CompareResult(len(ids), topic, sentiment, a_mps, b_mps, verdict)
 
 
+def new_verdict_path(folder: Path, kind: str) -> Path:
+    """A name for a new verdict of `kind` that sorts after every one already in `folder`, even if
+    the clock has stepped back since (WSL does): promote reads the last name (D140). It is the
+    time now, or just past the newest name when that is not earlier than now."""
+    stamp = datetime.now(UTC).replace(tzinfo=None)
+    pattern = re.compile(rf"{re.escape(kind)}-(\d{{8}}T\d{{12}})Z\.json")
+    matches = (pattern.fullmatch(p.name) for p in folder.glob(f"{kind}-*.json"))
+    taken = [match.group(1) for match in matches if match]
+    if taken:
+        newest = datetime.strptime(max(taken), _VERDICT_STAMP)
+        stamp = max(stamp, newest + timedelta(microseconds=1))
+    return folder / f"{kind}-{stamp:{_VERDICT_STAMP}}Z.json"
+
+
 def write_verdict(
     root: Path, a_id: str, b_id: str, prompt_version: str, result: CompareResult
 ) -> None:
     """Record the verdict in root/experiments/. Numbers and model ids only; mode 0600."""
     folder = private_subdir(root, EXPERIMENTS_DIR)
     now = datetime.now(UTC)
-    path = folder / f"compare-{now:%Y%m%dT%H%M%S%f}Z.json"
+    path = new_verdict_path(folder, "compare")
     body = {
         "a": a_id,
         "b": b_id,

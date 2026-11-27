@@ -26,7 +26,6 @@ import re
 import time
 from collections.abc import Callable, Container, Iterable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
 from typing import TextIO
@@ -404,8 +403,7 @@ def write_verdict(root: Path, predictions: Predictions, result: CompareResult) -
     version and the corpus hash only; mode 0600. `predictions` is either of the compared files
     (compare has checked that version and corpus are the same in both)."""
     folder = tag_evaluation.private_subdir(root, tag_evaluation.EXPERIMENTS_DIR)
-    now = datetime.now(UTC)
-    path = folder / f"retrieval-compare-{now:%Y%m%dT%H%M%S%f}Z.json"
+    path = tag_evaluation.new_verdict_path(folder, "retrieval-compare")
     body = {
         "a": VECTOR,
         "b": HYBRID,
