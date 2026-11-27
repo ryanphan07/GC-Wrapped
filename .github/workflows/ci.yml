@@ -238,6 +238,13 @@ jobs:
           reader 'SELECT 1 FROM analytics.fct_message_eligibility LIMIT 1' | grep -q "permission denied for view fct_message_eligibility"
           test "$(psql 'SELECT rows_inserted FROM raw.load_runs ORDER BY load_id DESC LIMIT 1')" -gt 0
           grep -qx "target database: gcw_dev" e2e-1.log
+      # D130: a start looks up no public IP. The first grep shows the startup banner is in the log,
+      # so the second cannot pass on an empty one.
+      - name: Dashboard startup looks up no external address
+        run: |
+          logs="$(docker compose --env-file "$ENV_FILE" logs --no-color dashboard)"
+          grep -q "URL: http://localhost:8501" <<< "$logs"
+          if grep -q "External URL" <<< "$logs"; then echo "the dashboard looked up an external address"; exit 1; fi
       # D127: gcw_ask as `make dashboard-up` sets it up (without the models, which this job lacks).
       - name: gcw_ask reads what answering reads and nothing else
         run: |

@@ -134,6 +134,13 @@ def test_streamlit_listens_locally_and_sends_no_usage_statistics() -> None:
     assert "COPY .streamlit ./.streamlit" in dockerfile  # the image runs under the same file
 
 
+def test_streamlit_makes_no_outbound_request_at_startup() -> None:
+    config = tomllib.loads((REPO / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    # D130: set explicitly, Streamlit skips the external-IP lookup it prints as "External URL".
+    assert config["browser"]["serverAddress"] == "localhost"
+    assert config["browser"]["gatherUsageStats"] is False
+
+
 def _dashboard_service() -> str:
     compose = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
     return compose.split("\n  dashboard:\n")[1].split("\n  # ")[0]

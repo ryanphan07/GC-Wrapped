@@ -782,3 +782,9 @@ Decision:
 Alternative: create the role in a dbt on-run-start hook; gate each mart separately and add aggregate tables for the page's hour and reply-time queries; renumber sessions for the reader.
 Why: migrations already run before every dbt build; one gate is one place to read and to test; renumbering would change session_id.
 Tradeoff: session_index and session_id keep their numbers over all messages, so gaps show that sessions with no opted-in message exist. gcw_ask can read all of raw.messages, which answering reads, so consent on answers rests on the query. Its PUBLIC rights in other databases of the same cluster are untouched.
+
+## D130 — 2026-11-26 — The dashboard makes no outbound network requests
+Decision: Streamlit's startup external-IP lookup is disabled by setting browser.serverAddress = "localhost" in .streamlit/config.toml, and usage statistics stay off (browser.gatherUsageStats = false). A static test pins both; CI checks the dashboard log has no "External URL" line.
+Alternative: an internal-only Docker network for the dashboard (breaks the published port); leave it.
+Why: the dashboard shows chat text on the Ask page and has no reason to contact anything outside the compose network; the lookup tells an outside service this machine's public IP at every start.
+Tradeoff: depends on current Streamlit behavior; an upgrade could add a new call, which the log check only partly covers.

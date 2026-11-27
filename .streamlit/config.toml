@@ -11,5 +11,9 @@ showErrorDetails = false
 address = "127.0.0.1"
 allowedHosts = ["localhost", "127.0.0.1"]
 
+# No outbound request (D130). Unless serverAddress is set explicitly, a headless start asks
+# checkip.amazonaws.com for this machine's public IP to print an "External URL". "localhost" is
+# also Streamlit's default, so which browser connections are accepted does not change.
 [browser]
+serverAddress = "localhost"
 gatherUsageStats = false
