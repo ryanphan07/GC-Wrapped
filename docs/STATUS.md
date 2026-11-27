@@ -2,7 +2,7 @@
 Last session: 2026-11-26 — The vector view hides vectors and lexemes a revocation touched (D134; synthetic)
 
 ## Phase & state
-Phase 3: everything the burst needs is built (D119-D133). What is left is Ryan's real runs and review.
+Phase 3: everything the burst needs is built (D119-D135). What is left is Ryan's real runs and review.
 embeddings [x] retrieval eval [x synthetic] answers, prompt A/B [x synthetic] hand grading [x synthetic] Ask + Wrapped [x] README [x] eval guards [x] gcw_ask on consented views + gated Activity [x] synthetic eval-all [x] real questions [ ] real evals [ ] real grades [ ] real METRICS rows [ ] deploy, usage window (later, D119)
 
 ## Done this session

@@ -818,3 +818,9 @@ Alternative: accept the gap until consent-prune, which the README deletion flow 
 Why: makes the README's claim true at the role level with no change to search or answers, for one window check per row read on a few thousand rows.
 Tradeoff: gcw_ask still sees a revoked neighbor's message key inside window_message_keys (an identifier, no text); the window check runs in both the view and the search query.
 Verify: make lint test; make test-integration with llm and embed up; make test-warehouse; make dbt-build ERROR=0; the identity check matches 0ed8713f77b8.
+
+## D135 — 2026-11-27 — Corrections to D134's verification, and a bounded CI wait
+Decision: D134's identity record is 03420715f321, not the 0ed8713f77b8 its Verify line cites: the script that made the older value was not committed, so that session ran one new script on main and on its branch. The CI wait for the stub embed server runs under timeout 30, so a stub that never answers fails the step.
+Alternative: edit D134 (decisions are append-only); wait without a limit.
+Why: the record Ryan can check against is the one that was measured; an unbounded loop holds a job until the runner's own limit.
+Tradeoff: 03420715f321 cannot be reproduced either, as its script was not committed.
