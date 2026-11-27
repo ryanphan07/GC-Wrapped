@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration bench-retrieval lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
+.PHONY: up down logs psql-dev test test-integration bench-retrieval lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote retrieval-misses answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -258,6 +258,14 @@ retrieval-compare:
 retrieval-promote:
 	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
 	@uv run gcw retrieval-promote --method $(METHOD)
+
+# Where retrieval loses questions (D139): for the latest retrieval-eval of each method, counts of
+# the right message's rank (searched again 50 deep), its length in words split by hit and miss at 5,
+# and misses whose right message is inside a top-5 window. Same guards as retrieval-eval; refused
+# unless the corpus and questions are still the eval's. Reads only, stores nothing, prints counts.
+# Real-data runs are Ryan's: make retrieval-misses ENV_FILE=<env file outside the repo>
+retrieval-misses:
+	@uv run gcw retrieval-misses $(if $(filter 1,$(SYNTHETIC)),--synthetic)
 
 # A hash of what both retrieval methods return and what the model would be sent for the committed
 # synthetic questions (D136), as the pipeline user and, if GCW_ASK_PASSWORD is set, as gcw_ask. Run

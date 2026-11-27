@@ -1,5 +1,5 @@
-"""`make embed`, `retrieval-eval`, `retrieval-compare` and `retrieval-promote` (D102-D104, D109,
-D110).
+"""`make embed`, `retrieval-eval`, `retrieval-compare`, `retrieval-promote` (D102-D104, D109,
+D110) and `retrieval-misses` (D139).
 
 The tagging commands' guards, in the same order: the database must be one of ALLOWED_DATABASES (a
 SYNTHETIC=1 run: gcw_dev only), a label directory must resolve outside the repo, and the embedding
@@ -8,12 +8,13 @@ only (see `report`); a failure prints `<command>: failed at <step> (<exception t
 """
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import psycopg
 
 from gcwrapped import memory
+from gcwrapped.answers.excerpts import WINDOWS_SQL
 from gcwrapped.config import EmbeddingSettings, env_file_path
 from gcwrapped.docker import (
     COMPOSE_TIMEOUT_SECONDS,
@@ -26,7 +27,7 @@ from gcwrapped.labeling.schema import QUESTIONS_FILE
 from gcwrapped.labeling.source import EligibleIndex, load_eligible
 from gcwrapped.ledger import REPO_ROOT
 from gcwrapped.migrate import migrate
-from gcwrapped.retrieval import evaluation, report
+from gcwrapped.retrieval import evaluation, misses, report
 from gcwrapped.retrieval.client import Embedder, LlamaCppEmbedder
 from gcwrapped.retrieval.embed import run_embed as embed_job
 from gcwrapped.retrieval.search import Retriever
@@ -202,6 +203,65 @@ def run_retrieval_eval(
         lines = report.render_eval(database, source, method, retriever.version, result)
     except Exception as exc:
         print(report.failure_line("retrieval-eval", step, exc))
+        return 1
+    print(*lines, sep="\n")
+    return 0
+
+
+def run_retrieval_misses(
+    synthetic: bool = False,
+    start_db: StartDb = start_database,
+    start_service: StartEmbed = start_embed,
+) -> int:
+    """`make retrieval-misses [SYNTHETIC=1]`: where the latest retrieval-eval of each method
+    ranked each question's right message (D139). Reads only, stores nothing, prints counts."""
+    step = STEP_DATABASE
+    try:
+        url, database = tagging.check_database(synthetic)
+        step = STEP_LABEL_DIR
+        root = tagging.resolve_root(synthetic)
+        source = "synthetic" if synthetic else "real"
+        step = STEP_URL
+        check_local_url(embed_url())
+        embedder = local_embedder()
+        step = STEP_QUESTIONS
+        questions = read_questions(questions_path(synthetic, root))
+        step = STEP_PREDICTIONS
+        stored = [evaluation.read_predictions(root, method) for method in evaluation.METHODS]
+        step = STEP_DOCKER
+        require_no_other_stack()
+        if start_db is not None:
+            start_db()
+        if start_service is not None:
+            start_service()
+        step = STEP_MODEL
+        require_embed_model()
+        step = STEP_RETRIEVAL
+        eligible = load_eligible(url)
+        found: list[misses.Breakdown] = []
+        with psycopg.connect(url, autocommit=True) as conn:
+            conn.execute("SET default_transaction_read_only = on")
+            retriever = Retriever(conn, embedder)
+            searchable = retriever.searchable_ids()
+
+            def window_members(centres: Sequence[str]) -> set[str]:
+                params = {"version": retriever.version, "keys": list(centres)}
+                rows = conn.execute(WINDOWS_SQL, params)
+                return {str(member) for _, members in rows for member in members}
+
+            for run in stored:
+                step = STEP_PREDICTIONS
+                kept, _ = evaluation.split_questions(questions, eligible, searchable)
+                misses.check_same_run(run, kept, source, retriever.version, searchable)
+                step = STEP_RETRIEVAL
+                search = retriever.vector if run.method == evaluation.VECTOR else retriever.hybrid
+                found.append(
+                    misses.breakdown(run, questions, eligible, searchable, search, window_members)
+                )
+        step = STEP_RENDER
+        lines = report.render_misses(database, source, embed_version(embedder.model_id), found)
+    except Exception as exc:
+        print(report.failure_line("retrieval-misses", step, exc))
         return 1
     print(*lines, sep="\n")
     return 0

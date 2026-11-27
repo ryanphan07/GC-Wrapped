@@ -937,6 +937,8 @@ def test_a_synthetic_run_uses_a_temporary_directory_and_the_committed_questions(
         )
     assert commands.run_retrieval_compare("vector", "hybrid", synthetic=True, start_db=None) == 0
     assert "questions source: synthetic" in capsys.readouterr().out
+    assert commands.run_retrieval_misses(True, start_db=None, start_service=None) == 0
+    assert "retrieval-misses: ok" in capsys.readouterr().out.splitlines()
     (root,) = tmp_path.glob("gcw-synthetic-eval-*")
     assert sorted(p.name for p in (root / "retrieval").iterdir()) == ["hybrid.json", "vector.json"]
     assert list(label_dir.iterdir()) == []  # GCW_LABEL_DIR untouched
@@ -955,10 +957,12 @@ def test_the_commands_refuse_other_databases_and_label_directories_before_starti
     assert commands.run_embed(synthetic=True, start_db=start, start_service=start) == 1
     assert commands.run_retrieval_eval("vector", True, start_db=start, start_service=start) == 1
     assert commands.run_retrieval_compare("vector", "hybrid", True, start_db=start) == 1
+    assert commands.run_retrieval_misses(True, start_db=start, start_service=start) == 1
     for bad in ("", str(Path(__file__).resolve().parent)):
         monkeypatch.setenv("GCW_LABEL_DIR", bad)
         assert commands.run_retrieval_eval("vector", start_db=start, start_service=start) == 1
         assert commands.run_retrieval_compare("vector", "hybrid", start_db=start) == 1
+        assert commands.run_retrieval_misses(start_db=start, start_service=start) == 1
     monkeypatch.setenv("GCW_EMBED_URL", "http://example.com:8082")
     assert commands.run_embed(start_db=start, start_service=start) == 1
     monkeypatch.setenv("GCW_DB_NAME", "gcw_other")
@@ -967,11 +971,11 @@ def test_the_commands_refuse_other_databases_and_label_directories_before_starti
     assert commands.run_embed(start_db=start, start_service=start) == 1
     synthetic = [
         f"{c}: failed at database (UnexpectedDatabaseError)"
-        for c in ("embed", "retrieval-eval", "retrieval-compare")
+        for c in ("embed", "retrieval-eval", "retrieval-compare", "retrieval-misses")
     ]
     directory = [
         f"{c}: failed at label directory (LabelDirError)"
-        for c in ("retrieval-eval", "retrieval-compare")
+        for c in ("retrieval-eval", "retrieval-compare", "retrieval-misses")
     ]
     assert capsys.readouterr().out.splitlines() == [
         *synthetic,
@@ -1093,4 +1097,71 @@ def test_answer_identity_refuses_any_database_but_gcw_dev(
     assert answer_commands.run_answer_identity(True, services) == 1
     assert capsys.readouterr().out == (
         "answer-identity: failed at database (UnexpectedDatabaseError)\n"
+    )
+
+
+# --- retrieval-misses (D139) -------------------------------------------------------------------
+
+
+def _files(directory: Path) -> dict[str, bytes]:
+    return {str(p): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+
+
+def _misses(capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    code = commands.run_retrieval_misses(start_db=None, start_service=None)
+    out = capsys.readouterr()
+    assert out.err == ""
+    return code, out.out.splitlines()
+
+
+def test_retrieval_misses_prints_counts_only_and_stores_nothing(
+    warehouse: str,
+    stub: StubEmbed,
+    label_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_embed(warehouse, _client(stub))
+    for method in ("vector", "hybrid"):
+        assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 0
+    capsys.readouterr()
+    before = _files(label_dir)
+    caplog.set_level(logging.DEBUG)
+
+    code, lines = _misses(capsys)
+    assert code == 0
+    check_lines(lines, report.misses_shapes(2))
+    # Four questions, one about a message whose sender said no; eight windows, so every searchable
+    # gold is returned within the first ten.
+    for block, method in ((lines[3:21], "vector"), (lines[21:39], "hybrid")):
+        counts = dict(line.rsplit(": ", 1) for line in block)
+        assert counts["method"] == method
+        assert counts["questions"] == "4" and counts["questions scored"] == "3"
+        assert counts["dropped, right message not searchable"] == "1"
+        assert counts["right message at rank 11-50"] == "0"
+        assert counts["right message not in the top 50"] == "0"
+        assert sum(int(v) for k, v in counts.items() if k.startswith(("hit@5", "miss@5"))) == 3
+        assert counts["questions whose top 10 differs from the stored run"] == "0"
+    _assert_clean(
+        "\n".join(lines), caplog.text, extra=(str(label_dir), "which friday", "ramen", "q001")
+    )
+    assert _files(label_dir) == before
+
+
+def test_retrieval_misses_is_refused_without_runs_or_after_the_corpus_changed(
+    warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_embed(warehouse, _client(stub))
+    assert _misses(capsys) == (
+        1,
+        ["retrieval-misses: failed at predictions (RetrievalPredictionsError)"],
+    )
+    for method in ("vector", "hybrid"):
+        assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 0
+    _revoke(warehouse, "SENDEREVE")
+    run_embed(warehouse, _client(stub))
+    capsys.readouterr()
+    assert _misses(capsys) == (
+        1,
+        ["retrieval-misses: failed at predictions (CorpusMismatch)"],
     )

@@ -219,6 +219,13 @@ def build_parser() -> argparse.ArgumentParser:
     identity.add_argument(
         "--synthetic", action="store_true", help="required: the committed questions, gcw_dev only"
     )
+    retrieval_misses = sub.add_parser(
+        "retrieval-misses",
+        help="where the latest retrieval-eval of each method ranked the right message (counts)",
+    )
+    retrieval_misses.add_argument(
+        "--synthetic", action="store_true", help="the committed synthetic questions (gcw_dev only)"
+    )
     ask = sub.add_parser(
         "ask", help="ask the chat questions at a prompt; answers go to the terminal only (D113)"
     )
@@ -496,6 +503,8 @@ def _run(argv: Sequence[str] | None) -> int:
         return retrieval.run_retrieval_compare(args.a, args.b, synthetic=args.synthetic)
     if args.command == "retrieval-promote":
         return retrieval.run_retrieval_promote(args.method)
+    if args.command == "retrieval-misses":
+        return retrieval.run_retrieval_misses(synthetic=args.synthetic)
     if args.command == "answer-identity":
         return answers.run_answer_identity(synthetic=args.synthetic)
     if args.command == "ask":

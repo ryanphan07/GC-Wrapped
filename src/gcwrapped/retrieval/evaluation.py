@@ -154,6 +154,10 @@ def split_questions(
     return kept, len(questions) - len(kept)
 
 
+def question_hash(question: str) -> str:
+    return hashlib.sha256(question.encode("utf-8")).hexdigest()
+
+
 def run_method(
     search: Callable[[str, int], list[Hit]],
     questions: Sequence[QuestionLabel],
@@ -168,7 +172,7 @@ def run_method(
         rows.append(
             Row(
                 question_id=question.question_id,
-                question_sha256=hashlib.sha256(question.question.encode("utf-8")).hexdigest(),
+                question_sha256=question_hash(question.question),
                 source_message_id=question.source_message_id,
                 gold_message_ids=question.gold_message_ids,
                 retrieved_message_ids=tuple(h.message_id for h in hits[:DEPTH]),
@@ -286,7 +290,7 @@ class CompareResult:
         return round(self.difference.interval[0], _FLOAT_NOISE_PLACES) > 0 and self.latency_ok
 
 
-def _question_set(predictions: Predictions) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+def question_set(predictions: Predictions) -> dict[str, tuple[str, str, tuple[str, ...]]]:
     return {
         r.question_id: (r.question_sha256, r.source_message_id, tuple(sorted(r.gold_message_ids)))
         for r in predictions.rows
@@ -300,7 +304,7 @@ def compare(a: Predictions, b: Predictions, eligible: Container[str]) -> Compare
         raise EmbedVersionMismatch
     if a.corpus_hash != b.corpus_hash:
         raise CorpusMismatch
-    if a.source != b.source or _question_set(a) != _question_set(b):
+    if a.source != b.source or question_set(a) != question_set(b):
         raise QuestionSetMismatch
     by_id = {r.question_id: r for r in b.rows}
     pairs = [
