@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
+.PHONY: up down logs psql-dev test test-integration bench-retrieval lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -41,10 +41,16 @@ psql-dev:
 	$(COMPOSE) exec db psql -U $(POSTGRES_USER) -d gcw_dev
 
 test:
-	uv run pytest -m "not integration and not warehouse" $(IGNORE_WAREHOUSE)
+	uv run pytest -m "not integration and not warehouse and not bench" $(IGNORE_WAREHOUSE)
 
 test-integration:
 	uv run pytest -m integration $(IGNORE_WAREHOUSE)
+
+# Retrieval latency at real corpus size on a synthetic warehouse in gcw_test (D137): search and
+# excerpt SQL, the same before D131, EXPLAIN files in a temporary directory, and query embedding if
+# the dev embed server starts (it stays running; make down stops it). Needs Postgres up.
+bench-retrieval:
+	uv run pytest -m bench -s -q $(IGNORE_WAREHOUSE)
 
 # Needs the pipeline to have run (gcw migrate, ingest, dbt build) so the marts exist.
 test-warehouse:

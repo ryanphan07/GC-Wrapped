@@ -46,6 +46,7 @@ make synth                      # generate synthetic exports
 make test                       # unit tests
 make test-integration           # needs Postgres up (gcw_dev)
 make test-warehouse             # warehouse tests (separate marker)
+make bench-retrieval            # retrieval latency on a synthetic real-size warehouse in gcw_test (D137, marker bench): times and EXPLAIN files; needs Postgres up, uses the embed server if it starts
 make lint                       # ruff + mypy
 make dbt-deps / make dbt-build  # against gcw_dev only
 make airflow-up                  # Airflow UI :8080
