@@ -6,13 +6,16 @@ GCW_ASK_PASSWORD, so they carry the `warehouse` marker instead of `integration` 
 dbt in CI).
 """
 
+import re
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psycopg
 import pytest
 import streamlit as st
 from psycopg import errors
+from streamlit import net_util
 from streamlit.testing.v1 import AppTest
 
 from ask_permissions import assert_reads_only_the_listed_relations, assert_writes_nothing
@@ -199,6 +202,19 @@ def test_a_dbt_build_alone_grants_gcw_ask_its_dbt_relations() -> None:
                 assert row == (True, True), relation
 
 
+@pytest.mark.parametrize("view", ["ask_messages", "ask_message_embeddings"])
+def test_the_views_gcw_ask_reads_filter_with_their_owners_rights(view: str) -> None:
+    # D131: security_barrier set, security_invoker not (gcw_ask would need the tables behind)
+    with psycopg.connect(database_url()) as conn:
+        row = conn.execute(
+            "SELECT c.relkind::text, c.reloptions, pg_get_userbyid(c.relowner) = current_user "
+            "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'analytics' AND c.relname = %s",
+            (view,),
+        ).fetchone()
+    assert row == ("v", ["security_barrier=true"], True)
+
+
 def test_gcw_ask_on_the_built_warehouse_reads_the_listed_relations_and_writes_nothing() -> None:
     ask_role.ensure(database_url(), ask_role.require_password())
     assert_reads_only_the_listed_relations(database_url(), ask.database_url())
@@ -239,6 +255,23 @@ def test_no_mart_the_reader_can_see_has_a_content_column(reader_url: str) -> Non
             "WHERE table_schema = 'analytics' AND column_name = 'content'"
         ).fetchall()
     assert rows == []
+
+
+def test_the_only_urls_streamlit_requests_are_at_the_host_the_dashboard_blocks() -> None:
+    # D132: compose maps that host to 127.0.0.1, so an upgrade that puts another URL in
+    # net_util.py has to fail here. These three are text that nothing requests (D133).
+    not_requested = {
+        "http://www.apache.org/licenses/LICENSE-2.0",  # the licence comment
+        "https://docs.streamlit.io/",  # a help link that a warning prints
+        "https://stackoverflow.com/a/28950776",  # a source credit in a docstring
+    }
+    source = Path(net_util.__file__).read_text(encoding="utf-8")
+    urls = re.findall(r"https?://[^\s\"'<>)]+", source)
+    assert not_requested <= set(urls)
+    hosts = [urlsplit(url).hostname for url in urls if url not in not_requested]
+    assert hosts and set(hosts) == {"checkip.amazonaws.com"}
+    requested = re.findall(r"(?<!def )_make_blocking_http_get\((\w+)", source)
+    assert requested == ["_AWS_CHECK_IP", "_AWS_CHECK_IP_HTTPS"]
 
 
 def test_error_details_are_disabled_in_streamlit_config() -> None:

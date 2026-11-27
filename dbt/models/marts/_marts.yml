@@ -305,6 +305,47 @@ models:
         description: True only when the sender's consent in this thread is "yes".
         data_tests: [not_null]
 
+  - name: ask_messages
+    description: >
+      The messages answering may read (D131): local_ok AND has_user_text (D88, D95), with sender,
+      time, session and text. A security_barrier view owned by the dbt user; gcw_ask's only way to
+      message text. tests/ask_relations_are_consented.sql checks it against the ledger.
+    columns:
+      - name: message_key
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_messages')
+                field: message_key
+      - name: session_id
+        data_tests: [not_null]
+      - name: sender_name
+        data_tests: [not_null]
+      - name: content
+        data_tests: [not_null]
+
+  - name: ask_message_embeddings
+    description: >
+      The vectors answering may read (D131): the rows of enrich.message_embeddings whose centre is
+      in ask_messages, all embed versions. Search also requires every window member to be there
+      (D75, D103). A security_barrier view; gcw_ask's only way to vectors and lexemes. No message
+      text.
+    columns:
+      - name: message_key
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('ask_messages')
+                field: message_key
+      - name: window_message_keys
+        data_tests: [not_null]
+      - name: embed_version
+        data_tests: [not_null]
+
   - name: fct_message_tags
     description: >
       The current tag of each local_ok message from the promoted model only (enrich.tag_default,

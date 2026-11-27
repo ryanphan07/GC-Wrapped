@@ -2,8 +2,10 @@
 
 Consent is applied at query time, not only when a row is written (D75, D88): a row is searchable
 only if its centre and every message of its window are eligible now, so a revocation takes effect
-when consent-load commits, before anything is pruned. Search is exact (no ANN index), over rows of
-the current embed version only.
+when consent-load commits, before anything is pruned. Search reads only the consent-filtered views
+(D131): analytics.ask_message_embeddings, which holds the rows with an eligible centre, and
+analytics.ask_messages, the eligible messages every window member is checked against. Search is
+exact (no ANN index), over rows of the current embed version only.
 
 Hybrid (pre-registered, D104): the vector list and a full-text list (simple configuration, the
 query's lexemes joined with OR, ranked by ts_rank, over the same window text), the top CANDIDATES
@@ -22,29 +24,30 @@ from gcwrapped.retrieval.window import embed_version
 CANDIDATES = 50
 RRF_K = 60
 
-_ELIGIBLE_CTE = """
-eligible AS (
-    SELECT e.message_key
-    FROM analytics.fct_message_eligibility AS e
-    JOIN analytics.fct_message_text AS x USING (message_key)
-    WHERE e.local_ok AND x.has_user_text
-)"""
-# True for a row of `m` whose centre or any window member is not eligible.
+# True for a row of `m` whose centre or any window member is not in `eligible`.
 _TAINTED = """EXISTS (
     SELECT 1 FROM unnest(m.window_message_keys || m.message_key) AS w(key)
     WHERE w.key NOT IN (SELECT message_key FROM eligible)
 )"""
 _SEARCHABLE_CTE = f"""
-WITH {_ELIGIBLE_CTE},
+WITH eligible AS (
+    SELECT message_key FROM analytics.ask_messages
+),
 searchable AS (
     SELECT m.message_key, m.embedding, m.window_tsv
-    FROM enrich.message_embeddings AS m
+    FROM analytics.ask_message_embeddings AS m
     WHERE m.embed_version = %(version)s AND NOT {_TAINTED}
 )"""
-# consent-prune's delete (D105): the exact complement of "searchable", for every version. Returns
-# the IDs each deleted row referred to.
+# consent-prune's delete (D105), run as the pipeline user over the table itself: the rows of every
+# version that fail the same rule, so "searchable" and the deleted rows are exact complements (a
+# test compares them). Returns the IDs each deleted row referred to.
 PRUNE_EMBEDDINGS_SQL = f"""
-WITH {_ELIGIBLE_CTE}
+WITH eligible AS (
+    SELECT e.message_key
+    FROM analytics.fct_message_eligibility AS e
+    JOIN analytics.fct_message_text AS x USING (message_key)
+    WHERE e.local_ok AND x.has_user_text
+)
 DELETE FROM enrich.message_embeddings AS m
 WHERE {_TAINTED}
 RETURNING m.window_message_keys || m.message_key

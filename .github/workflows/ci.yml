@@ -220,9 +220,9 @@ jobs:
           test "$(psql 'SELECT count(*) FROM staging.stg_instagram__messages')" -gt 0
           # No staging or intermediate relation may live in analytics.
           test "$(psql "SELECT count(*) FROM pg_tables WHERE schemaname = 'analytics' AND tablename ~ '^(stg|int)_'")" -eq 0
-          # The only views in analytics are fct_message_eligibility (D75) and mart_member_wrapped
-          # (D124); every other mart is a table.
-          test "$(psql "SELECT string_agg(viewname, ',' ORDER BY viewname) FROM pg_views WHERE schemaname = 'analytics'")" = "fct_message_eligibility,mart_member_wrapped"
+          # The only views in analytics are the two gcw_ask reads (D131), fct_message_eligibility
+          # (D75) and mart_member_wrapped (D124); every other mart is a table.
+          test "$(psql "SELECT string_agg(viewname, ',' ORDER BY viewname) FROM pg_views WHERE schemaname = 'analytics'")" = "ask_message_embeddings,ask_messages,fct_message_eligibility,mart_member_wrapped"
           # The reader role: marts yes, the staging schema itself no, the eligibility view no.
           reader() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-reader-password db psql -U gcw_reader -d gcw_dev -tA -c "$1" 2>&1; }
           # No consent ledger is loaded yet, so nobody is counted or named (D128) and there is no
@@ -245,30 +245,9 @@ jobs:
           logs="$(docker compose --env-file "$ENV_FILE" logs --no-color dashboard)"
           grep -q "URL: http://localhost:8501" <<< "$logs"
           if grep -q "External URL" <<< "$logs"; then echo "the dashboard looked up an external address"; exit 1; fi
-      # D127: gcw_ask as `make dashboard-up` sets it up (without the models, which this job lacks).
-      - name: gcw_ask reads what answering reads and nothing else
-        run: |
-          uv run python -c 'from gcwrapped.dashboard import ask_role; from gcwrapped.db import database_url; ask_role.ensure(database_url(), ask_role.require_password())'
-          # Each -c is its own transaction, so the first really turns read-only off for the second.
-          asker() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-ask-password db psql -U gcw_ask -d gcw_dev -tA "$@" 2>&1; }
-          writer() { asker -c 'SET default_transaction_read_only = off' -c "$1"; }
-          test "$(asker -c 'SELECT count(*) FROM raw.messages')" -gt 0
-          test "$(asker -c 'SELECT count(*) FROM analytics.fct_messages')" -gt 0
-          asker -c 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
-          asker -c 'SELECT 1 FROM raw.sender_consent LIMIT 1' | grep -q "permission denied for table sender_consent"
-          asker -c 'SELECT 1 FROM raw.load_runs LIMIT 1' | grep -q "permission denied for table load_runs"
-          asker -c 'SELECT 1 FROM analytics.agg_member_activity LIMIT 1' | grep -q "permission denied for table agg_member_activity"
-          asker -c 'DELETE FROM raw.messages' | grep -q "cannot execute DELETE in a read-only transaction"
-          writer 'DELETE FROM raw.messages' | grep -q "permission denied for table messages"
-          writer 'UPDATE enrich.tag_default SET model_id = model_id' | grep -q "permission denied for table tag_default"
-          writer 'CREATE TABLE public.probe (x int)' | grep -q "permission denied for schema public"
-          writer 'CREATE TABLE analytics.probe (x int)' | grep -q "permission denied for schema analytics"
-          writer 'CREATE TEMPORARY TABLE probe (x int)' | grep -q "permission denied to create temporary tables"
-          # The dashboard container: no pipeline credentials, and its gcw_ask password works over the
-          # compose network (psql inside the db container above is trusted without one).
-          inside() { docker compose --env-file "$ENV_FILE" exec -T dashboard "$@"; }
-          test "$(inside sh -c 'env | grep -cE "^(POSTGRES_USER|POSTGRES_PASSWORD|DATABASE_URL)=" || true')" -eq 0
-          test "$(inside uv run --no-sync python -c 'import psycopg; from gcwrapped.dashboard import ask; print(psycopg.connect(ask.database_url()).execute("SELECT current_user").fetchone()[0])')" = gcw_ask
+          # D132: the host of the one lookup left resolves to the container itself.
+          address="$(docker compose --env-file "$ENV_FILE" exec -T dashboard getent hosts checkip.amazonaws.com | awk '{print $1}')"
+          test "$address" = 127.0.0.1
       - name: make e2e (second run inserts nothing)
         run: make e2e ENV_FILE="$ENV_FILE" 2>&1 | tee e2e-2.log; test "${PIPESTATUS[0]}" -eq 0
       - name: Second run was idempotent
@@ -312,6 +291,54 @@ jobs:
           test "$(reader 'SELECT sum(messages) FROM analytics.agg_activity_daily')" -eq "$local_ok"
           test "$(reader 'SELECT sum(messages) FROM analytics.agg_member_activity')" -eq "$local_ok"
           test "$(reader 'SELECT sum(message_count) FROM analytics.fct_sessions')" -eq "$local_ok"
+      # The ask_ views are empty until the ledger above is loaded, and the vector view until
+      # something is embedded. The stub stands in for the embedding model; no model is downloaded.
+      - name: Vectors from a stub embed server
+        env:
+          GCW_EMBED_URL: http://127.0.0.1:8098
+        run: |
+          uv run python tests/embedding_stub.py --port 8098 &
+          until curl -fsS http://127.0.0.1:8098/v1/models >/dev/null 2>&1; do sleep 0.5; done
+          uv run python -c 'import sys; from gcwrapped.retrieval import commands; sys.exit(commands.run_embed(synthetic=True, start_db=None, start_service=None))' | tee embed.log
+          grep -qx "embed: ok" embed.log
+          grep -qx "failures: 0" embed.log
+          grep -qE "^embedded this run: [1-9][0-9]*$" embed.log
+          if grep -qi sentinel embed.log; then echo "sentinel string in embed output"; exit 1; fi
+          kill %1
+      # D127, D131: gcw_ask as `make dashboard-up` sets it up (without the models, which this job
+      # lacks).
+      - name: gcw_ask reads what answering reads and nothing else
+        run: |
+          uv run python -c 'from gcwrapped.dashboard import ask_role; from gcwrapped.db import database_url; ask_role.ensure(database_url(), ask_role.require_password())'
+          # Each -c is its own transaction, so the first really turns read-only off for the second.
+          asker() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-ask-password db psql -U gcw_ask -d gcw_dev -tA "$@" 2>&1; }
+          writer() { asker -c 'SET default_transaction_read_only = off' -c "$1"; }
+          test "$(asker -c 'SELECT count(*) FROM analytics.ask_messages')" -gt 0
+          test "$(asker -c 'SELECT count(*) FROM analytics.ask_message_embeddings')" -gt 0
+          # D131: nothing that holds every sender. raw has no USAGE grant at all, so its refusals
+          # name the schema.
+          asker -c 'SELECT 1 FROM raw.messages LIMIT 1' | grep -q "permission denied for schema raw"
+          asker -c 'SELECT 1 FROM enrich.message_embeddings LIMIT 1' | grep -q "permission denied for table message_embeddings"
+          for relation in fct_messages fct_message_eligibility fct_message_text; do
+            kind=table; if [ "$relation" = fct_message_eligibility ]; then kind=view; fi
+            asker -c "SELECT 1 FROM analytics.$relation LIMIT 1" | grep -q "permission denied for $kind $relation"
+          done
+          asker -c 'SELECT 1 FROM staging.stg_instagram__messages LIMIT 1' | grep -q "permission denied for schema staging"
+          asker -c 'SELECT 1 FROM raw.sender_consent LIMIT 1' | grep -q "permission denied for schema raw"
+          asker -c 'SELECT 1 FROM raw.load_runs LIMIT 1' | grep -q "permission denied for schema raw"
+          asker -c 'SELECT 1 FROM analytics.agg_member_activity LIMIT 1' | grep -q "permission denied for table agg_member_activity"
+          asker -c 'DELETE FROM enrich.tag_default' | grep -q "cannot execute DELETE in a read-only transaction"
+          writer 'DELETE FROM enrich.tag_default' | grep -q "permission denied for table tag_default"
+          writer 'DELETE FROM raw.messages' | grep -q "permission denied for schema raw"
+          writer 'UPDATE enrich.tag_default SET model_id = model_id' | grep -q "permission denied for table tag_default"
+          writer 'CREATE TABLE public.probe (x int)' | grep -q "permission denied for schema public"
+          writer 'CREATE TABLE analytics.probe (x int)' | grep -q "permission denied for schema analytics"
+          writer 'CREATE TEMPORARY TABLE probe (x int)' | grep -q "permission denied to create temporary tables"
+          # The dashboard container: no pipeline credentials, and its gcw_ask password works over the
+          # compose network (psql inside the db container above is trusted without one).
+          inside() { docker compose --env-file "$ENV_FILE" exec -T dashboard "$@"; }
+          test "$(inside sh -c 'env | grep -cE "^(POSTGRES_USER|POSTGRES_PASSWORD|DATABASE_URL)=" || true')" -eq 0
+          test "$(inside uv run --no-sync python -c 'import psycopg; from gcwrapped.dashboard import ask; print(psycopg.connect(ask.database_url()).execute("SELECT current_user").fetchone()[0])')" = gcw_ask
       # D75: the eligibility mart is a view, so a consent change shows up the moment consent-load
       # commits. Flip one "yes" sender to "no" in a copy of the synthetic ledger, load the copy, and
       # query with no e2e or dbt build in between.
@@ -339,12 +366,25 @@ jobs:
           test "$flipped_messages" -gt 0
           profile="SELECT count(*) FROM analytics.mart_member_wrapped WHERE thread_id = '$thread' AND member_name = '$sender'"
           test "$(psql "$profile")" -eq 1
+          # D131: what gcw_ask can read of this sender: the rows of their messages in each view. The
+          # keys come from the pipeline user; the counts are gcw_ask's own.
+          asker() { docker compose --env-file "$ENV_FILE" exec -T -e PGPASSWORD=ci-ask-password db psql -U gcw_ask -d gcw_dev -tA -c "$1" 2>&1; }
+          keys="$(psql "SELECT string_agg(quote_literal(message_key), ',') FROM raw.messages WHERE thread_id = '$thread' AND sender_name = '$sender'")"
+          test -n "$keys"
+          asked_messages="SELECT count(*) FROM analytics.ask_messages WHERE message_key IN ($keys)"
+          asked_vectors="SELECT count(*) FROM analytics.ask_message_embeddings WHERE message_key IN ($keys)"
+          test "$(asker "$asked_messages")" -gt 0
+          test "$(asker "$asked_vectors")" -gt 0
           sed "s|^GCW_CONSENT_LEDGER=.*|GCW_CONSENT_LEDGER=$FLIPPED|" "$ENV_FILE" > "$RUNNER_TEMP/ci-flipped.env"
           make consent-load ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-l3.log; test "${PIPESTATUS[0]}" -eq 0
           expected=$((before - flipped_messages))
           test "$(psql 'SELECT count(*) FROM analytics.fct_message_eligibility WHERE external_ok')" -eq "$expected"
           # D124: the revoked sender's Wrapped profile is gone too, with no dbt build in between.
           test "$(psql "$profile")" -eq 0
+          # D131: so are their rows in both views gcw_ask reads, though nothing was pruned.
+          test "$(asker "$asked_messages")" -eq 0
+          test "$(asker "$asked_vectors")" -eq 0
+          test "$(psql "SELECT count(*) FROM enrich.message_embeddings WHERE message_key IN ($keys)")" -gt 0
           make metrics ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-metrics2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "external-eligible messages: $expected" consent-metrics2.log
           # D128: the table marts follow at the next dbt build (make e2e runs it). Then the sender

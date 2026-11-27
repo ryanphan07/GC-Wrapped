@@ -1,9 +1,11 @@
 """The messages one answer is allowed to cite (D111): the members of the retrieved windows, read
-again from raw.messages for this request, grouped into excerpts and numbered.
+again for this request, grouped into excerpts and numbered.
 
 Consent applies here as everywhere (D88, D95): a message is read only if it is `local_ok` and user
-text now, whatever the stored window says. Text lives in memory for the request and is stored
-nowhere.
+text now, whatever the stored window says. The database enforces it (D131): both queries read the
+consent-filtered views analytics.ask_message_embeddings and analytics.ask_messages, the only
+relations with vectors or text that gcw_ask can read. Text lives in memory for the request and is
+stored nowhere.
 
 The excerpt rule: the windows' messages, each once; an excerpt is a run of messages of one thread
 and session with no other eligible message of that session between them; excerpts are ordered by
@@ -25,22 +27,18 @@ EXCERPT_RULE = (
 
 WINDOWS_SQL = """
 SELECT message_key, window_message_keys
-FROM enrich.message_embeddings
+FROM analytics.ask_message_embeddings
 WHERE embed_version = %(version)s AND message_key = ANY(%(keys)s)
 """
 # `position` counts the session's eligible messages in the window builder's order (D103), so two
 # messages are consecutive when no other eligible one lies between them.
 MESSAGES_SQL = """
 WITH eligible AS (
-    SELECT m.message_key, m.thread_id, f.session_id, m.sender_name, f.sent_at_local, m.content,
+    SELECT message_key, thread_id, session_id, sender_name, sent_at_local, content,
            row_number() OVER (
-               PARTITION BY m.thread_id, f.session_id ORDER BY m.sent_at, m.message_key
+               PARTITION BY thread_id, session_id ORDER BY sent_at, message_key
            ) AS position
-    FROM raw.messages AS m
-    JOIN analytics.fct_message_eligibility AS e USING (message_key)
-    JOIN analytics.fct_message_text AS t USING (message_key)
-    JOIN analytics.fct_messages AS f USING (message_key)
-    WHERE e.local_ok AND t.has_user_text
+    FROM analytics.ask_messages
 )
 SELECT message_key, thread_id, session_id, position, sender_name, sent_at_local, content
 FROM eligible
