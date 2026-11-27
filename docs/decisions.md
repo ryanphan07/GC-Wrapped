@@ -788,3 +788,26 @@ Decision: Streamlit's startup external-IP lookup is disabled by setting browser.
 Alternative: an internal-only Docker network for the dashboard (breaks the published port); leave it.
 Why: the dashboard shows chat text on the Ask page and has no reason to contact anything outside the compose network; the lookup tells an outside service this machine's public IP at every start.
 Tradeoff: depends on current Streamlit behavior; an upgrade could add a new call, which the log check only partly covers.
+
+## D131 — 2026-11-26 — gcw_ask reads only consent-filtered views
+Decision: The answer pipeline (retrieval and excerpts, for make ask, the evals and the Ask page alike) reads messages and vectors through dbt views in analytics that return only messages passing the local-work rule (local_ok AND has_user_text, D88, D95). The views are owned by the dbt user and run with its rights (not security_invoker), and are marked security_barrier. gcw_ask is granted SELECT on these views and on the default tables the pipeline reads, and nothing else: its grants on raw.messages, enrich.message_embeddings, fct_messages, fct_message_eligibility and fct_message_text are removed. The views are live over the eligibility view, so a revocation reaches gcw_ask when consent-load commits. Supersedes D129's statement that consent on answers rests on the query.
+Alternative: row-level security on raw.messages and enrich.message_embeddings with a policy for gcw_ask; keep the grants and document the gap (D129).
+Why: the database, not application code, enforces consent for the one role whose password sits in a container. One code path keeps make ask, the evals and the page identical. Views are easier to read and test than policies, and policies on dbt-rebuilt tables would need recreating after every build.
+Tradeoff: the pipeline's queries change, so identical retrieval and prompts had to be shown. A vector for an eligible message whose window included a since-revoked neighbor still ranks until consent-prune (D105) removes it.
+
+## D132 — 2026-11-26 — Correction to D130: the lookup host resolves inside the container
+Decision: D130 removes the lookup at startup only: Streamlit 1.66.1 still calls get_external_ip when a websocket arrives with an allowed Host and a foreign Origin. The dashboard service maps checkip.amazonaws.com to 127.0.0.1 (compose extra_hosts), so that call fails inside the container and nothing leaves the machine. A test lists every URL in the installed streamlit/net_util.py and fails if one uses another host.
+Alternative: patch Streamlit's private IP cache; an internal-only network (breaks the published port); accept and only correct D130's wording.
+Why: a web page open in the browser could otherwise make the dashboard tell an outside service this machine's public IP.
+Tradeoff: tied to one hostname; an upgrade that calls another host from elsewhere in Streamlit would not be caught by the net_util.py test.
+
+## D133 — 2026-11-26 — Implementation details D131 and D132 leave open, and two corrections
+Decision:
+- The views are analytics.ask_messages and analytics.ask_message_embeddings, dbt view models with a post-hook that sets security_barrier. ask_message_embeddings holds the rows, of every embed version, whose centre message is in ask_messages; it carries the window IDs, the vector and the lexemes.
+- Correction to D131's tradeoff: a vector whose window included a since-revoked neighbor does not rank. Search still requires every window member to be in ask_messages (D75, D103), as before. What remains until consent-prune is that gcw_ask can read that row, whose vector and lexemes were made from the neighbor's text too. Excerpt loading reads its window IDs and takes only the members ask_messages holds.
+- consent-prune is unchanged: it reads the tables as the pipeline user, and a test compares what it leaves with what search returns.
+- gcw_ask has no USAGE on raw. It keeps enrich.tag_default, enrich.retrieval_default and enrich.answer_prompt_default, all of which the pipeline reads.
+- Correction to D132's test: net_util.py also holds three URLs that nothing requests (a licence comment, a help link that a warning prints and a source credit in a docstring). The test excepts exactly those three and asserts that only the two checkip URLs are passed to the request function.
+Alternative: a vector view that also requires the whole window (tried: a revocation between search and excerpt loading then drops the whole result, where today its other eligible members are still shown); null the vector and lexemes of such rows in the view and keep their IDs.
+Why: the centre filter is the rule D131 states and changes no behavior; search and excerpts return what they did before.
+Tradeoff: until consent-prune, gcw_ask can read the words (as lexemes) of a revoked sender inside a neighbor's row. A dbt rebuild drops and recreates the views, so between those two steps, or after a failed build, answering fails instead of reading anything unfiltered.

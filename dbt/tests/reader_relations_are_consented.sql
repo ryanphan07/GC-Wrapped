@@ -140,6 +140,40 @@ thread_tag_counts as (
     having sum(t.messages)
         > (select count(*) from allowed as a where a.thread_id = t.thread_id)
 
+),
+
+-- Wrapped counts the allowed messages a person typed (D95, D123), the thread share's denominator
+-- included. The text rule is restated from the content and the seed.
+allowed_text as (
+
+    select a.thread_id, a.member_key
+    from allowed as a
+    inner join {{ ref('stg_instagram__messages') }} as m using (message_key)
+    where m.content ~ '\S'
+        and not exists (
+            select 1
+            from {{ ref('instagram_placeholder_patterns') }} as p
+            where btrim(m.content) ~* ('^(?:' || p.pattern || ')$')
+        )
+
+),
+
+wrapped_counts as (
+
+    select 'mart_member_wrapped' as relation, member_key as item
+    from (
+        select
+            member_key,
+            count(*) as messages_sent,
+            count(*)::double precision / sum(count(*)) over (partition by thread_id)
+                as thread_share
+        from allowed_text
+        group by thread_id, member_key
+    ) as expected
+    full outer join {{ ref('mart_member_wrapped') }} as w using (member_key)
+    where w.messages_sent is distinct from expected.messages_sent
+        or abs(w.thread_share - expected.thread_share) > 1e-9
+
 )
 
 select * from unconsented_names
@@ -153,3 +187,5 @@ union all
 select * from session_counts
 union all
 select * from thread_tag_counts
+union all
+select * from wrapped_counts

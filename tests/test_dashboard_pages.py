@@ -146,6 +146,11 @@ def _dashboard_service() -> str:
     return compose.split("\n  dashboard:\n")[1].split("\n  # ")[0]
 
 
+def test_the_dashboard_resolves_streamlits_ip_lookup_host_to_itself() -> None:
+    # D132: the one lookup D130 cannot turn off then fails inside the container.
+    assert '\n    extra_hosts:\n      - "checkip.amazonaws.com:127.0.0.1"\n' in _dashboard_service()
+
+
 def test_the_dashboard_container_gets_no_pipeline_credentials() -> None:
     service = _dashboard_service()
     assert "GCW_ASK_PASSWORD: ${GCW_ASK_PASSWORD:-}" in service

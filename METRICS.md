@@ -75,6 +75,7 @@ Commit citations (D73): merges are squashes, so a PR-branch commit is cited as "
 |---|---|---|---|---|
 |  |  |  |  |  |
 | Embedding run, real warehouse, qwen3-embedding-0.6b-q8_0 (sha256 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439), embed version e3ac6a56e412, one vector per message over its D103 window, laptop CPU, pinned llama.cpp image | 6015 local-eligible text messages embedded; 0 failures; 1117.72 s; 5.38 messages/s; rerun: 0 embedded, 6015 already current, 0.38 s | 2026-11-24 | make embed ENV_FILE=<real env> twice, run by Ryan in his own terminal, fixed lines only | ac9f07e |
+| SYNTHETIC: retrieval and answer evals under the D126 guard, qwen3.5-4b-q4_k_m (sha256 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4), embedding qwen3-embedding-0.6b-q8_0 (sha256 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439), embed version e3ac6a56e412, answer prompts A 93518209d700 and B 1550fccbeddf, dataset the committed synthetic questions (31, none dropped), laptop CPU, pinned llama.cpp image | retrieval vector: recall@5 0.968 [0.838, 0.994], MRR@10 0.591 [0.489, 0.700]; retrieval hybrid: recall@5 0.935 [0.793, 0.982], MRR@10 0.551 [0.440, 0.672]; citation hit A 25 = 0.806 [0.637, 0.908], B 27 = 0.871 [0.711, 0.949]; citation hit difference 0.065 [0.000, 0.161]; answer-compare winner A; answer p95 A 16.848 s, B 16.902 s; B invalid 1 (marker not cited); largest swap growth in a pass 117 MiB | 2026-11-26 | make eval-all SYNTHETIC=1, run by Ryan after a WSL restart | 0d0ac15 |
 
 ## Serving
 

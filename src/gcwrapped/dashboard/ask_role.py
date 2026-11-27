@@ -15,21 +15,19 @@ from gcwrapped.config import PasswordSettings
 
 ROLE = "gcw_ask"
 # Every relation `answers.pipeline` and the defaults it reads touch, derived from its queries.
-# The eligibility view runs with its owner's rights, so the ledger and staging are not needed.
+# Messages and vectors come only from the two consent-filtered views (D131), which run with their
+# owner's rights, so nothing behind them is needed: no table that holds every sender's text.
 # A new read there fails the Ask tests until it is listed here (and in the README and, for a dbt
 # relation, dbt_project.yml).
 RELATIONS = (
-    "raw.messages",
-    "enrich.message_embeddings",
+    "analytics.ask_messages",
+    "analytics.ask_message_embeddings",
     "enrich.tag_default",
     "enrich.retrieval_default",
     "enrich.answer_prompt_default",
-    "analytics.fct_messages",
-    "analytics.fct_message_eligibility",
-    "analytics.fct_message_text",
 )
 # public holds the vector type and its operators.
-SCHEMAS = ("raw", "enrich", "analytics", "public")
+SCHEMAS = ("enrich", "analytics", "public")
 
 
 class AskPasswordUnset(Exception):

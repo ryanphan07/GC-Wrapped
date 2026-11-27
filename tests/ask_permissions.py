@@ -64,7 +64,7 @@ def assert_writes_nothing(admin_url: str, ask_url: str) -> None:
     with psycopg.connect(ask_url, autocommit=True) as conn:
         assert conn.execute("SHOW default_transaction_read_only").fetchone() == ("on",)
         with pytest.raises(errors.ReadOnlySqlTransaction):
-            conn.execute("DELETE FROM raw.messages")
+            conn.execute("DELETE FROM enrich.tag_default")
         conn.execute("SET default_transaction_read_only = off")
         for schema, name, kind, column in _relations(admin_url):
             relation = sql.Identifier(schema, name)

@@ -9,3 +9,7 @@ sources:
         description: One row per (message_key, model_id, prompt_version).
       - name: tag_default
         description: At most one row, the promoted tagging model (D92). Written by `gcw tag-promote`.
+      - name: message_embeddings
+        description: >
+          One vector and its full-text lexemes per message window (D103), written by `gcw embed`.
+          Read through ask_message_embeddings (D131). No text column.

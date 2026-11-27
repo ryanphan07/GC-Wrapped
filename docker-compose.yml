@@ -78,6 +78,10 @@ services:
       POSTGRES_PORT: "5432"
       GCW_LLM_URL: http://llm:8080
       GCW_EMBED_URL: http://embed:8080
+    # Streamlit still asks this host for the public IP when a websocket arrives with an allowed
+    # Host and a foreign Origin (D132). Resolved to the container itself, nothing leaves.
+    extra_hosts:
+      - "checkip.amazonaws.com:127.0.0.1"
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
     healthcheck:

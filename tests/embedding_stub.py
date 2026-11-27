@@ -11,6 +11,7 @@ does that. Every request body is recorded. GET /v1/models lists `served` (D126).
   redirect   HTTP 302 to `redirect_to` (the client must not follow it)
 """
 
+import argparse
 import json
 import re
 import zlib
@@ -70,8 +71,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class StubEmbed(ThreadingHTTPServer):
-    def __init__(self, mode: str = "ok", reject_text: str = "", redirect_to: str = "") -> None:
-        super().__init__(("127.0.0.1", 0), _Handler)
+    def __init__(
+        self, mode: str = "ok", reject_text: str = "", redirect_to: str = "", port: int = 0
+    ) -> None:
+        super().__init__(("127.0.0.1", port), _Handler)
         self.mode = mode
         self.reject_text = reject_text
         self.redirect_to = redirect_to
@@ -94,3 +97,9 @@ class StubEmbed(ThreadingHTTPServer):
     ) -> None:
         self.shutdown()
         self.server_close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8098)
+    StubEmbed(port=parser.parse_args().port).serve_forever()

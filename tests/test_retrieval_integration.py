@@ -3,8 +3,9 @@
 SQL, pgvector, full-text search, the runner, the commands and the embedding client run for real,
 against the stub server in tests/embedding_stub.py. The dbt objects are stood in for by views over
 the raw tables: eligibility and user text with the dbt definitions (see test_tagging_integration),
-and analytics.fct_messages with the dbt 60-minute session rule and local send time. Sender names
-and message text are sentinels that must never be printed.
+and analytics.fct_messages with the dbt 60-minute session rule and local send time. The two views
+search and excerpts read (D131) are the dbt models' own SQL (tests/ask_view_support.py). Sender
+names and message text are sentinels that must never be printed.
 """
 
 import hashlib
@@ -18,6 +19,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
+from ask_view_support import create_ask_views, drop_ask_views
 from conftest import after_memory_lines
 from embedding_stub import StubEmbed
 from gcwrapped import consent_prune, purge
@@ -106,6 +108,7 @@ def _insert(conn: psycopg.Connection, name: str, load_id: int) -> None:
 
 
 def _drop_views(conn: psycopg.Connection) -> None:
+    drop_ask_views(conn)  # they read the others
     drop_text_view(conn)
     conn.execute("DROP VIEW IF EXISTS analytics.fct_message_eligibility")
     conn.execute("DROP VIEW IF EXISTS analytics.fct_messages")
@@ -139,6 +142,7 @@ def warehouse(migrated_db: str) -> Iterator[str]:
         )
         create_text_view(conn)
         conn.execute(SESSION_VIEW_SQL)
+        create_ask_views(conn)
     yield migrated_db
     with psycopg.connect(migrated_db, autocommit=True) as conn:
         _drop_views(conn)
@@ -328,6 +332,29 @@ def test_a_revocation_hides_every_window_it_shaped_before_anything_is_pruned(
     assert len(_stored(warehouse)) == 8
 
 
+def _view_names(url: str, view: str) -> set[str]:
+    with psycopg.connect(url) as conn:
+        rows = conn.execute(f"SELECT message_key FROM analytics.{view}").fetchall()
+    return {NAME[key] for (key,) in rows}
+
+
+def test_a_revocation_takes_the_senders_own_rows_out_of_both_views_at_once(
+    warehouse: str, stub: StubEmbed
+) -> None:
+    run_embed(warehouse, _client(stub))
+    assert _view_names(warehouse, "ask_messages") == ELIGIBLE  # not Bo, not the placeholder
+    assert _view_names(warehouse, "ask_message_embeddings") == ELIGIBLE
+    _revoke(warehouse, "SENDERCY")
+    assert _view_names(warehouse, "ask_messages") == ELIGIBLE - {"cy"}
+    # a1, d1 and a2 stay until consent-prune, though their windows held Cy's text (D131); search
+    # still passes over them
+    assert _view_names(warehouse, "ask_message_embeddings") == ELIGIBLE - {"cy"}
+    assert len(_stored(warehouse)) == 8
+    with psycopg.connect(warehouse, autocommit=True) as conn:
+        searchable = Retriever(conn, _client(stub)).searchable_ids()
+    assert {NAME[key] for key in searchable} == {"a3", "d2", "e1", "e2"}
+
+
 def test_rows_of_another_embed_version_are_never_searched(warehouse: str, stub: StubEmbed) -> None:
     run_embed(warehouse, _client(stub))
     with psycopg.connect(warehouse, autocommit=True) as conn:
@@ -366,10 +393,14 @@ def test_revoking_a_sender_prunes_their_rows_and_every_window_that_held_them(
         "embedding rows to prune: 4",  # cy's own, and a1, d1, a2 whose windows held it
     ]
     assert len(_stored(warehouse)) == 8  # a dry run changes nothing
+    with psycopg.connect(warehouse, autocommit=True) as conn:
+        searchable = Retriever(conn, _client(stub)).searchable_ids()
 
     applied = _prune(capsys, apply=True)
     assert applied[1:-2] == dry[1:-2] and applied[-2] == "mode: applied"
     assert set(_stored(warehouse)) == {"a3", "d2", "e1", "e2"}
+    # what is left is what search could return before: prune's delete is its complement
+    assert set(_stored(warehouse)) == {NAME[key] for key in searchable}
 
     again = _prune(capsys, apply=False)
     assert again[1:4] == [
@@ -548,6 +579,7 @@ def test_embed_applies_the_migration_a_database_lacks(
     warehouse: str, stub: StubEmbed, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with psycopg.connect(warehouse, autocommit=True) as conn:
+        drop_ask_views(conn)  # a database without the table cannot have a view over it
         conn.execute("DROP TABLE enrich.message_embeddings")
         conn.execute(
             "DELETE FROM schema_migrations WHERE version = '006_enrich_message_embeddings'"

@@ -29,8 +29,8 @@ seeds:
         pattern: text
         description: text
 
-# staging and intermediate = views; marts = tables, except fct_message_eligibility (a view, D75)
-# and mart_member_wrapped (a view, D124). No incremental models.
+# staging and intermediate = views; marts = tables, except fct_message_eligibility (a view, D75),
+# mart_member_wrapped (a view, D124) and the two ask_ views (D131). No incremental models.
 models:
   gcwrapped:
     # Staging and intermediate carry message text, so they live in their own schema that the
@@ -63,15 +63,16 @@ models:
       fct_sessions: *reader_grant
       # mart_member_wrapped: one aggregate profile per consented member (D123), no message text.
       mart_member_wrapped: *reader_grant
-      # gcw_ask (D127): the dbt relations answering reads (gcwrapped.dashboard.ask_role), granted
-      # here too so that a rebuild keeps them. They hold every message, so no reader grant (D128).
-      fct_messages: &ask_grant
+      # gcw_ask (D127, D131): the dbt relations answering reads (gcwrapped.dashboard.ask_role),
+      # granted here too so that a rebuild keeps them. Only the consent-filtered views: they carry
+      # message text and vectors, so no reader grant (D128).
+      ask_message_embeddings: &ask_grant
         +grants:
           select: ['gcw_ask']
-      fct_message_eligibility: *ask_grant
-      fct_message_text: *ask_grant
-      # No grant at all: dim_members and fct_reactions (every sender, D128) and fct_message_tags
-      # (per-message labels; the aggregates above are what the dashboard reads).
+      ask_messages: *ask_grant
+      # No grant at all: dim_members, fct_reactions, fct_messages, fct_message_eligibility and
+      # fct_message_text (every sender, D128) and fct_message_tags (per-message labels; the
+      # aggregates above are what the dashboard reads).
 
 # Table grants alone are not enough: the role also needs USAGE on the schema to see the tables.
 # analytics only; neither role is ever granted anything on staging. Idempotent, safe every build.

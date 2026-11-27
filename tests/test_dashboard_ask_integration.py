@@ -264,6 +264,24 @@ def test_answering_runs_as_gcw_ask_and_needs_each_relation_it_is_granted(
         ask.answer_question("when is the midterm")
 
 
+def test_gcw_ask_sees_no_row_of_a_revoked_sender_before_anything_is_pruned(embedded: str) -> None:
+    def seen() -> list[int]:
+        """Cy's rows that gcw_ask can read: in the message view, then in the vector view."""
+        with psycopg.connect(ask.database_url()) as conn:
+            counts = []
+            for view in ("ask_messages", "ask_message_embeddings"):
+                row = conn.execute(
+                    f"SELECT count(*) FROM analytics.{view} WHERE message_key = %s", (ID["cy"],)
+                ).fetchone()
+                assert row is not None
+                counts.append(row[0])
+        return counts
+
+    assert seen() == [1, 1]
+    _revoke(embedded, "SENDERCY")
+    assert seen() == [0, 0]
+
+
 def test_gcw_ask_reads_the_listed_relations_and_nothing_else(embedded: str) -> None:
     assert_reads_only_the_listed_relations(embedded, ask.database_url())
 
@@ -275,6 +293,9 @@ def test_gcw_ask_cannot_write_even_with_read_only_turned_off(embedded: str) -> N
 def test_setting_the_role_up_again_removes_other_grants_and_settings(embedded: str) -> None:
     with psycopg.connect(embedded, autocommit=True) as conn:
         conn.execute("GRANT SELECT, DELETE ON raw.sender_consent TO gcw_ask")
+        # what an older version granted (D127), as on a volume set up before D131
+        conn.execute("GRANT USAGE ON SCHEMA raw TO gcw_ask")
+        conn.execute("GRANT SELECT ON raw.messages, enrich.message_embeddings TO gcw_ask")
         conn.execute("GRANT CREATE ON SCHEMA raw TO gcw_ask")
         conn.execute("ALTER ROLE gcw_ask SET default_transaction_read_only = off")
     ask_role.ensure(embedded, ask_role.require_password())
