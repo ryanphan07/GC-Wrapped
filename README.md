@@ -196,7 +196,7 @@ make down ENV_FILE=<env file>              # stop the real stack when done
 
 ![Activity page](docs/img/dashboard.png)
 
-*Activity: counts and timings per thread. Synthetic data, captured before Activity was limited to opted-in senders (D128).*
+*Activity: counts and timings per thread, over opted-in senders only. Synthetic data.*
 
 ![Wrapped page](docs/img/wrapped.png)
 
