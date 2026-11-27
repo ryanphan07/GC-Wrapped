@@ -32,9 +32,9 @@ from gcwrapped.dashboard import ask_role
 from gcwrapped.labeling.files import write_questions
 from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.labeling.source import load_eligible
-from gcwrapped.retrieval import commands, evaluation, report, window
+from gcwrapped.retrieval import commands, evaluation, report, search, window
 from gcwrapped.retrieval.client import LlamaCppEmbedder
-from gcwrapped.retrieval.embed import run_embed
+from gcwrapped.retrieval.embed import run_embed, vector_literal
 from gcwrapped.retrieval.search import Retriever
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import model
@@ -358,6 +358,30 @@ def test_a_revocation_takes_the_senders_own_rows_out_of_both_views_at_once(
     with psycopg.connect(warehouse, autocommit=True) as conn:
         searchable = Retriever(conn, _client(stub)).searchable_ids()
     assert {NAME[key] for key in searchable} == {"a3", "d2", "e1", "e2"}
+
+
+@pytest.mark.parametrize("reader", ["pipeline user", "gcw_ask"])
+def test_search_is_never_compiled_however_costly_the_planner_thinks_it(
+    warehouse: str, stub: StubEmbed, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    run_embed(warehouse, _client(stub))
+    url = warehouse
+    if reader == "gcw_ask":
+        set_up_gcw_ask(warehouse, monkeypatch)
+        password = PasswordSettings().gcw_ask_password.get_secret_value()
+        url = make_conninfo(warehouse, user=ask_role.ROLE, password=password)
+    params = {"version": window.embed_version(), "query": vector_literal([1.0] * 1024), "k": 5}
+
+    def plan(conn: psycopg.Connection) -> str:
+        with psycopg.ClientCursor(conn) as cursor:
+            cursor.execute(f"EXPLAIN (ANALYZE) {search.VECTOR_SQL}", params)
+            return "\n".join(str(row[0]) for row in cursor.fetchall())
+
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("SET jit_above_cost = 0")  # as the estimate is at a few thousand windows
+        assert "JIT:" in plan(conn)  # this server would compile it
+        Retriever(conn, _client(stub))
+        assert "JIT:" not in plan(conn)
 
 
 def test_rows_of_another_embed_version_are_never_searched(warehouse: str, stub: StubEmbed) -> None:

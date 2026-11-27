@@ -5,11 +5,12 @@ about 6000 of them eligible typed ones; senders who said yes, local, no or nothi
 placeholders), embeds it with the production window builder and stub vectors, materializes the dbt
 stand-ins as dbt does, and creates the two views answering reads from the dbt models' own SQL. Over
 the committed synthetic questions it times, through the production code, the search and excerpt
-queries (one connection each, so prepared statements behave as they do in an eval pass), and the
-same queries as they were before D131, against the raw tables. Query embedding is timed against the
-dev embed server with the real model; if that server cannot be started, only that part is skipped.
-EXPLAIN (ANALYZE, BUFFERS) output goes to a new temporary directory outside the repo. The old and
-current queries must return identical results, also after a revocation.
+queries (one connection each, so prepared statements behave as they do in an eval pass), the same
+queries with JIT compilation turned back on (D138), and the queries as they were before D131,
+against the raw tables, with JIT on and off. Query embedding is timed against the dev embed server
+with the real model; if that server cannot be started, only that part is skipped. EXPLAIN
+(ANALYZE, BUFFERS) output goes to a new temporary directory outside the repo. All four must return
+identical results, scores included, also after a revocation.
 
 Prints counts, milliseconds and that directory's path. Not part of `make test` or
 `make test-integration`.
@@ -21,6 +22,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg
@@ -145,6 +147,28 @@ class BeforeRetriever(search.Retriever):
     def _query(self, sql: str, query: str, k: int) -> list[search.Hit]:
         before = BEFORE_VECTOR_SQL if sql == search.VECTOR_SQL else BEFORE_TEXT_SQL
         return super()._query(before, query, k)
+
+
+@dataclass(frozen=True)
+class Variant:
+    name: str
+    before: bool  # the pre-D131 queries
+    jit: str | None  # None: as the production code leaves the connection
+
+    def retriever(self, conn: psycopg.Connection, embedder: "StubEmbedder") -> search.Retriever:
+        """A retriever on `conn`, then this variant's JIT setting over what it chose."""
+        found = (BeforeRetriever if self.before else search.Retriever)(conn, embedder)
+        if self.jit is not None:
+            conn.execute(f"SET jit = {self.jit}")
+        return found
+
+
+VARIANTS = (
+    Variant("current", before=False, jit=None),
+    Variant("current, JIT on", before=False, jit="on"),
+    Variant("before D131", before=True, jit="on"),  # the server's default, as it ran then
+    Variant("before D131, JIT off", before=True, jit="off"),
+)
 
 
 def _unit_vector(text: str) -> list[float]:
@@ -296,36 +320,43 @@ def _pass(
     return times, results
 
 
-def _compare_versions(
+def _compare_variants(
     url: str, questions: Sequence[str], embedder: StubEmbedder, patch: pytest.MonkeyPatch
 ) -> dict[str, dict[str, list[float]]]:
-    """Times of the current and pre-D131 queries; fails unless their results are identical."""
-    with psycopg.connect(url, autocommit=True) as conn:
-        now_times, now = _pass(search.Retriever(conn, embedder), conn, questions)
-    with patch.context() as old, psycopg.connect(url, autocommit=True) as conn:
-        old.setattr(excerpts, "WINDOWS_SQL", BEFORE_WINDOWS_SQL)
-        old.setattr(excerpts, "MESSAGES_SQL", BEFORE_MESSAGES_SQL)
-        old_times, before = _pass(BeforeRetriever(conn, embedder), conn, questions)
-    # Rows of one excerpt query come in no set order, but the excerpts built from them do.
-    assert now == before, "current and pre-D131 queries returned different results"
-    return {"current": now_times, "before D131": old_times}
+    """Each variant's times; fails unless all of them return identical results."""
+    times: dict[str, dict[str, list[float]]] = {}
+    results: dict[str, Results] = {}
+    for variant in VARIANTS:
+        with patch.context() as old, psycopg.connect(url, autocommit=True) as conn:
+            if variant.before:
+                old.setattr(excerpts, "WINDOWS_SQL", BEFORE_WINDOWS_SQL)
+                old.setattr(excerpts, "MESSAGES_SQL", BEFORE_MESSAGES_SQL)
+            retriever = variant.retriever(conn, embedder)
+            times[variant.name], results[variant.name] = _pass(retriever, conn, questions)
+    first = results[VARIANTS[0].name]
+    for name, found in results.items():
+        # Rows of one excerpt query come in no set order, but the excerpts built from them do.
+        assert found == first, f"{name} returned different results"
+    return times
 
 
 def _plan_line(name: str, plan: str) -> str:
     def number(pattern: str) -> str:
         found = re.search(pattern, plan)
-        return found.group(1) if found else "none"
+        return f"{found.group(1)} ms" if found else "none"
 
+    hit = re.search(r"Buffers: shared hit=([0-9]+)", plan)
     return (
-        f"plan {name}: planning {number(r'Planning Time: ([0-9.]+)')} ms, "
-        f"execution {number(r'Execution Time: ([0-9.]+)')} ms, "
-        f"JIT {number(r'(?s)JIT:.*?Total ([0-9.]+) ms')} ms, "
-        f"top-node shared buffers hit {number(r'Buffers: shared hit=([0-9]+)')}"
+        f"plan {name}: planning {number(r'Planning Time: ([0-9.]+)')}, "
+        f"execution {number(r'Execution Time: ([0-9.]+)')}, "
+        f"JIT {number(r'(?s)JIT:.*?Total ([0-9.]+) ms')}, "
+        f"top-node shared buffers hit {hit.group(1) if hit else 'none'}"
     )
 
 
 def _explain(url: str, question: str, embedder: StubEmbedder, out: Path) -> list[str]:
-    """EXPLAIN (ANALYZE, BUFFERS) of each query shape, with the values inline (a custom plan)."""
+    """EXPLAIN (ANALYZE, BUFFERS) of each query shape and variant, values inline (a custom
+    plan)."""
     literal = vector_literal(embed_query(embedder, question))
     with psycopg.connect(url, autocommit=True) as conn:
         retriever = search.Retriever(conn, embedder)
@@ -340,29 +371,29 @@ def _explain(url: str, question: str, embedder: StubEmbedder, out: Path) -> list
                 for m in members
             }
         )
-        vector = {"version": version, "query": literal, "k": DEPTH}
-        candidates = {**vector, "k": search.CANDIDATES}
-        text = {"version": version, "query": question, "k": search.CANDIDATES}
-        shapes = (
-            ("vector", search.VECTOR_SQL, BEFORE_VECTOR_SQL, vector),
-            ("hybrid-vector", search.VECTOR_SQL, BEFORE_VECTOR_SQL, candidates),
-            ("hybrid-text", search.TEXT_SQL, BEFORE_TEXT_SQL, text),
-            (
-                "excerpt-windows",
-                excerpts.WINDOWS_SQL,
-                BEFORE_WINDOWS_SQL,
-                {"version": version, "keys": top},
-            ),
-            ("excerpt-messages", excerpts.MESSAGES_SQL, BEFORE_MESSAGES_SQL, {"keys": keys}),
-        )
-        lines = []
-        for name, now, before, params in shapes:
-            for label, sql in (("current", now), ("before-d131", before)):
+    vector = {"version": version, "query": literal, "k": DEPTH}
+    candidates = {**vector, "k": search.CANDIDATES}
+    text = {"version": version, "query": question, "k": search.CANDIDATES}
+    windows = {"version": version, "keys": top}
+    shapes = (
+        ("vector", search.VECTOR_SQL, BEFORE_VECTOR_SQL, vector),
+        ("hybrid-vector", search.VECTOR_SQL, BEFORE_VECTOR_SQL, candidates),
+        ("hybrid-text", search.TEXT_SQL, BEFORE_TEXT_SQL, text),
+        ("excerpt-windows", excerpts.WINDOWS_SQL, BEFORE_WINDOWS_SQL, windows),
+        ("excerpt-messages", excerpts.MESSAGES_SQL, BEFORE_MESSAGES_SQL, {"keys": keys}),
+    )
+    lines = []
+    for shape, now, before, params in shapes:
+        for variant in VARIANTS:
+            with psycopg.connect(url, autocommit=True) as conn:
+                variant.retriever(conn, embedder)
                 with psycopg.ClientCursor(conn) as cursor:
+                    sql = before if variant.before else now
                     cursor.execute(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", params)
                     plan = "\n".join(str(row[0]) for row in cursor.fetchall())
-                (out / f"{name}.{label}.txt").write_text(plan + "\n", encoding="utf-8")
-                lines.append(_plan_line(f"{name} {label}", plan))
+            name = re.sub(r"[^a-z0-9]+", "-", variant.name.lower())
+            (out / f"{shape}.{name}.txt").write_text(plan + "\n", encoding="utf-8")
+            lines.append(_plan_line(f"{shape}, {variant.name}", plan))
     return lines
 
 
@@ -398,11 +429,11 @@ def test_bench_retrieval(warehouse: str, monkeypatch: pytest.MonkeyPatch) -> Non
         ).fetchone()
         assert counts is not None
         messages, eligible = counts
-        searchable = len(search.Retriever(conn, embedder).searchable_ids())
-        settings = [
+        settings = [  # the server's own, read before a Retriever changes any
             f"{name} {conn.execute(f'SHOW {name}').fetchone()[0]}"  # type: ignore[index]
             for name in ("server_version", "jit", "work_mem", "max_parallel_workers_per_gather")
         ]
+        searchable = len(search.Retriever(conn, embedder).searchable_ids())
     assert 5700 <= eligible <= 6300 and searchable == eligible
     lines = [
         f"messages: {messages}",
@@ -411,8 +442,8 @@ def test_bench_retrieval(warehouse: str, monkeypatch: pytest.MonkeyPatch) -> Non
         f"queries: {len(questions)}",
         f"server: {', '.join(settings)}",
     ]
-    for version, times in _compare_versions(warehouse, questions, embedder, monkeypatch).items():
-        lines += [f"{name}, {version}: {_percentiles(s)}" for name, s in times.items()]
+    for variant, times in _compare_variants(warehouse, questions, embedder, monkeypatch).items():
+        lines += [f"{name}, {variant}: {_percentiles(s)}" for name, s in times.items()]
     lines += _explain(warehouse, questions[0], embedder, out)
     lines.append(_query_embedding(questions, monkeypatch))
     with psycopg.connect(warehouse, autocommit=True) as conn:
@@ -421,8 +452,8 @@ def test_bench_retrieval(warehouse: str, monkeypatch: pytest.MonkeyPatch) -> Non
             "WHERE thread_id = %s AND sender_name = 'Bench Sender 0'",
             (THREADS[0],),
         )
-    _compare_versions(warehouse, questions, embedder, monkeypatch)
-    lines.append("identical results, current and before D131: yes, also after a revocation")
+    _compare_variants(warehouse, questions, embedder, monkeypatch)
+    lines.append("identical results across all four variants: yes, also after a revocation")
     lines.append(f"plans: {out}")
     report = "\n".join(f"bench: {line}" for line in lines)
     (out / "summary.txt").write_text(report + "\n", encoding="utf-8")
