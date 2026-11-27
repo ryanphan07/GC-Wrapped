@@ -811,3 +811,10 @@ Decision:
 Alternative: a vector view that also requires the whole window (tried: a revocation between search and excerpt loading then drops the whole result, where today its other eligible members are still shown); null the vector and lexemes of such rows in the view and keep their IDs.
 Why: the centre filter is the rule D131 states and changes no behavior; search and excerpts return what they did before.
 Tradeoff: until consent-prune, gcw_ask can read the words (as lexemes) of a revoked sender inside a neighbor's row. A dbt rebuild drops and recreates the views, so between those two steps, or after a failed build, answering fails instead of reading anything unfiltered.
+
+## D134 — 2026-11-26 — The vector view hides the vector and lexemes of a window a revocation touched
+Decision: analytics.ask_message_embeddings keeps every row whose centre message is in ask_messages, but returns embedding and window_tsv as NULL when any window member is not, so gcw_ask cannot read a revoked sender's words as lexemes before consent-prune. Message, window and version keys stay readable, so excerpt loading behaves as before; search keeps its own whole-window check. Supersedes D133's tradeoff that gcw_ask can read such rows until consent-prune.
+Alternative: accept the gap until consent-prune, which the README deletion flow runs right after consent-load; drop such rows from the view (changes excerpt loading when a revocation lands between search and read, D133).
+Why: makes the README's claim true at the role level with no change to search or answers, for one window check per row read on a few thousand rows.
+Tradeoff: gcw_ask still sees a revoked neighbor's message key inside window_message_keys (an identifier, no text); the window check runs in both the view and the search query.
+Verify: make lint test; make test-integration with llm and embed up; make test-warehouse; make dbt-build ERROR=0; the identity check matches 0ed8713f77b8.

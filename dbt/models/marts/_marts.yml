@@ -329,9 +329,9 @@ models:
   - name: ask_message_embeddings
     description: >
       The vectors answering may read (D131): the rows of enrich.message_embeddings whose centre is
-      in ask_messages, all embed versions. Search also requires every window member to be there
-      (D75, D103). A security_barrier view; gcw_ask's only way to vectors and lexemes. No message
-      text.
+      in ask_messages, all embed versions. embedding and window_tsv are NULL unless every window
+      member is there too (D134); search also checks that itself (D75, D103). A security_barrier
+      view; gcw_ask's only way to vectors and lexemes. No message text.
     columns:
       - name: message_key
         data_tests:
