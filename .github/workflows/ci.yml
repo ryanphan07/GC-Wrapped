@@ -373,8 +373,11 @@ jobs:
           test -n "$keys"
           asked_messages="SELECT count(*) FROM analytics.ask_messages WHERE message_key IN ($keys)"
           asked_vectors="SELECT count(*) FROM analytics.ask_message_embeddings WHERE message_key IN ($keys)"
+          # D134: the vectors and lexemes it can read of any window that held one of their messages.
+          asked_windows="SELECT count(*) FROM analytics.ask_message_embeddings WHERE window_message_keys && ARRAY[$keys] AND (embedding IS NOT NULL OR window_tsv IS NOT NULL)"
           test "$(asker "$asked_messages")" -gt 0
           test "$(asker "$asked_vectors")" -gt 0
+          test "$(asker "$asked_windows")" -gt 0
           sed "s|^GCW_CONSENT_LEDGER=.*|GCW_CONSENT_LEDGER=$FLIPPED|" "$ENV_FILE" > "$RUNNER_TEMP/ci-flipped.env"
           make consent-load ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-l3.log; test "${PIPESTATUS[0]}" -eq 0
           expected=$((before - flipped_messages))
@@ -384,6 +387,7 @@ jobs:
           # D131: so are their rows in both views gcw_ask reads, though nothing was pruned.
           test "$(asker "$asked_messages")" -eq 0
           test "$(asker "$asked_vectors")" -eq 0
+          test "$(asker "$asked_windows")" -eq 0
           test "$(psql "SELECT count(*) FROM enrich.message_embeddings WHERE message_key IN ($keys)")" -gt 0
           make metrics ENV_FILE="$RUNNER_TEMP/ci-flipped.env" 2>&1 | tee consent-metrics2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -qx "external-eligible messages: $expected" consent-metrics2.log

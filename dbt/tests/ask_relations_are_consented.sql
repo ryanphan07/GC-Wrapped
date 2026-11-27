@@ -2,7 +2,8 @@
 -- sender "yes" or "local" in the consent ledger for that thread (D88), and text a person typed
 -- (D95). Both halves are restated here from the ledger, the content and the seed, not read from
 -- fct_message_eligibility or fct_message_text, which the views are filtered by. A vector row
--- belongs to its centre message. The message view also holds every allowed message, once.
+-- belongs to its centre message, and its vector and lexemes are readable only if every message of
+-- its window is allowed too (D134). The message view also holds every allowed message, once.
 -- Returns violating rows; the test passes when none come back.
 with allowed as (
 
@@ -37,6 +38,19 @@ refused_vectors as (
 
 ),
 
+refused_windows as (
+
+    select 'ask_message_embeddings window' as relation, v.message_key as item
+    from {{ ref('ask_message_embeddings') }} as v
+    where (v.embedding is not null or v.window_tsv is not null)
+        and exists (
+            select 1
+            from unnest(v.window_message_keys) as k (key)
+            where k.key not in (select message_key from allowed)
+        )
+
+),
+
 message_count as (
 
     select 'ask_messages row count' as relation, found.n::text as item
@@ -48,5 +62,7 @@ message_count as (
 select * from refused_messages
 union all
 select * from refused_vectors
+union all
+select * from refused_windows
 union all
 select * from message_count

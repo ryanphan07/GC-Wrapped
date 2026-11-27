@@ -18,12 +18,15 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg.conninfo import make_conninfo
 
+from ask_permissions import set_up_gcw_ask
 from ask_view_support import create_ask_views, drop_ask_views
 from conftest import after_memory_lines
 from embedding_stub import StubEmbed
 from gcwrapped import consent_prune, purge
-from gcwrapped.config import get_database_settings
+from gcwrapped.config import PasswordSettings, get_database_settings
+from gcwrapped.dashboard import ask_role
 from gcwrapped.labeling.files import write_questions
 from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.labeling.source import load_eligible
@@ -346,8 +349,8 @@ def test_a_revocation_takes_the_senders_own_rows_out_of_both_views_at_once(
     assert _view_names(warehouse, "ask_message_embeddings") == ELIGIBLE
     _revoke(warehouse, "SENDERCY")
     assert _view_names(warehouse, "ask_messages") == ELIGIBLE - {"cy"}
-    # a1, d1 and a2 stay until consent-prune, though their windows held Cy's text (D131); search
-    # still passes over them
+    # a1, d1 and a2 stay until consent-prune, though their windows held Cy's text; their vector and
+    # lexemes are hidden (D134, below) and search passes over them
     assert _view_names(warehouse, "ask_message_embeddings") == ELIGIBLE - {"cy"}
     assert len(_stored(warehouse)) == 8
     with psycopg.connect(warehouse, autocommit=True) as conn:
@@ -363,6 +366,34 @@ def test_rows_of_another_embed_version_are_never_searched(warehouse: str, stub: 
             (ID["e1"],),
         )
     assert "e1" not in _search(warehouse, stub, "hybrid", "ramen", k=20)
+
+
+def _vector_rows(url: str) -> dict[str, tuple[list[str], bool, bool]]:
+    """name -> the vector view's window for it, and whether its vector and its lexemes are read."""
+    with psycopg.connect(url) as conn:
+        rows = conn.execute(
+            "SELECT message_key, window_message_keys, embedding IS NOT NULL, "
+            "window_tsv IS NOT NULL FROM analytics.ask_message_embeddings"
+        ).fetchall()
+    return {NAME[key]: ([NAME[m] for m in members], v, t) for key, members, v, t in rows}
+
+
+def test_a_revocation_hides_the_vector_and_lexemes_of_every_window_it_touched(
+    warehouse: str, stub: StubEmbed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_embed(warehouse, _client(stub))
+    set_up_gcw_ask(warehouse, monkeypatch)
+    password = PasswordSettings().gcw_ask_password.get_secret_value()
+    readers = (warehouse, make_conninfo(warehouse, user=ask_role.ROLE, password=password))
+    whole = {name: (members, True, True) for name, members in WINDOWS.items()}
+    for url in readers:
+        assert _vector_rows(url) == whole
+    _revoke(warehouse, "SENDERCY")
+    expected = {name: row for name, row in whole.items() if name != "cy"}
+    for name in ("a1", "d1", "a2"):
+        expected[name] = (WINDOWS[name], False, False)
+    for url in readers:
+        assert _vector_rows(url) == expected
 
 
 # --- consent-prune (D105) ----------------------------------------------------------------------
