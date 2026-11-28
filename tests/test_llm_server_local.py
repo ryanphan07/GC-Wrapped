@@ -96,6 +96,32 @@ def test_the_sentinel_never_reaches_the_server_logs_and_prompt_endpoints_are_clo
         assert SENTINEL not in props.read().decode("utf-8", "replace")
 
 
+def test_the_running_server_has_no_host_ram_prompt_cache(llm: str) -> None:
+    """D142: the pinned image keeps up to 8192 MiB of prompts in host RAM by default, and an answer
+    pass grew it with every question. /props does not report the setting, so read the dev llm
+    container's own command line (the .env project only)."""
+    cmdline = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env",
+            "--profile",
+            "llm",
+            "exec",
+            "-T",
+            "llm",
+            "cat",
+            "/proc/1/cmdline",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout.split("\0")
+    assert cmdline[cmdline.index("--cache-ram") + 1] == "0"
+
+
 def test_the_real_server_reports_the_served_model(llm: str) -> None:
     require_served_model(llm, model.MODEL_ID)
     with pytest.raises(ServedModelMismatch):

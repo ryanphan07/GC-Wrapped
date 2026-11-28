@@ -414,8 +414,14 @@ def test_llm_service_is_pinned_local_only_and_leaks_nothing() -> None:
     assert re.search(r'- "127\.0\.0\.1:\$\{GCW_LLM_PORT:-8081\}:8080"', svc)
     assert ":/models:ro" in svc
     assert 'profiles: ["llm"]' in svc
-    for flag, value in (("--ctx-size", "32768"), ("--parallel", "1"), ("--threads", "8")):
+    for flag, value in (
+        ("--ctx-size", "32768"),
+        ("--parallel", "1"),
+        ("--threads", "8"),
+        ("--cache-ram", "0"),  # D142: no host-RAM prompt cache, which grew with every question
+    ):
         assert re.search(rf"- {flag}\n\s+- \"{value}\"", svc), flag
+    assert svc.count("--cache-ram") == 1 and "-cram" not in svc
     assert "- --no-slots" in svc and "- --no-webui" in svc
     for forbidden in ("--props", "--metrics", "--verbose", "--log-verbose", "-lv", "--api-key"):
         assert forbidden not in svc

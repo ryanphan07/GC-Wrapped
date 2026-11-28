@@ -108,6 +108,9 @@ services:
   # Logging stays at the default level, which does not print prompts (a local test checks the logs).
   # --ctx-size holds the largest answer prompt (D111, D114): five 2000-character windows, even of
   # text that costs several tokens per character, plus the system prompt and the answer.
+  # --cache-ram 0 turns off the host-RAM prompt cache (default 8192 MiB in this image), which kept
+  # every distinct prompt and grew with each question of an answer pass until swap filled (D142).
+  # The slot still reuses the shared prefix of the previous prompt (cache_prompt in the client).
   llm:
     profiles: ["llm"]
     image: ghcr.io/ggml-org/llama.cpp:server@sha256:c7d58273d753d33a352e5c41ab300c5ae040a16fa4b202231bb606478065c124
@@ -126,6 +129,8 @@ services:
       - "1"
       - --threads
       - "8"
+      - --cache-ram
+      - "0"
       - --no-slots
       - --no-webui
     ports:
