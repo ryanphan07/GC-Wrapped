@@ -102,7 +102,7 @@ jobs:
         run: |
           uv run gcw consent-load --no-start
           uv run python tests/tagging_stub.py --port 8099 &
-          until curl -fsS http://127.0.0.1:8099/health >/dev/null 2>&1; do sleep 0.5; done
+          timeout 30 bash -c 'until curl -fsS http://127.0.0.1:8099/health >/dev/null 2>&1; do sleep 0.5; done'
           uv run gcw tag --no-start | tee tag-1.log
           grep -qx "tag: ok" tag-1.log
           grep -qx "failures: 0" tag-1.log
