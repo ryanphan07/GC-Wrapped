@@ -130,6 +130,7 @@ def test_streamlit_listens_locally_and_sends_no_usage_statistics() -> None:
     assert config["server"]["allowedHosts"] == ["localhost", "127.0.0.1"]
     assert config["browser"]["gatherUsageStats"] is False
     assert config["client"]["showErrorDetails"] is False
+    assert config["client"]["toolbarMode"] == "minimal"  # no "Deploy" button
     dockerfile = (REPO / "dashboard" / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY .streamlit ./.streamlit" in dockerfile  # the image runs under the same file
 

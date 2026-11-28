@@ -854,3 +854,9 @@ Decision: tag-compare, retrieval-compare and answer-compare name a verdict with 
 Alternative: eval-all hands the new file to promote and standalone promote picks by file modification time; a sequence number in the name or a counter file.
 Why: the WSL clock can step backwards, after which an older verdict sorted last and promote acted on it. One change to how a name is chosen covers eval-all and a standalone promote, needs no new format, and existing verdict files keep their meaning. File times come from the same clock.
 Tradeoff: after a step backwards the stamp in a new name is ahead of the real time it was written; a name edited by hand to a far future date would pull later names after it; two compares writing at once could still collide, as before.
+
+## D141 — 2026-11-27 — Keep the whole-window check in both the vector view and the search query
+Decision: Retrieval keeps D134's whole-window check in analytics.ask_message_embeddings and search's own check (retrieval/search.py _TAINTED), with ask_messages evaluated as now. With JIT off (D138), the benchmark at the pilot's scale puts search p50 at 187.8 ms (vector) and 321.0 ms (hybrid), against 103.2 ms and 159.5 ms for the queries before D131.
+Alternative: drop search's own check and rely on the view; precompute eligibility in a table refreshed at consent-load.
+Why: about 85 ms per vector search (160 ms hybrid) is small next to answering (p50 about 15 s in the pilot). The second check keeps search correct if the view is ever changed, and a precomputed table would bring back the stale-consent window D75 removed.
+Tradeoff: every search pays that cost; a much larger corpus would need it revisited.
