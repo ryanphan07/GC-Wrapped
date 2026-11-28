@@ -36,7 +36,7 @@ DBT_DIR = Path("dbt")
 # "everything collected minus this", so nothing falls between the two numbers.
 UNIT_PYTEST_ARGS = (
     "-m",
-    "not integration and not warehouse",
+    "not integration and not warehouse and not bench",
     "--ignore=tests/test_dashboard_warehouse.py",
 )
 SUBPROCESS_TIMEOUT_SECONDS = 600

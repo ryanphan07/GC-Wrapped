@@ -1,6 +1,6 @@
 """Fixed-line output for `make answer-eval`, `answer-compare`, `answer-promote`, `grade-summary`
-and `grade-answers`' closing counts, and for `make ask`'s numbers line and summary (D112, D113,
-D115, D116, D120, D121).
+and `grade-answers`' closing counts, for `make ask`'s numbers line and summary, and for
+`make answer-identity` (D112, D113, D115, D116, D120, D121, D136).
 
 Every line is a fixed label plus numbers or a name from a closed list, checked with fullmatch
 before anything is printed. The deliberate exceptions in this package are what `commands` prints to
@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from gcwrapped.answers.comparison import CompareResult
 from gcwrapped.answers.evaluation import EvalResult, Rate
 from gcwrapped.answers.grades import Summary
+from gcwrapped.answers.identity import Record
 from gcwrapped.answers.pipeline import (
     ABSTAINED,
     ANSWERED,
@@ -146,7 +147,20 @@ SUMMARY_SHAPES = (
     ),
     r"grade-summary: ok",
 )
+PIPELINE_CONNECTION = "pipeline user"
+ASK_CONNECTION = "gcw_ask"
+_IDENTITY_BLOCK = (
+    rf"connection: ({PIPELINE_CONNECTION}|{ASK_CONNECTION})",
+    r"questions: \d+",
+    r"methods: \d+",
+    r"prompts: \d+",
+    r"record sha256: [0-9a-f]{12}",
+    r"searchable messages: \d+",
+    r"corpus hash: [0-9a-f]{12}",
+    r"embed version: [0-9a-f]{12}",
+)
 COMMANDS = (
+    "answer-identity",
     "answer-eval",
     "ask",
     "answer-compare",
@@ -158,7 +172,7 @@ COMMANDS = (
 STEPS = (
     "count|variant|database|label directory|embed url|llm url|questions|docker|model|retrieval|"
     "corpus|grades|memory|answering|scoring|predictions|verdict|promote|render|ask password|"
-    "ask role"
+    "ask role|synthetic|record"
 )
 _FAILED_AT = rf"({'|'.join(COMMANDS)}): failed at ({STEPS}) \([A-Za-z_][A-Za-z0-9_]*\)"
 
@@ -341,6 +355,40 @@ def render_summary(model_id: str, prompt_version: str, method: str, summary: Sum
         "grade-summary: ok",
     ]
     return check_lines(lines, SUMMARY_SHAPES)
+
+
+def identity_shapes(connections: int, ok: bool) -> tuple[str, ...]:
+    """The shapes of an answer-identity output with that many connection blocks: with one only,
+    gcw_ask was skipped; the ok line is left off when the records differ."""
+    skipped = (r"gcw_ask: skipped \(GCW_ASK_PASSWORD unset\)",) if connections == 1 else ()
+    return (
+        rf"target database: ({_DATABASES})",
+        *_IDENTITY_BLOCK * connections,
+        *skipped,
+        *((r"answer-identity: ok",) if ok else ()),
+    )
+
+
+def render_identity(database: str, records: Mapping[str, Record]) -> list[str]:
+    """One block per connection. The ok line only if every connection built the same record."""
+    lines = [f"target database: {database}"]
+    for connection, record in records.items():
+        lines += [
+            f"connection: {connection}",
+            f"questions: {record.questions}",
+            f"methods: {len(METHODS)}",
+            f"prompts: {record.prompts}",
+            f"record sha256: {record.sha256}",
+            f"searchable messages: {record.searchable}",
+            f"corpus hash: {record.corpus_hash}",
+            f"embed version: {record.embed_version}",
+        ]
+    if ASK_CONNECTION not in records:
+        lines.append("gcw_ask: skipped (GCW_ASK_PASSWORD unset)")
+    ok = len(set(records.values())) == 1
+    if ok:
+        lines.append("answer-identity: ok")
+    return check_lines(lines, identity_shapes(len(records), ok))
 
 
 def failure_line(command: str, step: str, exc: BaseException) -> str:

@@ -1,5 +1,6 @@
 """Shared fixtures, including the session-start test-isolation guard."""
 
+import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,6 +14,7 @@ from psycopg.conninfo import conninfo_to_dict
 from gcwrapped import docker, memory
 from gcwrapped.config import get_database_settings
 from gcwrapped.db import database_url
+from gcwrapped.log import KeyValueFormatter
 from gcwrapped.migrate import migrate
 from gcwrapped.tagging.report import check_lines
 from isolation_guard import IsolationError, check_database_url, check_session
@@ -58,6 +60,18 @@ def _quiet_host(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mo
     meminfo.write_text(meminfo_text(), encoding="ascii")
     monkeypatch.setattr(memory, "MEMINFO", meminfo)
     monkeypatch.setattr(docker, "running_containers", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def _drop_the_log_handler_a_command_added() -> Iterator[None]:
+    """`main()` points the root logger at the stderr of the test that ran it. A handler left
+    behind writes to that closed stream from a later test, so the outcome depends on test order."""
+    root = logging.getLogger()
+    level = root.level
+    yield
+    for handler in [h for h in root.handlers if isinstance(h.formatter, KeyValueFormatter)]:
+        root.removeHandler(handler)
+    root.setLevel(level)
 
 
 TEST_DB_NAME = "gcw_test"

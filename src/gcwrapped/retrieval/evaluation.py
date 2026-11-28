@@ -26,7 +26,6 @@ import re
 import time
 from collections.abc import Callable, Container, Iterable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
 from typing import TextIO
@@ -154,6 +153,10 @@ def split_questions(
     return kept, len(questions) - len(kept)
 
 
+def question_hash(question: str) -> str:
+    return hashlib.sha256(question.encode("utf-8")).hexdigest()
+
+
 def run_method(
     search: Callable[[str, int], list[Hit]],
     questions: Sequence[QuestionLabel],
@@ -168,7 +171,7 @@ def run_method(
         rows.append(
             Row(
                 question_id=question.question_id,
-                question_sha256=hashlib.sha256(question.question.encode("utf-8")).hexdigest(),
+                question_sha256=question_hash(question.question),
                 source_message_id=question.source_message_id,
                 gold_message_ids=question.gold_message_ids,
                 retrieved_message_ids=tuple(h.message_id for h in hits[:DEPTH]),
@@ -286,7 +289,7 @@ class CompareResult:
         return round(self.difference.interval[0], _FLOAT_NOISE_PLACES) > 0 and self.latency_ok
 
 
-def _question_set(predictions: Predictions) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+def question_set(predictions: Predictions) -> dict[str, tuple[str, str, tuple[str, ...]]]:
     return {
         r.question_id: (r.question_sha256, r.source_message_id, tuple(sorted(r.gold_message_ids)))
         for r in predictions.rows
@@ -300,7 +303,7 @@ def compare(a: Predictions, b: Predictions, eligible: Container[str]) -> Compare
         raise EmbedVersionMismatch
     if a.corpus_hash != b.corpus_hash:
         raise CorpusMismatch
-    if a.source != b.source or _question_set(a) != _question_set(b):
+    if a.source != b.source or question_set(a) != question_set(b):
         raise QuestionSetMismatch
     by_id = {r.question_id: r for r in b.rows}
     pairs = [
@@ -400,8 +403,7 @@ def write_verdict(root: Path, predictions: Predictions, result: CompareResult) -
     version and the corpus hash only; mode 0600. `predictions` is either of the compared files
     (compare has checked that version and corpus are the same in both)."""
     folder = tag_evaluation.private_subdir(root, tag_evaluation.EXPERIMENTS_DIR)
-    now = datetime.now(UTC)
-    path = folder / f"retrieval-compare-{now:%Y%m%dT%H%M%S%f}Z.json"
+    path = tag_evaluation.new_verdict_path(folder, "retrieval-compare")
     body = {
         "a": VECTOR,
         "b": HYBRID,

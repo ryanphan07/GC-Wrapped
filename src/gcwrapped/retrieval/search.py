@@ -95,9 +95,15 @@ def fuse(vector_ids: Sequence[str], text_ids: Sequence[str], rrf_k: int = RRF_K)
 
 
 class Retriever:
-    """Search bound to one connection and one local embedder."""
+    """Search bound to one connection and one local embedder.
+
+    It turns JIT compilation off on that connection (D138): the planner's cost estimate for the
+    per-row consent checks is far above the JIT thresholds, and at a few thousand windows compiling
+    took several times longer than running the query. Results are the same either way.
+    """
 
     def __init__(self, conn: psycopg.Connection, embedder: Embedder) -> None:
+        conn.execute("SET jit = off")
         self._conn = conn
         self._embedder = embedder
         self.version = embed_version(embedder.model_id)

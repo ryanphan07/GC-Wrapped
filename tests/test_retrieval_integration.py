@@ -12,7 +12,6 @@ import hashlib
 import logging
 import re
 import stat
-import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -21,18 +20,20 @@ import pytest
 from psycopg.conninfo import make_conninfo
 
 from ask_permissions import set_up_gcw_ask
-from ask_view_support import create_ask_views, drop_ask_views
+from ask_view_support import create_ask_views, drop_ask_views, model_sql
 from conftest import after_memory_lines
 from embedding_stub import StubEmbed
 from gcwrapped import consent_prune, purge
+from gcwrapped.answers import commands as answer_commands
+from gcwrapped.answers import report as answer_report
 from gcwrapped.config import PasswordSettings, get_database_settings
 from gcwrapped.dashboard import ask_role
 from gcwrapped.labeling.files import write_questions
 from gcwrapped.labeling.schema import QuestionLabel
 from gcwrapped.labeling.source import load_eligible
-from gcwrapped.retrieval import commands, evaluation, report, window
+from gcwrapped.retrieval import commands, evaluation, report, search, window
 from gcwrapped.retrieval.client import LlamaCppEmbedder
-from gcwrapped.retrieval.embed import run_embed
+from gcwrapped.retrieval.embed import run_embed, vector_literal
 from gcwrapped.retrieval.search import Retriever
 from gcwrapped.tagging import commands as tagging
 from gcwrapped.tagging import model
@@ -356,6 +357,30 @@ def test_a_revocation_takes_the_senders_own_rows_out_of_both_views_at_once(
     with psycopg.connect(warehouse, autocommit=True) as conn:
         searchable = Retriever(conn, _client(stub)).searchable_ids()
     assert {NAME[key] for key in searchable} == {"a3", "d2", "e1", "e2"}
+
+
+@pytest.mark.parametrize("reader", ["pipeline user", "gcw_ask"])
+def test_search_is_never_compiled_however_costly_the_planner_thinks_it(
+    warehouse: str, stub: StubEmbed, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    run_embed(warehouse, _client(stub))
+    url = warehouse
+    if reader == "gcw_ask":
+        set_up_gcw_ask(warehouse, monkeypatch)
+        password = PasswordSettings().gcw_ask_password.get_secret_value()
+        url = make_conninfo(warehouse, user=ask_role.ROLE, password=password)
+    params = {"version": window.embed_version(), "query": vector_literal([1.0] * 1024), "k": 5}
+
+    def plan(conn: psycopg.Connection) -> str:
+        with psycopg.ClientCursor(conn) as cursor:
+            cursor.execute(f"EXPLAIN (ANALYZE) {search.VECTOR_SQL}", params)
+            return "\n".join(str(row[0]) for row in cursor.fetchall())
+
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("SET jit_above_cost = 0")  # as the estimate is at a few thousand windows
+        assert "JIT:" in plan(conn)  # this server would compile it
+        Retriever(conn, _client(stub))
+        assert "JIT:" not in plan(conn)
 
 
 def test_rows_of_another_embed_version_are_never_searched(warehouse: str, stub: StubEmbed) -> None:
@@ -815,7 +840,6 @@ def test_retrieval_promote_sets_the_one_row_and_a_later_verdict_can_replace_it(
     with psycopg.connect(warehouse) as conn:
         assert evaluation.default_method(conn) == "hybrid"
 
-    time.sleep(0.002)  # the next verdict file must sort after the first
     _compare_on(label_dir, hybrid_wins=False)
     capsys.readouterr()
     assert commands.run_retrieval_promote("hybrid", start_db=None) == 1
@@ -911,6 +935,8 @@ def test_a_synthetic_run_uses_a_temporary_directory_and_the_committed_questions(
         )
     assert commands.run_retrieval_compare("vector", "hybrid", synthetic=True, start_db=None) == 0
     assert "questions source: synthetic" in capsys.readouterr().out
+    assert commands.run_retrieval_misses(True, start_db=None, start_service=None) == 0
+    assert "retrieval-misses: ok" in capsys.readouterr().out.splitlines()
     (root,) = tmp_path.glob("gcw-synthetic-eval-*")
     assert sorted(p.name for p in (root / "retrieval").iterdir()) == ["hybrid.json", "vector.json"]
     assert list(label_dir.iterdir()) == []  # GCW_LABEL_DIR untouched
@@ -929,10 +955,12 @@ def test_the_commands_refuse_other_databases_and_label_directories_before_starti
     assert commands.run_embed(synthetic=True, start_db=start, start_service=start) == 1
     assert commands.run_retrieval_eval("vector", True, start_db=start, start_service=start) == 1
     assert commands.run_retrieval_compare("vector", "hybrid", True, start_db=start) == 1
+    assert commands.run_retrieval_misses(True, start_db=start, start_service=start) == 1
     for bad in ("", str(Path(__file__).resolve().parent)):
         monkeypatch.setenv("GCW_LABEL_DIR", bad)
         assert commands.run_retrieval_eval("vector", start_db=start, start_service=start) == 1
         assert commands.run_retrieval_compare("vector", "hybrid", start_db=start) == 1
+        assert commands.run_retrieval_misses(start_db=start, start_service=start) == 1
     monkeypatch.setenv("GCW_EMBED_URL", "http://example.com:8082")
     assert commands.run_embed(start_db=start, start_service=start) == 1
     monkeypatch.setenv("GCW_DB_NAME", "gcw_other")
@@ -941,11 +969,11 @@ def test_the_commands_refuse_other_databases_and_label_directories_before_starti
     assert commands.run_embed(start_db=start, start_service=start) == 1
     synthetic = [
         f"{c}: failed at database (UnexpectedDatabaseError)"
-        for c in ("embed", "retrieval-eval", "retrieval-compare")
+        for c in ("embed", "retrieval-eval", "retrieval-compare", "retrieval-misses")
     ]
     directory = [
         f"{c}: failed at label directory (LabelDirError)"
-        for c in ("retrieval-eval", "retrieval-compare")
+        for c in ("retrieval-eval", "retrieval-compare", "retrieval-misses")
     ]
     assert capsys.readouterr().out.splitlines() == [
         *synthetic,
@@ -961,3 +989,177 @@ def test_eligibility_here_is_the_labelers(warehouse: str) -> None:
     with psycopg.connect(warehouse) as conn:
         centres = {NAME[w.message_id] for w in window.load_windows(conn)}
     assert centres == ELIGIBLE == {NAME[i] for ids in index.ids_by_thread().values() for i in ids}
+
+
+# --- answer-identity (D136) --------------------------------------------------------------------
+
+
+@pytest.fixture
+def synthetic_corpus(
+    warehouse: str, stub: StubEmbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """The test warehouse standing in for gcw_dev, embedded, with a question file standing in for
+    the committed synthetic set. No llm runs: an identity run must not need one."""
+    monkeypatch.setattr(tagging, "SYNTHETIC_DATABASE", "gcw_test")
+    monkeypatch.setattr(commands, "SYNTHETIC_QUESTIONS", _write_questions(tmp_path))
+    monkeypatch.setenv("GCW_LLM_URL", "http://127.0.0.1:9")  # nothing listens there
+    run_embed(warehouse, _client(stub))
+    return warehouse
+
+
+def _identity(capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    services = answer_commands.Services(db=None, llm=None, embed=None)
+    code = answer_commands.run_answer_identity(True, services)
+    out = capsys.readouterr()
+    assert out.err == ""
+    return code, out.out.splitlines()
+
+
+def test_answer_identity_prints_one_record_for_both_connections_and_nothing_else(
+    synthetic_corpus: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    set_up_gcw_ask(synthetic_corpus, monkeypatch)
+    caplog.set_level(logging.DEBUG)
+    code, lines = _identity(capsys)
+    assert code == 0
+    check_lines(lines, answer_report.identity_shapes(2, ok=True))
+    assert lines[:5] == [
+        "target database: gcw_test",
+        "connection: pipeline user",
+        "questions: 4",
+        "methods: 2",
+        "prompts: 16",  # 4 questions, 2 methods, 2 variants
+    ]
+    assert lines[6] == "searchable messages: 8"
+    assert lines[9] == "connection: gcw_ask" and lines[10:17] == lines[2:9]
+    assert lines[17] == "answer-identity: ok"
+    _assert_clean("\n".join(lines), caplog.text, extra=("which friday", "ramen"))
+    assert _identity(capsys) == (0, lines)  # the same warehouse gives the same record
+
+
+def test_answer_identity_without_an_ask_password_runs_as_the_pipeline_user_only(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "")
+    code, lines = _identity(capsys)
+    assert code == 0
+    check_lines(lines, answer_report.identity_shapes(1, ok=True))
+    assert "connection: gcw_ask" not in lines
+    assert lines[-2:] == ["gcw_ask: skipped (GCW_ASK_PASSWORD unset)", "answer-identity: ok"]
+
+
+def test_the_identity_record_follows_the_text_the_model_would_be_shown(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GCW_ASK_PASSWORD", "")
+    _, before = _identity(capsys)
+    with psycopg.connect(synthetic_corpus, autocommit=True) as conn:
+        # Vectors and lexemes are untouched, so search is unchanged: only the prompts differ.
+        conn.execute(
+            "UPDATE raw.messages SET content = content || ' edited' WHERE message_key = %s",
+            (ID["a1"],),
+        )
+    _, after = _identity(capsys)
+    assert before[5].startswith("record sha256: ") and after[5] != before[5]
+    assert after[:5] + after[6:] == before[:5] + before[6:]
+
+
+def test_answer_identity_fails_when_gcw_ask_would_answer_from_other_messages(
+    synthetic_corpus: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_up_gcw_ask(synthetic_corpus, monkeypatch)
+    with psycopg.connect(synthetic_corpus, autocommit=True) as conn:
+        # current_user inside a view is the caller: a view that shows gcw_ask less.
+        conn.execute(
+            "CREATE OR REPLACE VIEW analytics.ask_messages WITH (security_barrier = true) AS "
+            f"SELECT * FROM ({model_sql('ask_messages')}) AS m "
+            "WHERE current_user <> 'gcw_ask' OR m.sender_name <> 'SENDERDEE'"
+        )
+    code, lines = _identity(capsys)
+    assert code == 1
+    assert lines[-1] == "answer-identity: failed at record (RecordMismatchError)"
+    assert "answer-identity: ok" not in lines
+    check_lines(lines[:-1], answer_report.identity_shapes(2, ok=False))
+
+
+def test_answer_identity_refuses_any_database_but_gcw_dev(
+    warehouse: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def start() -> None:
+        pytest.fail("a service was started")
+
+    services = answer_commands.Services(db=start, llm=None, embed=start)
+    assert answer_commands.run_answer_identity(True, services) == 1
+    assert capsys.readouterr().out == (
+        "answer-identity: failed at database (UnexpectedDatabaseError)\n"
+    )
+
+
+# --- retrieval-misses (D139) -------------------------------------------------------------------
+
+
+def _files(directory: Path) -> dict[str, bytes]:
+    return {str(p): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+
+
+def _misses(capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    code = commands.run_retrieval_misses(start_db=None, start_service=None)
+    out = capsys.readouterr()
+    assert out.err == ""
+    return code, out.out.splitlines()
+
+
+def test_retrieval_misses_prints_counts_only_and_stores_nothing(
+    warehouse: str,
+    stub: StubEmbed,
+    label_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_embed(warehouse, _client(stub))
+    for method in ("vector", "hybrid"):
+        assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 0
+    capsys.readouterr()
+    before = _files(label_dir)
+    caplog.set_level(logging.DEBUG)
+
+    code, lines = _misses(capsys)
+    assert code == 0
+    check_lines(lines, report.misses_shapes(2))
+    # Four questions, one about a message whose sender said no; eight windows, so every searchable
+    # gold is returned within the first ten.
+    for block, method in ((lines[3:21], "vector"), (lines[21:39], "hybrid")):
+        counts = dict(line.rsplit(": ", 1) for line in block)
+        assert counts["method"] == method
+        assert counts["questions"] == "4" and counts["questions scored"] == "3"
+        assert counts["dropped, right message not searchable"] == "1"
+        assert counts["right message at rank 11-50"] == "0"
+        assert counts["right message not in the top 50"] == "0"
+        assert sum(int(v) for k, v in counts.items() if k.startswith(("hit@5", "miss@5"))) == 3
+        assert counts["questions whose top 10 differs from the stored run"] == "0"
+    _assert_clean(
+        "\n".join(lines), caplog.text, extra=(str(label_dir), "which friday", "ramen", "q001")
+    )
+    assert _files(label_dir) == before
+
+
+def test_retrieval_misses_is_refused_without_runs_or_after_the_corpus_changed(
+    warehouse: str, stub: StubEmbed, label_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_embed(warehouse, _client(stub))
+    assert _misses(capsys) == (
+        1,
+        ["retrieval-misses: failed at predictions (RetrievalPredictionsError)"],
+    )
+    for method in ("vector", "hybrid"):
+        assert commands.run_retrieval_eval(method, start_db=None, start_service=None) == 0
+    _revoke(warehouse, "SENDEREVE")
+    run_embed(warehouse, _client(stub))
+    capsys.readouterr()
+    assert _misses(capsys) == (
+        1,
+        ["retrieval-misses: failed at predictions (CorpusMismatch)"],
+    )

@@ -1,5 +1,5 @@
-"""Fixed-line output for `make embed`, `retrieval-eval`, `retrieval-compare` and
-`retrieval-promote`.
+"""Fixed-line output for `make embed`, `retrieval-eval`, `retrieval-compare`,
+`retrieval-promote` and `retrieval-misses`.
 
 Every line is a fixed label plus numbers or a name from a closed list, checked with fullmatch
 before anything is printed, so no question, message text, sender, ID or path can reach the terminal
@@ -7,6 +7,7 @@ even through a bug. The failure line carries a step name and an exception class 
 """
 
 import re
+from collections.abc import Sequence
 
 from gcwrapped.metrics import ALLOWED_DATABASES
 from gcwrapped.retrieval.embed import EmbedResult
@@ -16,6 +17,13 @@ from gcwrapped.retrieval.evaluation import (
     CompareResult,
     Estimate,
     EvalResult,
+)
+from gcwrapped.retrieval.misses import (
+    HIT_AT,
+    LENGTH_BUCKETS,
+    NOT_FOUND,
+    RANK_BUCKETS,
+    Breakdown,
 )
 from gcwrapped.tagging.model import EMBED_REGISTRY
 from gcwrapped.tagging.report import check_lines
@@ -75,7 +83,34 @@ PROMOTE_SHAPES = (
     rf"previous method: ({_METHODS}|none)",
     r"retrieval-promote: ok",
 )
-COMMANDS = ("embed", "retrieval-eval", "retrieval-compare", "retrieval-promote")
+_RANK_NAMES = tuple(name for name, _ in RANK_BUCKETS)
+_LENGTH_NAMES = tuple(name for name, _ in LENGTH_BUCKETS)
+_MISS_LABELS = (
+    "questions",
+    "dropped, right message not searchable",
+    "dropped, source message not eligible",
+    "questions scored",
+    *(f"right message at rank {name}" for name in _RANK_NAMES),
+    f"right message {NOT_FOUND}",
+    *(
+        f"{outcome}@{HIT_AT}, right message of {name} words"
+        for outcome in ("hit", "miss")
+        for name in _LENGTH_NAMES
+    ),
+    f"misses@{HIT_AT} with the right message inside a top-{HIT_AT} window",
+    "questions whose top 10 differs from the stored run",
+)
+_MISS_BLOCK = (
+    rf"method: ({_METHODS})",
+    *(rf"{re.escape(label)}: \d+" for label in _MISS_LABELS),
+)
+COMMANDS = (
+    "embed",
+    "retrieval-eval",
+    "retrieval-compare",
+    "retrieval-promote",
+    "retrieval-misses",
+)
 STEPS = (
     "method|database|label directory|embed url|questions|predictions|docker|model|memory|"
     "embedding|retrieval|corpus|scoring|verdict|promote|render"
@@ -156,6 +191,43 @@ def render_promote(database: str, method: str, previous: str | None) -> list[str
         "retrieval-promote: ok",
     ]
     return check_lines(lines, PROMOTE_SHAPES)
+
+
+def misses_shapes(methods: int) -> tuple[str, ...]:
+    """The shapes of a retrieval-misses output with that many method blocks."""
+    return (
+        rf"target database: ({_DATABASES})",
+        r"questions source: (synthetic|real)",
+        r"embed version: [0-9a-f]{12}",
+        *_MISS_BLOCK * methods,
+        r"retrieval-misses: ok",
+    )
+
+
+def render_misses(
+    database: str, source: str, version: str, breakdowns: Sequence[Breakdown]
+) -> list[str]:
+    lines = [
+        f"target database: {database}",
+        f"questions source: {source}",
+        f"embed version: {version}",
+    ]
+    for found in breakdowns:
+        values = (
+            found.questions,
+            found.gold_not_searchable,
+            found.source_not_eligible,
+            found.scored,
+            *(found.ranks[name] for name in (*_RANK_NAMES, NOT_FOUND)),
+            *(found.hit_lengths[name] for name in _LENGTH_NAMES),
+            *(found.miss_lengths[name] for name in _LENGTH_NAMES),
+            found.near_misses,
+            found.changed,
+        )
+        lines.append(f"method: {found.method}")
+        lines += [f"{label}: {value}" for label, value in zip(_MISS_LABELS, values, strict=True)]
+    lines.append("retrieval-misses: ok")
+    return check_lines(lines, misses_shapes(len(breakdowns)))
 
 
 def failure_line(command: str, step: str, exc: BaseException) -> str:

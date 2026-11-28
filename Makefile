@@ -15,7 +15,7 @@ IGNORE_WAREHOUSE = --ignore=tests/test_dashboard_warehouse.py
 COMPOSE = docker compose --env-file "$(ENV_FILE)"
 DASHBOARD_URL = http://localhost:$(or $(DASHBOARD_PORT),8501)
 
-.PHONY: up down logs psql-dev test test-integration lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
+.PHONY: up down logs psql-dev test test-integration bench-retrieval lint fmt synth dbt-debug dbt-deps dbt-build ingest airflow-up test-warehouse dashboard-up e2e inspect synth-sentinel parse-check check-landing real-ingest metrics consent-template consent-load purge-unlisted consent-prune consent-coverage redaction-audit text-audit label-tags label-questions label-summary llm-model tag tag-eval tag-compare tag-promote embed retrieval-eval retrieval-compare retrieval-promote retrieval-misses answer-identity ask answer-eval answer-compare answer-promote eval-all grade-answers grade-summary synth-landing sync
 
 # Install every dependency group `make e2e`, the dbt targets and the dashboard need (`uv sync` alone drops them).
 sync:
@@ -41,10 +41,16 @@ psql-dev:
 	$(COMPOSE) exec db psql -U $(POSTGRES_USER) -d gcw_dev
 
 test:
-	uv run pytest -m "not integration and not warehouse" $(IGNORE_WAREHOUSE)
+	uv run pytest -m "not integration and not warehouse and not bench" $(IGNORE_WAREHOUSE)
 
 test-integration:
 	uv run pytest -m integration $(IGNORE_WAREHOUSE)
+
+# Retrieval latency at real corpus size on a synthetic warehouse in gcw_test (D137): search and
+# excerpt SQL, the same before D131, EXPLAIN files in a temporary directory, and query embedding if
+# the dev embed server starts (it stays running; make down stops it). Needs Postgres up.
+bench-retrieval:
+	uv run pytest -m bench -s -q $(IGNORE_WAREHOUSE)
 
 # Needs the pipeline to have run (gcw migrate, ingest, dbt build) so the marts exist.
 test-warehouse:
@@ -252,6 +258,21 @@ retrieval-compare:
 retrieval-promote:
 	@test -n "$(METHOD)" || { echo "error: set METHOD=vector|hybrid (make retrieval-promote METHOD=vector)"; exit 1; }
 	@uv run gcw retrieval-promote --method $(METHOD)
+
+# Where retrieval loses questions (D139): for the latest retrieval-eval of each method, counts of
+# the right message's rank (searched again 50 deep), its length in words split by hit and miss at 5,
+# and misses whose right message is inside a top-5 window. Same guards as retrieval-eval; refused
+# unless the corpus and questions are still the eval's. Reads only, stores nothing, prints counts.
+# Real-data runs are Ryan's: make retrieval-misses ENV_FILE=<env file outside the repo>
+retrieval-misses:
+	@uv run gcw retrieval-misses $(if $(filter 1,$(SYNTHETIC)),--synthetic)
+
+# A hash of what both retrieval methods return and what the model would be sent for the committed
+# synthetic questions (D136), as the pipeline user and, if GCW_ASK_PASSWORD is set, as gcw_ask. Run
+# it before and after a change that must alter no result. Starts db and embed, never the llm; needs
+# gcw_dev built and embedded (make embed SYNTHETIC=1). Refused without SYNTHETIC=1.
+answer-identity:
+	@uv run gcw answer-identity $(if $(filter 1,$(SYNTHETIC)),--synthetic)
 
 # Answers with citations from the local model (D111-D113). ask and answer-eval start only the db,
 # llm and embed services. ask reads questions at a prompt (a blank line ends it), prints each answer and its cited

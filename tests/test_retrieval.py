@@ -8,7 +8,7 @@ import math
 import re
 import stat
 import subprocess
-import time
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,7 +16,8 @@ import pytest
 
 from embedding_stub import StubEmbed
 from gcwrapped.labeling.schema import QuestionLabel
-from gcwrapped.retrieval import commands, evaluation, report, search, window
+from gcwrapped.labeling.source import EligibleIndex, Message
+from gcwrapped.retrieval import commands, evaluation, misses, report, search, window
 from gcwrapped.retrieval.client import (
     EmbedFailure,
     LlamaCppEmbedder,
@@ -477,13 +478,23 @@ def test_the_latest_retrieval_verdict_decides_and_tag_verdicts_are_ignored(tmp_p
     with pytest.raises(evaluation.VerdictError):
         evaluation.latest_verdict(tmp_path)
     _write_verdict(tmp_path, hybrid_wins=True)
-    time.sleep(0.002)  # the next verdict file must sort after the first
     _write_verdict(tmp_path, hybrid_wins=False)
     (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").write_text("{}")
     assert evaluation.latest_verdict(tmp_path) == ("vector", VERSION)
     with pytest.raises(tag_evaluation.VerdictError):  # and the tagger never reads retrieval ones
         (tmp_path / "experiments" / "compare-99991231T000000000000Z.json").unlink()
         tag_evaluation.latest_winner(tmp_path)
+
+
+def test_a_new_retrieval_verdict_wins_even_after_the_clock_stepped_back(tmp_path: Path) -> None:
+    _write_verdict(tmp_path, hybrid_wins=True)
+    (path,) = (tmp_path / "experiments").iterdir()
+    path.rename(path.with_name("retrieval-compare-29990101T000000000000Z.json"))
+    # a newer name of another kind does not move this one
+    (tmp_path / "experiments" / "answer-compare-39990101T000000000000Z.json").write_text("{}")
+    _write_verdict(tmp_path, hybrid_wins=False)
+    assert evaluation.latest_verdict(tmp_path) == ("vector", VERSION)
+    assert (tmp_path / "experiments" / "retrieval-compare-29990101T000000000001Z.json").is_file()
 
 
 def test_a_malformed_latest_verdict_fails_closed(tmp_path: Path) -> None:
@@ -755,8 +766,12 @@ def test_the_make_targets_pass_their_variables() -> None:
     assert _dry_run("retrieval-compare", A="vector", B="hybrid", SYNTHETIC="1")[-1] == (
         "uv run gcw retrieval-compare --a vector --b hybrid --synthetic"
     )
+    assert _dry_run("retrieval-misses") == ["uv run gcw retrieval-misses "]
+    assert _dry_run("retrieval-misses", SYNTHETIC="1") == [
+        "uv run gcw retrieval-misses --synthetic"
+    ]
     phony = (REPO / "Makefile").read_text().split(".PHONY:")[1].split("\n")[0]
-    for target in ("embed", "retrieval-eval", "retrieval-compare"):
+    for target in ("embed", "retrieval-eval", "retrieval-compare", "retrieval-misses"):
         assert f" {target} " in phony
 
 
@@ -769,3 +784,152 @@ def test_make_refuses_a_missing_method_or_arm_without_running_anything() -> None
 def test_the_synthetic_questions_are_the_committed_ones() -> None:
     assert commands.SYNTHETIC_QUESTIONS == REPO / "tests" / "fixtures" / "eval" / "questions.csv"
     assert commands.SYNTHETIC_QUESTIONS.is_file()
+
+
+# --- retrieval-misses (D139) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rank", "bucket"),
+    [
+        (1, "1"),
+        (2, "2-5"),
+        (5, "2-5"),
+        (6, "6-10"),
+        (10, "6-10"),
+        (11, "11-50"),
+        (50, "11-50"),
+        (51, "not in the top 50"),
+        (None, "not in the top 50"),
+    ],
+)
+def test_rank_bucket_edges(rank: int | None, bucket: str) -> None:
+    assert misses.rank_bucket(rank) == bucket
+
+
+@pytest.mark.parametrize(
+    ("words", "bucket"),
+    [(1, "1-3"), (3, "1-3"), (4, "4-10"), (10, "4-10"), (11, "11+"), (500, "11+")],
+)
+def test_length_bucket_edges(words: int, bucket: str) -> None:
+    assert misses.length_bucket(words) == bucket
+
+
+# message number -> words in its text. 5 has no searchable vector and 6 is not eligible.
+_WORDS = {1: 2, 2: 4, 3: 11, 4: 3, 5: 1, 7: 1, 8: 10}
+_ELIGIBLE = EligibleIndex(
+    Message(_id(n), "t1", " ".join([SENTINEL] * words)) for n, words in _WORDS.items()
+)
+_SEARCHABLE = frozenset(_id(n) for n in _WORDS if n != 5)
+# question number -> (gold, source, {rank: message returned there})
+_ASKED: dict[int, tuple[tuple[int, ...], int, dict[int, int]]] = {
+    1: ((1,), 1, {1: 1}),  # a hit at rank 1, 2 words
+    2: ((2,), 2, {5: 2}),  # a hit at rank 5, 4 words
+    3: ((3,), 3, {6: 3}),  # a miss at rank 6, 11 words, inside a top-5 window
+    4: ((4,), 4, {}),  # not returned at all, 3 words
+    5: ((5,), 1, {}),  # dropped: its gold cannot be searched
+    6: ((1,), 6, {}),  # dropped: its source is not eligible
+    7: ((7, 8), 7, {11: 8}),  # the best-ranked gold is the right message: 8, 10 words, rank 11
+}
+_QUESTIONS = [
+    QuestionLabel(f"q{n:03d}", f"{SENTINEL} question {n}", tuple(map(_id, gold)), _id(source), "x")
+    for n, (gold, source, _) in _ASKED.items()
+]
+
+
+def _results(number: int, depth: int) -> list[search.Hit]:
+    """`depth` results for a question: filler messages except where _ASKED places one."""
+    placed = _ASKED[number][2]
+    return [
+        search.Hit(_id(placed.get(rank, 1000 * number + rank)), 1 / rank)
+        for rank in range(1, depth + 1)
+    ]
+
+
+def _stored(kept: list[QuestionLabel], source: str = "real") -> evaluation.Predictions:
+    rows = evaluation.run_method(lambda q, k: _results(int(q.split()[-1]), k), kept)
+    return evaluation.Predictions(
+        "vector", VERSION, source, evaluation.corpus_hash(_SEARCHABLE), tuple(rows)
+    )
+
+
+def test_a_breakdown_counts_every_question_where_its_right_message_landed() -> None:
+    kept, _ = evaluation.split_questions(_QUESTIONS, _ELIGIBLE, _SEARCHABLE)
+    stored = _stored(kept)
+    stored = replace(  # one question whose stored top 10 differs from what search returns now
+        stored,
+        rows=(replace(stored.rows[0], retrieved_message_ids=(_id(2),)), *stored.rows[1:]),
+    )
+    depths: list[int] = []
+    asked: list[int] = []
+
+    def find(question: str, k: int) -> list[search.Hit]:
+        depths.append(k)
+        asked.append(int(question.split()[-1]))
+        return _results(asked[-1], k)
+
+    def window_members(centres: Sequence[str]) -> set[str]:
+        assert len(centres) == 5  # only the top-5 results' windows
+        near = {_id(3)} if _id(3001) in centres else set()
+        return {*centres, *near}
+
+    found = misses.breakdown(stored, _QUESTIONS, _ELIGIBLE, _SEARCHABLE, find, window_members)
+    assert asked == [1, 2, 3, 4, 7] and set(depths) == {50}
+    assert (found.questions, found.gold_not_searchable, found.source_not_eligible) == (7, 1, 1)
+    assert found.scored == 5
+    assert dict(found.ranks) == {
+        "1": 1,
+        "2-5": 1,
+        "6-10": 1,
+        "11-50": 1,
+        "not in the top 50": 1,
+    }
+    assert dict(found.hit_lengths) == {"1-3": 1, "4-10": 1}
+    assert dict(found.miss_lengths) == {"11+": 1, "1-3": 1, "4-10": 1}
+    assert (found.near_misses, found.changed) == (1, 1)
+
+    lines = report.render_misses("gcw_dev", "synthetic", VERSION, [found])
+    assert lines == [
+        "target database: gcw_dev",
+        "questions source: synthetic",
+        f"embed version: {VERSION}",
+        "method: vector",
+        "questions: 7",
+        "dropped, right message not searchable: 1",
+        "dropped, source message not eligible: 1",
+        "questions scored: 5",
+        "right message at rank 1: 1",
+        "right message at rank 2-5: 1",
+        "right message at rank 6-10: 1",
+        "right message at rank 11-50: 1",
+        "right message not in the top 50: 1",
+        "hit@5, right message of 1-3 words: 1",
+        "hit@5, right message of 4-10 words: 1",
+        "hit@5, right message of 11+ words: 0",
+        "miss@5, right message of 1-3 words: 1",
+        "miss@5, right message of 4-10 words: 1",
+        "miss@5, right message of 11+ words: 1",
+        "misses@5 with the right message inside a top-5 window: 1",
+        "questions whose top 10 differs from the stored run: 1",
+        "retrieval-misses: ok",
+    ]
+
+
+def test_misses_are_refused_unless_searching_again_repeats_the_stored_run() -> None:
+    kept, _ = evaluation.split_questions(_QUESTIONS, _ELIGIBLE, _SEARCHABLE)
+    stored = _stored(kept)
+    misses.check_same_run(stored, kept, "real", VERSION, _SEARCHABLE)
+    with pytest.raises(evaluation.EmbedVersionMismatch):
+        misses.check_same_run(stored, kept, "real", CORPUS, _SEARCHABLE)
+    with pytest.raises(evaluation.CorpusMismatch):
+        misses.check_same_run(stored, kept, "real", VERSION, _SEARCHABLE - {_id(8)})
+    reworded = replace(kept[0], question="another question 1")
+    other_gold = replace(kept[0], gold_message_ids=(_id(2),))
+    for questions, source in (
+        ([reworded, *kept[1:]], "real"),
+        ([other_gold, *kept[1:]], "real"),
+        (kept[1:], "real"),  # a question removed, or added
+        (kept, "synthetic"),
+    ):
+        with pytest.raises(evaluation.QuestionSetMismatch):
+            misses.check_same_run(stored, questions, source, VERSION, _SEARCHABLE)

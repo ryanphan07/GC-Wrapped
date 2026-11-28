@@ -762,3 +762,35 @@ def test_make_down_also_stops_the_model_services_and_e2e_never_calls_it() -> Non
 
     assert "--profile llm --profile embed down" in recipe("down")
     assert "--profile" not in recipe("up") and "--profile" not in recipe("e2e")
+
+
+# --- answer-identity (D136) --------------------------------------------------------------------
+
+
+def test_answer_identity_refuses_to_run_without_synthetic_and_starts_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def start() -> None:
+        pytest.fail("a service was started")
+
+    assert commands.run_answer_identity(False, commands.Services(start, None, start)) == 1
+    assert capsys.readouterr().out == (
+        "answer-identity: failed at synthetic (SyntheticOnlyError)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("variables", "arguments"), [((), []), (("SYNTHETIC=1",), ["--synthetic"])]
+)
+def test_make_answer_identity_passes_synthetic_only_when_it_is_set(
+    variables: tuple[str, ...], arguments: list[str]
+) -> None:
+    recipe = subprocess.run(
+        ["make", "--no-print-directory", "-n", "answer-identity", *variables],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert recipe == ["uv", "run", "gcw", "answer-identity", *arguments]
+    assert build_parser().parse_args(["answer-identity", *arguments]).synthetic is bool(arguments)

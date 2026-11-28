@@ -298,7 +298,7 @@ jobs:
           GCW_EMBED_URL: http://127.0.0.1:8098
         run: |
           uv run python tests/embedding_stub.py --port 8098 &
-          until curl -fsS http://127.0.0.1:8098/v1/models >/dev/null 2>&1; do sleep 0.5; done
+          timeout 30 bash -c 'until curl -fsS http://127.0.0.1:8098/v1/models >/dev/null 2>&1; do sleep 0.5; done'
           uv run python -c 'import sys; from gcwrapped.retrieval import commands; sys.exit(commands.run_embed(synthetic=True, start_db=None, start_service=None))' | tee embed.log
           grep -qx "embed: ok" embed.log
           grep -qx "failures: 0" embed.log
